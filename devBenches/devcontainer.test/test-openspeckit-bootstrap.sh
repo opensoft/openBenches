@@ -5949,7 +5949,7 @@ run_local_exclude_bootstrap() {
     HOME="$LOCAL_EXCLUDE_HOME" \
         AGENT_PROTOCOL_ROOT="$LOCAL_EXCLUDE_PROTOCOL_ROOT" \
         OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
-        PATH="$LOCAL_EXCLUDE_BIN:/usr/bin:/bin" \
+        PATH="${LOCAL_EXCLUDE_PATH_FRONT:+$LOCAL_EXCLUDE_PATH_FRONT:}$LOCAL_EXCLUDE_BIN:/usr/bin:/bin" \
         python3 "$SETUP_SCRIPT" \
         --repo "$repo" \
         --integration gemini \
@@ -5988,10 +5988,35 @@ local_exclude_line_count() {
     fi
 }
 
+local_exclude_inode_changed() {
+    local file="$1"
+    local before="$2"
+    if [[ "$(stat -c '%i' "$file")" != "$before" ]]; then
+        printf '%s\n' changed
+    else
+        printf '%s\n' same
+    fi
+}
+
+local_exclude_shim_seen() {
+    local notes="$1"
+    local state="$2"
+    local pattern="$3"
+    if grep -Eq -- "^$state .*$pattern" "$notes"; then
+        printf '%s\n' yes
+    else
+        printf '%s\n' no
+    fi
+}
+
 LOCAL_EXCLUDE_REPO="$LOCAL_EXCLUDE_ROOT/fresh-repo"
 LOCAL_EXCLUDE_FILE="$LOCAL_EXCLUDE_REPO/.git/info/exclude"
 make_local_exclude_repo "$LOCAL_EXCLUDE_REPO"
+# git makes its stock exclude file with the creator's umask: 0644 here keeps the
+# mode check after the run independent of it.
+chmod 0644 "$LOCAL_EXCLUDE_FILE"
 cp "$LOCAL_EXCLUDE_FILE" "$LOCAL_EXCLUDE_ROOT/fresh-exclude.before"
+LOCAL_EXCLUDE_FRESH_INODE="$(stat -c '%i' "$LOCAL_EXCLUDE_FILE")"
 git -C "$LOCAL_EXCLUDE_REPO" ls-files > "$LOCAL_EXCLUDE_ROOT/fresh-ls-files.before"
 
 printf '%s\n' 'When: bootstrap initializes the fresh repository'
@@ -6019,6 +6044,8 @@ if head -c "$(stat -c '%s' "$LOCAL_EXCLUDE_ROOT/fresh-exclude.before")" "$LOCAL_
 else
     fail 'local exclude: the exclude file keeps its existing bytes first'
 fi
+assert_mode "$LOCAL_EXCLUDE_FILE" 644 "local exclude: git's stock exclude file is still 0644"
+assert_equal "$(local_exclude_inode_changed "$LOCAL_EXCLUDE_FILE" "$LOCAL_EXCLUDE_FRESH_INODE")" changed 'local exclude: a real run replaces the exclude file by a rename, not in place'
 
 printf '%s\n' 'Then: .github/ and the root context files are never excluded'
 assert_regular_directory "$LOCAL_EXCLUDE_REPO/.github" 'local exclude: the run created an untracked .github/'
@@ -6135,6 +6162,7 @@ assert_not_exists "$LOCAL_EXCLUDE_BARE_INFO_REPO/.git/info" 'local exclude: --dr
 assert_contains "$LOCAL_EXCLUDE_ROOT/dry.log" "would add /.specify/ to $LOCAL_EXCLUDE_DRY_FILE" 'local exclude: --dry-run logs the .specify/ line it would add'
 assert_contains "$LOCAL_EXCLUDE_ROOT/dry.log" "would add /.claude/ to $LOCAL_EXCLUDE_DRY_FILE" 'local exclude: --dry-run logs the agent folder line it would add'
 assert_contains "$LOCAL_EXCLUDE_ROOT/dry-no-info.log" "would add /.specify/ to $LOCAL_EXCLUDE_BARE_INFO_FILE" 'local exclude: --dry-run logs the line it would add to an absent exclude file'
+assert_contains "$LOCAL_EXCLUDE_ROOT/dry.log" "folders the run would create are decided by a real run: $LOCAL_EXCLUDE_DRY_FILE" 'local exclude: --dry-run with lines to add also says a real run decides the folders it would create'
 assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_DRY_REPO" .specify/)" 1 'local exclude: after --dry-run .specify/ is still not ignored'
 
 printf '%s\n' 'When: bootstrap runs for real where info/ is missing'
@@ -6149,6 +6177,26 @@ printf '%s\n' 'Then: info/exclude is created with the lines'
 assert_regular_directory "$LOCAL_EXCLUDE_BARE_INFO_REPO/.git/info" 'local exclude: the run creates the missing info/ directory'
 assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_BARE_INFO_FILE" '/.specify/')" 1 'local exclude: the created exclude file carries /.specify/ once'
 assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_BARE_INFO_REPO" .specify/)" 0 'local exclude: .specify/ is ignored once info/exclude is created'
+assert_mode "$LOCAL_EXCLUDE_BARE_INFO_FILE" 644 'local exclude: an exclude file created with its info/ directory is 0644'
+
+printf '%s\n' 'Given: a repository whose info/ directory is there with no exclude file in it'
+LOCAL_EXCLUDE_NEW_FILE_REPO="$LOCAL_EXCLUDE_ROOT/no-exclude-file-repo"
+LOCAL_EXCLUDE_NEW_FILE="$LOCAL_EXCLUDE_NEW_FILE_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_NEW_FILE_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_NEW_FILE_REPO/.git/info"
+assert_not_exists "$LOCAL_EXCLUDE_NEW_FILE" 'local exclude: the fixture has no exclude file at all'
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NEW_FILE_REPO" "$LOCAL_EXCLUDE_ROOT/no-exclude-file.log"; then
+    pass 'local exclude: the bootstrap with no exclude file succeeds'
+else
+    fail 'local exclude: the bootstrap with no exclude file succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/no-exclude-file.log"
+fi
+
+printf '%s\n' 'Then: the new exclude file carries the lines and is 0644'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_NEW_FILE" '/.specify/')" 1 'local exclude: the new exclude file carries /.specify/ once'
+assert_mode "$LOCAL_EXCLUDE_NEW_FILE" 644 'local exclude: a new exclude file is 0644'
 
 printf '%s\n' 'Given: a linked worktree of a repository'
 LOCAL_EXCLUDE_MAIN_REPO="$LOCAL_EXCLUDE_ROOT/worktree-main"
@@ -6215,6 +6263,702 @@ else
     fail 'local exclude: the outside exclude file behind a symlinked info/ changed'
 fi
 assert_equal "$(ls -A "$LOCAL_EXCLUDE_OUTSIDE/info-dir")" 'exclude' 'local exclude: nothing new is written in the outside info/ target'
+
+# Local exclude, continued: git decides each folder, the caller's git
+# environment never moves the lines to another repository, and the last step's
+# failures are named. A candidate folder that was there before the run, holding
+# only untracked files, is excluded as one the run creates is.
+local_exclude_starts_with() {
+    local file="$1"
+    local before="$2"
+    head -c "$(stat -c '%s' "$before")" "$file" | cmp -s - "$before"
+}
+
+printf '%s\n' 'Given: a folder inside another repository, as --repo'
+LOCAL_EXCLUDE_OUTER_REPO="$LOCAL_EXCLUDE_ROOT/outer-repo"
+LOCAL_EXCLUDE_INNER_DIR="$LOCAL_EXCLUDE_OUTER_REPO/sub"
+make_local_exclude_repo "$LOCAL_EXCLUDE_OUTER_REPO"
+mkdir "$LOCAL_EXCLUDE_INNER_DIR"
+cp "$LOCAL_EXCLUDE_OUTER_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/outer-exclude.before"
+
+printf '%s\n' 'When: bootstrap runs with that folder as --repo'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_INNER_DIR" "$LOCAL_EXCLUDE_ROOT/outer-sub.log"; then
+    pass 'local exclude: the bootstrap in a folder inside another repository succeeds'
+else
+    fail 'local exclude: the bootstrap in a folder inside another repository succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/outer-sub.log"
+fi
+
+printf '%s\n' "Then: the step is skipped, and the outer repository's exclude file is byte-identical"
+assert_contains "$LOCAL_EXCLUDE_ROOT/outer-sub.log" "skipped local git excludes: $LOCAL_EXCLUDE_INNER_DIR is not the top of a git work tree" 'local exclude: a folder inside another repository logs the skip'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/outer-exclude.before" "$LOCAL_EXCLUDE_OUTER_REPO/.git/info/exclude"; then
+    pass "local exclude: the outer repository's exclude file is byte-identical"
+else
+    fail "local exclude: the outer repository's exclude file changed"
+fi
+
+printf '%s\n' 'Given: a folder in no repository at all, with git told not to look above the test folder'
+LOCAL_EXCLUDE_NO_REPO="$LOCAL_EXCLUDE_ROOT/no-repo-at-all"
+mkdir "$LOCAL_EXCLUDE_NO_REPO"
+
+printf '%s\n' 'When: bootstrap runs with that folder as --repo'
+if GIT_CEILING_DIRECTORIES="$LOCAL_EXCLUDE_ROOT" LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NO_REPO" "$LOCAL_EXCLUDE_ROOT/no-repo.log"; then
+    pass 'local exclude: the bootstrap in a folder in no repository succeeds'
+else
+    fail 'local exclude: the bootstrap in a folder in no repository succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/no-repo.log"
+fi
+
+printf '%s\n' 'Then: the skip keeps its plain wording and does not read like a failed git call'
+assert_contains "$LOCAL_EXCLUDE_ROOT/no-repo.log" "skipped local git excludes: $LOCAL_EXCLUDE_NO_REPO is not the top of a git work tree" 'local exclude: a folder in no repository logs the plain skip'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/no-repo.log" 'git rev-parse failed' 'local exclude: a folder in no repository is not reported as a failed git call'
+assert_not_exists "$LOCAL_EXCLUDE_NO_REPO/.git" 'local exclude: a folder in no repository gets no git directory'
+
+printf '%s\n' 'Given: an exclude file whose last line, *.swp, has no final newline'
+LOCAL_EXCLUDE_NO_NEWLINE_REPO="$LOCAL_EXCLUDE_ROOT/no-final-newline-repo"
+LOCAL_EXCLUDE_NO_NEWLINE_FILE="$LOCAL_EXCLUDE_NO_NEWLINE_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_NO_NEWLINE_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_NO_NEWLINE_REPO/.git/info"
+printf '%s' '*.swp' > "$LOCAL_EXCLUDE_NO_NEWLINE_FILE"
+printf '%s\n' 'scratch' > "$LOCAL_EXCLUDE_NO_NEWLINE_REPO/notes.swp"
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NO_NEWLINE_REPO" "$LOCAL_EXCLUDE_ROOT/no-final-newline.log"; then
+    pass 'local exclude: the bootstrap with no final newline succeeds'
+else
+    fail 'local exclude: the bootstrap with no final newline succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/no-final-newline.log"
+fi
+
+printf '%s\n' "Then: the user's pattern stays whole and working, and the block starts on its own line"
+assert_equal "$(sed -n '1p' "$LOCAL_EXCLUDE_NO_NEWLINE_FILE")" '*.swp' 'local exclude: the last pattern keeps its own line'
+assert_equal "$(sed -n '2p' "$LOCAL_EXCLUDE_NO_NEWLINE_FILE")" '# setup-openspeckit: local Speckit and agent folders, untracked here' 'local exclude: the block starts on the next line'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_NO_NEWLINE_REPO" notes.swp)" 0 'local exclude: the last pattern still ignores notes.swp'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_NO_NEWLINE_REPO" .specify/)" 0 'local exclude: .specify/ is ignored after a file with no final newline'
+
+printf '%s\n' "Given: another repository that tracks .specify/ and .claude/ files, and a caller whose GIT_DIR, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_WORK_TREE or GIT_OBJECT_DIRECTORY names it"
+LOCAL_EXCLUDE_OTHER_REPO="$LOCAL_EXCLUDE_ROOT/other-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_OTHER_REPO"
+mkdir "$LOCAL_EXCLUDE_OTHER_REPO/.specify" "$LOCAL_EXCLUDE_OTHER_REPO/.claude"
+printf '%s\n' 'tracked elsewhere' > "$LOCAL_EXCLUDE_OTHER_REPO/.specify/tracked.md"
+printf '%s\n' '{}' > "$LOCAL_EXCLUDE_OTHER_REPO/.claude/settings.json"
+git_fixture -C "$LOCAL_EXCLUDE_OTHER_REPO" add .specify/tracked.md .claude/settings.json
+git_fixture -C "$LOCAL_EXCLUDE_OTHER_REPO" commit -q -m 'track .specify and .claude files'
+cp "$LOCAL_EXCLUDE_OTHER_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/other-exclude.before"
+cp "$LOCAL_EXCLUDE_OTHER_REPO/.git/index" "$LOCAL_EXCLUDE_ROOT/other-index.before"
+# git 2.43 lets GIT_OBJECT_DIRECTORY change no answer the step asks for, so its
+# pass is no proof by itself: the git that lists a name no real variable has,
+# further down, pins that the list is git's and not the tool's.
+for git_variable in GIT_DIR GIT_COMMON_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY; do
+    case "$git_variable" in
+        GIT_INDEX_FILE) git_value="$LOCAL_EXCLUDE_OTHER_REPO/.git/index" ;;
+        GIT_WORK_TREE) git_value="$LOCAL_EXCLUDE_OTHER_REPO" ;;
+        GIT_OBJECT_DIRECTORY) git_value="$LOCAL_EXCLUDE_OTHER_REPO/.git/objects" ;;
+        *) git_value="$LOCAL_EXCLUDE_OTHER_REPO/.git" ;;
+    esac
+    env_repo="$LOCAL_EXCLUDE_ROOT/caller-$git_variable-repo"
+    make_local_exclude_repo "$env_repo"
+
+    printf '%s\n' "When: bootstrap runs on a fresh repository with $git_variable set to the other repository"
+    if (export "$git_variable=$git_value"; run_local_exclude_bootstrap "$env_repo" "$LOCAL_EXCLUDE_ROOT/caller-$git_variable.log"); then
+        pass "local exclude: the bootstrap with $git_variable set succeeds"
+    else
+        fail "local exclude: the bootstrap with $git_variable set succeeds"
+        cat "$LOCAL_EXCLUDE_ROOT/caller-$git_variable.log"
+    fi
+
+    printf '%s\n' "Then: the target repository gets its lines, and the other repository's exclude file and index are byte-identical"
+    for folder in .specify .claude; do
+        assert_equal "$(local_exclude_line_count "$env_repo/.git/info/exclude" "/$folder/")" 1 "local exclude: with $git_variable set the target exclude file carries /$folder/ once"
+    done
+    assert_equal "$(local_exclude_ignore_exit "$env_repo" .specify/)" 0 "local exclude: with $git_variable set git check-ignore passes for .specify/ in the target"
+    assert_contains "$LOCAL_EXCLUDE_ROOT/caller-$git_variable.log" "added /.specify/ to $env_repo/.git/info/exclude" "local exclude: with $git_variable set the log names the target exclude file"
+    if cmp -s "$LOCAL_EXCLUDE_ROOT/other-exclude.before" "$LOCAL_EXCLUDE_OTHER_REPO/.git/info/exclude"; then
+        pass "local exclude: with $git_variable set the other repository's exclude file is byte-identical"
+    else
+        fail "local exclude: with $git_variable set the other repository's exclude file changed"
+    fi
+    if cmp -s "$LOCAL_EXCLUDE_ROOT/other-index.before" "$LOCAL_EXCLUDE_OTHER_REPO/.git/index"; then
+        pass "local exclude: with $git_variable set the other repository's index is byte-identical"
+    else
+        fail "local exclude: with $git_variable set the other repository's index changed"
+    fi
+done
+
+printf '%s\n' "Given: git told to treat every repository as another user's, and callers that name safe.directory only through the environment"
+LOCAL_EXCLUDE_OWNER_CONTROL_REPO="$LOCAL_EXCLUDE_ROOT/owner-control-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO"
+cp "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/owner-control-exclude.before"
+make_local_exclude_repo "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS-repo"
+
+printf '%s\n' 'When: bootstrap runs in each, with no safe.directory, with GIT_CONFIG_COUNT and its key and value, and with GIT_CONFIG_PARAMETERS'
+if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO" "$LOCAL_EXCLUDE_ROOT/owner-control.log"; then
+    pass 'local exclude: the bootstrap in a repository git refuses succeeds'
+else
+    fail 'local exclude: the bootstrap in a repository git refuses succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/owner-control.log"
+fi
+if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' run_local_exclude_bootstrap "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT-repo" "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT.log"; then
+    pass 'local exclude: the bootstrap with safe.directory in GIT_CONFIG_COUNT succeeds'
+else
+    fail 'local exclude: the bootstrap with safe.directory in GIT_CONFIG_COUNT succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT.log"
+fi
+if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_PARAMETERS="'safe.directory=*'" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS-repo" "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS.log"; then
+    pass 'local exclude: the bootstrap with safe.directory in GIT_CONFIG_PARAMETERS succeeds'
+else
+    fail 'local exclude: the bootstrap with safe.directory in GIT_CONFIG_PARAMETERS succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS.log"
+fi
+
+printf '%s\n' "Then: with no safe.directory the step is a skip that gives git's message and writes nothing, and with it in the caller's environment the step writes its lines"
+assert_contains "$LOCAL_EXCLUDE_ROOT/owner-control.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_OWNER_CONTROL_REPO: fatal: detected dubious ownership" 'local exclude: a repository git refuses is a skip that gives git message'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/owner-control-exclude.before" "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO/.git/info/exclude"; then
+    pass 'local exclude: a repository git refuses keeps its exclude file byte-identical'
+else
+    fail 'local exclude: a repository git refuses changed its exclude file'
+fi
+for owner_variable in GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS; do
+    owner_repo="$LOCAL_EXCLUDE_ROOT/owner-$owner_variable-repo"
+    assert_not_contains "$LOCAL_EXCLUDE_ROOT/owner-$owner_variable.log" 'skipped local git excludes' "local exclude: safe.directory in $owner_variable keeps the step from being skipped"
+    assert_equal "$(local_exclude_line_count "$owner_repo/.git/info/exclude" '/.specify/')" 1 "local exclude: with safe.directory in $owner_variable the exclude file carries /.specify/ once"
+    assert_contains "$LOCAL_EXCLUDE_ROOT/owner-$owner_variable.log" "added /.specify/ to $owner_repo/.git/info/exclude" "local exclude: with safe.directory in $owner_variable the log names the exclude file"
+done
+
+printf '%s\n' 'Given: a git first on PATH that wraps the real one, answers rev-parse --local-env-vars as it is told, and notes whether GIT_FAKE_LISTED reaches each other call'
+LOCAL_EXCLUDE_GIT_SHIM="$LOCAL_EXCLUDE_ROOT/git-shim"
+LOCAL_EXCLUDE_REAL_GIT="$(command -v git)"
+mkdir -p "$LOCAL_EXCLUDE_GIT_SHIM"
+cat > "$LOCAL_EXCLUDE_GIT_SHIM/git" <<'EOF'
+#!/usr/bin/env bash
+# FAKE_GIT_REAL is the real git. `rev-parse --local-env-vars` answers as FAKE_GIT_LIST
+# says: fail (status 2 and a message), garbled (a list that names nothing) or extra
+# (git's own list and one more name, GIT_FAKE_LISTED). With FAKE_GIT_INIT=fail, `init`
+# is refused. Every other call is noted in FAKE_GIT_NOTES, with whether
+# GIT_FAKE_LISTED reached it, and passed on.
+if [[ "${1:-}" == init && "${FAKE_GIT_INIT:-}" == fail ]]; then
+    echo 'fake git: init refused' >&2
+    exit 128
+fi
+if [[ "${1:-}" == rev-parse && "${2:-}" == --local-env-vars ]]; then
+    case "${FAKE_GIT_LIST:-}" in
+        fail)
+            echo 'fake git: no list today' >&2
+            exit 2
+            ;;
+        garbled)
+            echo 'GIT_NOT_THE_REPOSITORY'
+            exit 0
+            ;;
+        extra)
+            "$FAKE_GIT_REAL" "$@"
+            echo 'GIT_FAKE_LISTED'
+            exit 0
+            ;;
+    esac
+fi
+if [[ -n "${FAKE_GIT_NOTES:-}" ]]; then
+    if [[ -v GIT_FAKE_LISTED ]]; then state=present; else state=absent; fi
+    printf '%s %s\n' "$state" "$*" >> "$FAKE_GIT_NOTES"
+fi
+exec "$FAKE_GIT_REAL" "$@"
+EOF
+chmod 0755 "$LOCAL_EXCLUDE_GIT_SHIM/git"
+LOCAL_EXCLUDE_LISTED_REPO="$LOCAL_EXCLUDE_ROOT/shim-listed-repo"
+LOCAL_EXCLUDE_LISTED_NOTES="$LOCAL_EXCLUDE_ROOT/shim-listed.notes"
+make_local_exclude_repo "$LOCAL_EXCLUDE_LISTED_REPO"
+: > "$LOCAL_EXCLUDE_LISTED_NOTES"
+
+printf '%s\n' 'When: bootstrap runs with GIT_FAKE_LISTED set, and that git naming it in its list beside its own'
+if GIT_FAKE_LISTED=1 FAKE_GIT_LIST=extra FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" FAKE_GIT_NOTES="$LOCAL_EXCLUDE_LISTED_NOTES" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_LISTED_REPO" "$LOCAL_EXCLUDE_ROOT/shim-listed.log"; then
+    pass 'local exclude: the bootstrap with a list that names another variable succeeds'
+else
+    fail 'local exclude: the bootstrap with a list that names another variable succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/shim-listed.log"
+fi
+
+printf '%s\n' 'Then: the step and the staging git init run without the variable the list names, which only git can know'
+for git_call in 'rev-parse --git-path' 'ls-files' 'check-ignore' 'init -q'; do
+    assert_equal "$(local_exclude_shim_seen "$LOCAL_EXCLUDE_LISTED_NOTES" absent "$git_call")" yes "local exclude: git $git_call runs without a variable git lists"
+    assert_equal "$(local_exclude_shim_seen "$LOCAL_EXCLUDE_LISTED_NOTES" present "$git_call")" no "local exclude: git $git_call never gets a variable git lists"
+done
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_LISTED_REPO/.git/info/exclude" '/.specify/')" 1 'local exclude: the exclude file carries /.specify/ once beside a list that names another variable'
+
+printf '%s\n' 'Given: that git set to fail to list the variables, or to list names without GIT_DIR, and a caller whose GIT_DIR names another repository'
+LOCAL_EXCLUDE_NOLIST_SKIP_REPO="$LOCAL_EXCLUDE_ROOT/shim-fail-skip-repo"
+LOCAL_EXCLUDE_NOLIST_INIT_REPO="$LOCAL_EXCLUDE_ROOT/shim-fail-init-repo"
+LOCAL_EXCLUDE_GARBLED_REPO="$LOCAL_EXCLUDE_ROOT/shim-garbled-repo"
+for nolist_repo in "$LOCAL_EXCLUDE_NOLIST_SKIP_REPO" "$LOCAL_EXCLUDE_NOLIST_INIT_REPO" "$LOCAL_EXCLUDE_GARBLED_REPO"; do
+    make_local_exclude_repo "$nolist_repo"
+    cp "$nolist_repo/.git/info/exclude" "$nolist_repo.exclude.before"
+done
+
+printf '%s\n' 'When: bootstrap runs with --skip-init and a failed list, with a failed list and the staging git init, and with --skip-init and a garbled list'
+if FAKE_GIT_LIST=fail FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" GIT_DIR="$LOCAL_EXCLUDE_OTHER_REPO/.git" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NOLIST_SKIP_REPO" "$LOCAL_EXCLUDE_ROOT/shim-fail-skip.log" --skip-init; then
+    pass 'local exclude: the bootstrap with a failed list and --skip-init exits 0 with the step skipped'
+else
+    fail 'local exclude: the bootstrap with a failed list and --skip-init exits 0 with the step skipped'
+    cat "$LOCAL_EXCLUDE_ROOT/shim-fail-skip.log"
+fi
+if FAKE_GIT_LIST=fail FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" GIT_DIR="$LOCAL_EXCLUDE_OTHER_REPO/.git" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NOLIST_INIT_REPO" "$LOCAL_EXCLUDE_ROOT/shim-fail-init.log"; then
+    fail 'local exclude: a failed list stops the staging git init'
+else
+    pass 'local exclude: a failed list stops the staging git init'
+fi
+if FAKE_GIT_LIST=garbled FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" GIT_DIR="$LOCAL_EXCLUDE_OTHER_REPO/.git" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_GARBLED_REPO" "$LOCAL_EXCLUDE_ROOT/shim-garbled.log" --skip-init; then
+    pass 'local exclude: the bootstrap with a garbled list and --skip-init exits 0 with the step skipped'
+else
+    fail 'local exclude: the bootstrap with a garbled list and --skip-init exits 0 with the step skipped'
+    cat "$LOCAL_EXCLUDE_ROOT/shim-garbled.log"
+fi
+
+printf '%s\n' "Then: each fails closed with git's reason, the staging failure is a message and not a traceback, and neither repository's exclude file or index changes"
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-fail-skip.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_NOLIST_SKIP_REPO: git rev-parse --local-env-vars failed: fake git: no list today" 'local exclude: a failed list is a skip that gives git message'
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-fail-init.log" "Could not create the staging repository " 'local exclude: a failed list stops the staging git init with a message'
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-fail-init.log" "git rev-parse --local-env-vars failed: fake git: no list today" 'local exclude: the staging failure gives git message'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/shim-fail-init.log" 'Traceback' 'local exclude: the staging failure is a message, not a traceback'
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-garbled.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_GARBLED_REPO: git rev-parse --local-env-vars did not name GIT_DIR" 'local exclude: a list that does not name GIT_DIR is a skip'
+for nolist_repo in "$LOCAL_EXCLUDE_NOLIST_SKIP_REPO" "$LOCAL_EXCLUDE_NOLIST_INIT_REPO" "$LOCAL_EXCLUDE_GARBLED_REPO"; do
+    if cmp -s "$nolist_repo.exclude.before" "$nolist_repo/.git/info/exclude"; then
+        pass "local exclude: the exclude file of ${nolist_repo##*/} is byte-identical"
+    else
+        fail "local exclude: the exclude file of ${nolist_repo##*/} changed"
+    fi
+done
+if cmp -s "$LOCAL_EXCLUDE_ROOT/other-exclude.before" "$LOCAL_EXCLUDE_OTHER_REPO/.git/info/exclude" \
+    && cmp -s "$LOCAL_EXCLUDE_ROOT/other-index.before" "$LOCAL_EXCLUDE_OTHER_REPO/.git/index"; then
+    pass "local exclude: with no usable list the other repository's exclude file and index are byte-identical"
+else
+    fail "local exclude: with no usable list the other repository's exclude file or index changed"
+fi
+
+printf '%s\n' 'Given: that git set to refuse the staging git init'
+LOCAL_EXCLUDE_INIT_REFUSED_REPO="$LOCAL_EXCLUDE_ROOT/shim-init-refused-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_INIT_REFUSED_REPO"
+
+printf '%s\n' 'When: bootstrap runs there'
+if FAKE_GIT_INIT=fail FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_INIT_REFUSED_REPO" "$LOCAL_EXCLUDE_ROOT/shim-init-refused.log"; then
+    fail 'local exclude: a refused staging git init stops the run'
+else
+    pass 'local exclude: a refused staging git init stops the run'
+fi
+
+printf '%s\n' "Then: the run ends with git's own message, not a traceback"
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-init-refused.log" 'Could not create the staging repository ' 'local exclude: a refused staging git init names the staging repository'
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-init-refused.log" '/repo: fake git: init refused' 'local exclude: a refused staging git init gives git stderr'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/shim-init-refused.log" 'Traceback' 'local exclude: a refused staging git init is a message, not a traceback'
+
+printf '%s\n' "Given: a negation !/.specify/ in the exclude file itself, and another in a tracked .gitignore"
+LOCAL_EXCLUDE_NEGATED_REPO="$LOCAL_EXCLUDE_ROOT/negated-exclude-repo"
+LOCAL_EXCLUDE_NEGATED_FILE="$LOCAL_EXCLUDE_NEGATED_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_NEGATED_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_NEGATED_REPO/.git/info"
+printf '%s\n' '# my own rules' '!/.specify/' > "$LOCAL_EXCLUDE_NEGATED_FILE"
+cp "$LOCAL_EXCLUDE_NEGATED_FILE" "$LOCAL_EXCLUDE_ROOT/negated-exclude.before"
+LOCAL_EXCLUDE_NEGATED_IGNORE_REPO="$LOCAL_EXCLUDE_ROOT/negated-gitignore-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO"
+printf '%s\n' '!/.specify/' > "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO/.gitignore"
+git_fixture -C "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO" add .gitignore
+git_fixture -C "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO" commit -q -m 'keep .specify visible'
+
+printf '%s\n' 'When: bootstrap runs in each'
+for negated_repo in "$LOCAL_EXCLUDE_NEGATED_REPO" "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO"; do
+    if run_local_exclude_bootstrap "$negated_repo" "$negated_repo.log"; then
+        pass "local exclude: the bootstrap with a negation succeeds in ${negated_repo##*/}"
+    else
+        fail "local exclude: the bootstrap with a negation succeeds in ${negated_repo##*/}"
+        cat "$negated_repo.log"
+    fi
+done
+
+printf '%s\n' 'Then: .specify/ gets no line and stays visible, the log names the negation and where git found it, and the other folders get their lines'
+if local_exclude_starts_with "$LOCAL_EXCLUDE_NEGATED_FILE" "$LOCAL_EXCLUDE_ROOT/negated-exclude.before"; then
+    pass "local exclude: the user's negation is kept as it was"
+else
+    fail "local exclude: the user's negation is not kept as it was"
+fi
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_NEGATED_FILE" '/.specify/')" 0 'local exclude: no /.specify/ line is added after a negation in the exclude file'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_NEGATED_REPO" .specify/)" 1 'local exclude: .specify/ stays visible as the exclude file negation asks'
+assert_contains "$LOCAL_EXCLUDE_NEGATED_REPO.log" 'left .specify/ visible: the negation !/.specify/ at .git/info/exclude:2 decides it' 'local exclude: the log names the negation in the exclude file and its line'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_NEGATED_FILE" '/.claude/')" 1 'local exclude: the other folders still get their lines beside a negation'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO/.git/info/exclude" '/.specify/')" 0 'local exclude: no /.specify/ line is added under a negation in the tracked .gitignore'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO" .specify/)" 1 'local exclude: .specify/ stays visible as the .gitignore negation asks'
+assert_contains "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO.log" 'left .specify/ visible: the negation !/.specify/ at .gitignore:1 decides it' 'local exclude: the log names the negation in the .gitignore and its line'
+assert_not_contains "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO.log" 'added /.specify/' 'local exclude: the log never claims a line for a negated folder'
+
+printf '%s\n' 'When: bootstrap runs again in the exclude file negation repository, with --dry-run'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NEGATED_REPO" "$LOCAL_EXCLUDE_NEGATED_REPO.dry.log" --dry-run; then
+    pass 'local exclude: the dry run with a negation succeeds'
+else
+    fail 'local exclude: the dry run with a negation succeeds'
+    cat "$LOCAL_EXCLUDE_NEGATED_REPO.dry.log"
+fi
+
+printf '%s\n' 'Then: the dry run says it would leave .specify/ visible, and never that it left it'
+assert_contains "$LOCAL_EXCLUDE_NEGATED_REPO.dry.log" 'would leave .specify/ visible: the negation !/.specify/ at .git/info/exclude:2 decides it' 'local exclude: a dry run says it would leave a negated folder visible'
+assert_not_contains "$LOCAL_EXCLUDE_NEGATED_REPO.dry.log" 'left .specify/ visible' 'local exclude: a dry run never says it left a negated folder visible'
+
+printf '%s\n' 'Given: a tracked .gitignore holding .specify/* and !.specify/keep.md'
+LOCAL_EXCLUDE_PARTIAL_REPO="$LOCAL_EXCLUDE_ROOT/partial-ignore-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_PARTIAL_REPO"
+printf '%s\n' '.specify/*' '!.specify/keep.md' > "$LOCAL_EXCLUDE_PARTIAL_REPO/.gitignore"
+git_fixture -C "$LOCAL_EXCLUDE_PARTIAL_REPO" add .gitignore
+git_fixture -C "$LOCAL_EXCLUDE_PARTIAL_REPO" commit -q -m 'ignore what is in .specify, but keep.md'
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_PARTIAL_REPO" "$LOCAL_EXCLUDE_ROOT/partial-ignore.log"; then
+    pass 'local exclude: the bootstrap with .specify/* in the .gitignore succeeds'
+else
+    fail 'local exclude: the bootstrap with .specify/* in the .gitignore succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/partial-ignore.log"
+fi
+
+printf '%s\n' 'Then: git reads .specify/ as ignored by that pattern, so it gets no line, and the other folders do'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_PARTIAL_REPO/.git/info/exclude" '/.specify/')" 0 'local exclude: .specify/* in the .gitignore leaves .specify/ with no line'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_PARTIAL_REPO" .specify/)" 0 'local exclude: .specify/ is ignored through .specify/*'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_PARTIAL_REPO/.git/info/exclude" '/.claude/')" 1 'local exclude: the other folders still get their lines beside .specify/*'
+
+printf '%s\n' 'Given: a copy of the tool whose writer keeps the old bytes, so the lines never reach the file'
+LOCAL_EXCLUDE_LOST_WRITE_REPO="$LOCAL_EXCLUDE_ROOT/lost-write-repo"
+LOCAL_EXCLUDE_LOST_WRITE_TOOL="$LOCAL_EXCLUDE_ROOT/lost-write-tool/setup-openspeckit"
+make_local_exclude_repo "$LOCAL_EXCLUDE_LOST_WRITE_REPO"
+mkdir "$LOCAL_EXCLUDE_ROOT/lost-write-tool"
+if python3 - "$SETUP_SCRIPT" "$LOCAL_EXCLUDE_LOST_WRITE_TOOL" <<'EOF'
+import sys
+source, target = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+call = "write_local_exclude(exclude_path, content)"
+if text.count(call) != 1:
+    sys.exit(f"expected one {call!r} in {source}")
+open(target, "w", encoding="utf-8").write(text.replace(call, "write_local_exclude(exclude_path, existing)"))
+EOF
+then
+    pass 'local exclude: the writer of the tool copy is patched'
+else
+    fail 'local exclude: the writer of the tool copy is patched'
+fi
+
+printf '%s\n' 'When: that copy runs on a fresh repository'
+if SETUP_SCRIPT="$LOCAL_EXCLUDE_LOST_WRITE_TOOL" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_LOST_WRITE_REPO" "$LOCAL_EXCLUDE_ROOT/lost-write.log"; then
+    fail 'local exclude: a write git does not see fails the run'
+else
+    pass 'local exclude: a write git does not see fails the run'
+fi
+
+printf '%s\n' "Then: git is asked again after the write, and its answer is logged"
+assert_contains "$LOCAL_EXCLUDE_ROOT/lost-write.log" 'git does not ignore .specify/ after the write: no ignore rule matches' 'local exclude: the check after the write logs git answer for .specify/'
+for folder in "${LOCAL_EXCLUDE_FOLDERS[@]:1}"; do
+    assert_contains "$LOCAL_EXCLUDE_ROOT/lost-write.log" "git does not ignore $folder/ after the write: no ignore rule matches" "local exclude: the check after the write logs git answer for $folder/ too"
+done
+assert_contains "$LOCAL_EXCLUDE_ROOT/lost-write.log" "through $LOCAL_EXCLUDE_LOST_WRITE_REPO/.git/info/exclude: git does not ignore them after the write" 'local exclude: the failure names the exclude file'
+
+printf '%s\n' 'Given: an exclude file with /.specify/ behind a leading space, /.agents/ after a U+2028 on its line, and .claude and /.codex in other spellings'
+LOCAL_EXCLUDE_SPELLING_REPO="$LOCAL_EXCLUDE_ROOT/spelling-repo"
+LOCAL_EXCLUDE_SPELLING_FILE="$LOCAL_EXCLUDE_SPELLING_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_SPELLING_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_SPELLING_REPO/.git/info"
+printf ' /.specify/\nx\342\200\250/.agents/\n.claude\n/.codex\n' > "$LOCAL_EXCLUDE_SPELLING_FILE"
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_SPELLING_REPO" "$LOCAL_EXCLUDE_ROOT/spelling.log"; then
+    pass 'local exclude: the bootstrap with other spellings succeeds'
+else
+    fail 'local exclude: the bootstrap with other spellings succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/spelling.log"
+fi
+
+printf '%s\n' 'Then: a line git reads as another pattern does not count, and an equivalent pattern gets no duplicate'
+for folder in .specify .agents; do
+    assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_SPELLING_FILE" "/$folder/")" 1 "local exclude: /$folder/ is added where git reads the existing line as another pattern"
+    assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_SPELLING_REPO" "$folder/")" 0 "local exclude: $folder/ is ignored after the run"
+done
+for folder in .claude .codex; do
+    assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_SPELLING_FILE" "/$folder/")" 0 "local exclude: an equivalent pattern for $folder/ gets no duplicate line"
+    assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_SPELLING_REPO" "$folder/")" 0 "local exclude: $folder/ stays ignored through its own spelling"
+done
+
+printf '%s\n' 'Given: a fresh repository with the stock exclude file, before the run creates any folder'
+LOCAL_EXCLUDE_FRESH_DRY_REPO="$LOCAL_EXCLUDE_ROOT/fresh-dry-repo"
+LOCAL_EXCLUDE_FRESH_DRY_FILE="$LOCAL_EXCLUDE_FRESH_DRY_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_FRESH_DRY_REPO"
+cp -p "$LOCAL_EXCLUDE_FRESH_DRY_FILE" "$LOCAL_EXCLUDE_ROOT/fresh-dry-exclude.before"
+LOCAL_EXCLUDE_FRESH_DRY_STAT="$(stat -c '%i %y' "$LOCAL_EXCLUDE_FRESH_DRY_FILE")"
+
+printf '%s\n' 'When: bootstrap runs there with --dry-run'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_FRESH_DRY_REPO" "$LOCAL_EXCLUDE_ROOT/fresh-dry.log" --dry-run; then
+    pass 'local exclude: the dry run on a fresh repository succeeds'
+else
+    fail 'local exclude: the dry run on a fresh repository succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/fresh-dry.log"
+fi
+
+printf '%s\n' 'Then: the exclude file is untouched, and the log leaves the folders the run would create to a real run'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/fresh-dry-exclude.before" "$LOCAL_EXCLUDE_FRESH_DRY_FILE"; then
+    pass 'local exclude: the fresh dry run leaves the exclude file byte-identical'
+else
+    fail 'local exclude: the fresh dry run changes the exclude file'
+fi
+assert_equal "$(stat -c '%i %y' "$LOCAL_EXCLUDE_FRESH_DRY_FILE")" "$LOCAL_EXCLUDE_FRESH_DRY_STAT" 'local exclude: the fresh dry run keeps the inode and mtime'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/fresh-dry.log" "unchanged $LOCAL_EXCLUDE_FRESH_DRY_FILE" 'local exclude: the fresh dry run never calls the exclude file unchanged'
+assert_contains "$LOCAL_EXCLUDE_ROOT/fresh-dry.log" "folders the run would create are decided by a real run: $LOCAL_EXCLUDE_FRESH_DRY_FILE" 'local exclude: the fresh dry run says a real run decides the folders it creates'
+
+printf '%s\n' 'Given: a repository whose info/ directory is read-only'
+LOCAL_EXCLUDE_READONLY_REPO="$LOCAL_EXCLUDE_ROOT/readonly-info-repo"
+LOCAL_EXCLUDE_READONLY_FILE="$LOCAL_EXCLUDE_READONLY_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_READONLY_REPO"
+cp "$LOCAL_EXCLUDE_READONLY_FILE" "$LOCAL_EXCLUDE_ROOT/readonly-exclude.before"
+chmod 0555 "$LOCAL_EXCLUDE_READONLY_REPO/.git/info"
+if [[ -w "$LOCAL_EXCLUDE_READONLY_REPO/.git/info" ]]; then
+    printf '%s\n' 'SKIP: local exclude: a read-only info/ cannot be shown by a user who can write anywhere'
+else
+    printf '%s\n' 'When: bootstrap runs there'
+    if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_READONLY_REPO" "$LOCAL_EXCLUDE_ROOT/readonly-info.log"; then
+        fail 'local exclude: a failed write fails the run'
+    else
+        pass 'local exclude: a failed write fails the run'
+    fi
+
+    printf '%s\n' 'Then: the error names the exclude file, and the file is unchanged'
+    assert_contains "$LOCAL_EXCLUDE_ROOT/readonly-info.log" "Could not update $LOCAL_EXCLUDE_READONLY_FILE: " 'local exclude: a failed write names the exclude file'
+    assert_not_contains "$LOCAL_EXCLUDE_ROOT/readonly-info.log" 'Traceback' 'local exclude: a failed write is an error, not a traceback'
+    if cmp -s "$LOCAL_EXCLUDE_ROOT/readonly-exclude.before" "$LOCAL_EXCLUDE_READONLY_FILE"; then
+        pass 'local exclude: a failed write leaves the exclude file unchanged'
+    else
+        fail 'local exclude: a failed write changed the exclude file'
+    fi
+fi
+chmod 0755 "$LOCAL_EXCLUDE_READONLY_REPO/.git/info"
+
+printf '%s\n' 'Given: a repository whose exclude file is mode 000'
+LOCAL_EXCLUDE_UNREADABLE_REPO="$LOCAL_EXCLUDE_ROOT/unreadable-exclude-repo"
+LOCAL_EXCLUDE_UNREADABLE_FILE="$LOCAL_EXCLUDE_UNREADABLE_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_UNREADABLE_REPO"
+cp "$LOCAL_EXCLUDE_UNREADABLE_FILE" "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.before"
+chmod 0000 "$LOCAL_EXCLUDE_UNREADABLE_FILE"
+if [[ -r "$LOCAL_EXCLUDE_UNREADABLE_FILE" ]]; then
+    printf '%s\n' 'SKIP: local exclude: a mode 000 exclude file cannot be shown by a user who can read anywhere'
+else
+    printf '%s\n' 'When: bootstrap runs there'
+    if LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_UNREADABLE_REPO" "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.log"; then
+        fail 'local exclude: a failed read fails the run'
+    else
+        pass 'local exclude: a failed read fails the run'
+    fi
+
+    printf '%s\n' 'Then: the error names the exclude file, as an error and not a traceback'
+    assert_contains "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.log" "Could not update $LOCAL_EXCLUDE_UNREADABLE_FILE: " 'local exclude: a failed read names the exclude file'
+    assert_not_contains "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.log" 'Traceback' 'local exclude: a failed read is an error, not a traceback'
+fi
+chmod 0644 "$LOCAL_EXCLUDE_UNREADABLE_FILE"
+if cmp -s "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.before" "$LOCAL_EXCLUDE_UNREADABLE_FILE"; then
+    pass 'local exclude: a failed read leaves the exclude file unchanged'
+else
+    fail 'local exclude: a failed read changed the exclude file'
+fi
+
+printf '%s\n' 'Given: an exclude file that is not UTF-8, one with CRLF lines and mode 0640, and one with CRLF lines that already holds the comment line'
+LOCAL_EXCLUDE_BYTES_REPO="$LOCAL_EXCLUDE_ROOT/non-utf8-repo"
+LOCAL_EXCLUDE_BYTES_FILE="$LOCAL_EXCLUDE_BYTES_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_BYTES_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_BYTES_REPO/.git/info"
+printf '\377\376-pattern\n# caf\351\n' > "$LOCAL_EXCLUDE_BYTES_FILE"
+cp "$LOCAL_EXCLUDE_BYTES_FILE" "$LOCAL_EXCLUDE_ROOT/non-utf8-exclude.before"
+LOCAL_EXCLUDE_CRLF_REPO="$LOCAL_EXCLUDE_ROOT/crlf-repo"
+LOCAL_EXCLUDE_CRLF_FILE="$LOCAL_EXCLUDE_CRLF_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_CRLF_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_CRLF_REPO/.git/info"
+printf '# my own rules\r\n*.tmp\r\n' > "$LOCAL_EXCLUDE_CRLF_FILE"
+# 0640 is neither the 0600 of the temporary file the tool writes nor the 0644 of a
+# stock or a new exclude file, so only a tool that sets the mode keeps it.
+chmod 0640 "$LOCAL_EXCLUDE_CRLF_FILE"
+cp "$LOCAL_EXCLUDE_CRLF_FILE" "$LOCAL_EXCLUDE_ROOT/crlf-exclude.before"
+LOCAL_EXCLUDE_CRLF_COMMENT_REPO="$LOCAL_EXCLUDE_ROOT/crlf-comment-repo"
+LOCAL_EXCLUDE_CRLF_COMMENT_FILE="$LOCAL_EXCLUDE_CRLF_COMMENT_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_CRLF_COMMENT_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_CRLF_COMMENT_REPO/.git/info"
+printf '# setup-openspeckit: local Speckit and agent folders, untracked here\r\n*.tmp\r\n' > "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE"
+cp "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE" "$LOCAL_EXCLUDE_ROOT/crlf-comment-exclude.before"
+
+printf '%s\n' 'When: bootstrap runs in each'
+for bytes_repo in "$LOCAL_EXCLUDE_BYTES_REPO" "$LOCAL_EXCLUDE_CRLF_REPO" "$LOCAL_EXCLUDE_CRLF_COMMENT_REPO"; do
+    if run_local_exclude_bootstrap "$bytes_repo" "$bytes_repo.log"; then
+        pass "local exclude: the bootstrap succeeds in ${bytes_repo##*/}"
+    else
+        fail "local exclude: the bootstrap succeeds in ${bytes_repo##*/}"
+        cat "$bytes_repo.log"
+    fi
+done
+
+printf '%s\n' 'Then: each keeps its bytes first and gains the lines, and the mode is kept'
+if local_exclude_starts_with "$LOCAL_EXCLUDE_BYTES_FILE" "$LOCAL_EXCLUDE_ROOT/non-utf8-exclude.before"; then
+    pass 'local exclude: a non-UTF-8 exclude file keeps its bytes'
+else
+    fail 'local exclude: a non-UTF-8 exclude file does not keep its bytes'
+fi
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_BYTES_FILE" '/.specify/')" 1 'local exclude: a non-UTF-8 exclude file gains /.specify/'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_BYTES_REPO" .specify/)" 0 'local exclude: .specify/ is ignored after a non-UTF-8 exclude file'
+if local_exclude_starts_with "$LOCAL_EXCLUDE_CRLF_FILE" "$LOCAL_EXCLUDE_ROOT/crlf-exclude.before"; then
+    pass 'local exclude: CRLF lines are kept'
+else
+    fail 'local exclude: CRLF lines are not kept'
+fi
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_CRLF_FILE" '/.specify/')" 1 'local exclude: a CRLF exclude file gains /.specify/ on its own line'
+assert_mode "$LOCAL_EXCLUDE_CRLF_FILE" 640 'local exclude: the exclude file keeps its mode'
+if local_exclude_starts_with "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE" "$LOCAL_EXCLUDE_ROOT/crlf-comment-exclude.before"; then
+    pass 'local exclude: a CRLF exclude file with the comment line is kept'
+else
+    fail 'local exclude: a CRLF exclude file with the comment line is not kept'
+fi
+assert_equal "$(grep -c '^# setup-openspeckit' "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE" || true)" 1 'local exclude: a CRLF exclude file that holds the comment line gets no second one'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE" '/.specify/')" 1 'local exclude: a CRLF exclude file that holds the comment line gains /.specify/'
+
+printf '%s\n' 'Given: a repository whose config git cannot read'
+LOCAL_EXCLUDE_BAD_CONFIG_REPO="$LOCAL_EXCLUDE_ROOT/bad-config-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_BAD_CONFIG_REPO"
+cp "$LOCAL_EXCLUDE_BAD_CONFIG_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/bad-config-exclude.before"
+printf '%s\n' '[[[' >> "$LOCAL_EXCLUDE_BAD_CONFIG_REPO/.git/config"
+
+printf '%s\n' 'When: bootstrap runs there'
+if LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_BAD_CONFIG_REPO" "$LOCAL_EXCLUDE_ROOT/bad-config.log"; then
+    pass 'local exclude: a failed git rev-parse keeps the exit status 0'
+else
+    fail 'local exclude: a failed git rev-parse keeps the exit status 0'
+    cat "$LOCAL_EXCLUDE_ROOT/bad-config.log"
+fi
+
+printf '%s\n' "Then: the skip gives git's own message, not the top-of-work-tree skip"
+assert_contains "$LOCAL_EXCLUDE_ROOT/bad-config.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_BAD_CONFIG_REPO: fatal: bad config line" 'local exclude: a failed git rev-parse logs git stderr'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/bad-config.log" 'is not the top of a git work tree' 'local exclude: a failed git rev-parse is not called a folder outside the top'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/bad-config-exclude.before" "$LOCAL_EXCLUDE_BAD_CONFIG_REPO/.git/info/exclude"; then
+    pass 'local exclude: a failed git rev-parse writes nothing'
+else
+    fail 'local exclude: a failed git rev-parse changed the exclude file'
+fi
+
+printf '%s\n' 'Given: repositories whose exclude file is a directory, or whose index git cannot read'
+LOCAL_EXCLUDE_DIR_EXCLUDE_REPO="$LOCAL_EXCLUDE_ROOT/directory-exclude-repo"
+LOCAL_EXCLUDE_BAD_INDEX_REPO="$LOCAL_EXCLUDE_ROOT/bad-index-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_DIR_EXCLUDE_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir -p "$LOCAL_EXCLUDE_DIR_EXCLUDE_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_BAD_INDEX_REPO"
+printf '%s' 'not an index' > "$LOCAL_EXCLUDE_BAD_INDEX_REPO/.git/index"
+
+printf '%s\n' 'When: bootstrap runs in each'
+if LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_DIR_EXCLUDE_REPO" "$LOCAL_EXCLUDE_ROOT/directory-exclude.log"; then
+    fail 'local exclude: a failed git check-ignore fails the run'
+else
+    pass 'local exclude: a failed git check-ignore fails the run'
+fi
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_BAD_INDEX_REPO" "$LOCAL_EXCLUDE_ROOT/bad-index.log"; then
+    fail 'local exclude: a failed git ls-files fails the run'
+else
+    pass 'local exclude: a failed git ls-files fails the run'
+fi
+
+printf '%s\n' 'Then: each error is the failed git call, with git message'
+assert_contains "$LOCAL_EXCLUDE_ROOT/directory-exclude.log" "Could not check whether $LOCAL_EXCLUDE_DIR_EXCLUDE_REPO/.specify is ignored: fatal:" 'local exclude: a failed git check-ignore is named with git message'
+assert_contains "$LOCAL_EXCLUDE_ROOT/bad-index.log" "Could not list the tracked files under $LOCAL_EXCLUDE_BAD_INDEX_REPO/.specify: " 'local exclude: a failed git ls-files is named with git message'
+
+printf '%s\n' "Given: core.excludesFile ignoring /.codex/ and negating /.claude/"
+LOCAL_EXCLUDE_GLOBAL_REPO="$LOCAL_EXCLUDE_ROOT/excludes-file-repo"
+LOCAL_EXCLUDE_GLOBAL_FILE="$LOCAL_EXCLUDE_ROOT/user-excludes"
+make_local_exclude_repo "$LOCAL_EXCLUDE_GLOBAL_REPO"
+printf '%s\n' '/.codex/' '!/.claude/' > "$LOCAL_EXCLUDE_GLOBAL_FILE"
+git -C "$LOCAL_EXCLUDE_GLOBAL_REPO" config core.excludesFile "$LOCAL_EXCLUDE_GLOBAL_FILE"
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_GLOBAL_REPO" "$LOCAL_EXCLUDE_ROOT/excludes-file.log"; then
+    pass 'local exclude: the bootstrap with core.excludesFile succeeds'
+else
+    fail 'local exclude: the bootstrap with core.excludesFile succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/excludes-file.log"
+fi
+
+printf '%s\n' 'Then: core.excludesFile decides both folders, and .specify/ still gets its line'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_GLOBAL_REPO/.git/info/exclude" '/.codex/')" 0 'local exclude: a folder core.excludesFile ignores gets no line'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_GLOBAL_REPO" .codex/)" 0 'local exclude: .codex/ stays ignored through core.excludesFile'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_GLOBAL_REPO/.git/info/exclude" '/.claude/')" 0 'local exclude: a folder core.excludesFile negates gets no line'
+assert_contains "$LOCAL_EXCLUDE_ROOT/excludes-file.log" "left .claude/ visible: the negation !/.claude/ at $LOCAL_EXCLUDE_GLOBAL_FILE:2 decides it" 'local exclude: the log names the negation in core.excludesFile'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_GLOBAL_REPO/.git/info/exclude" '/.specify/')" 1 'local exclude: .specify/ still gets its line beside core.excludesFile'
+
+printf '%s\n' 'Given: the fresh repository after two runs, with a .kiro/ folder made since'
+mkdir -p "$LOCAL_EXCLUDE_REPO/.kiro/steering"
+printf '%s\n' 'steering note' > "$LOCAL_EXCLUDE_REPO/.kiro/steering/note.md"
+
+printf '%s\n' 'When: bootstrap runs a third time'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_REPO" "$LOCAL_EXCLUDE_ROOT/fresh-third.log"; then
+    pass 'local exclude: the third bootstrap succeeds'
+else
+    fail 'local exclude: the third bootstrap succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/fresh-third.log"
+fi
+
+printf '%s\n' 'Then: .kiro/, a folder that was there before this run, gets its line, and the comment and the earlier lines stay once'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_FILE" '/.kiro/')" 1 'local exclude: a pre-existing, wholly untracked .kiro/ gets its line once'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_REPO" .kiro/)" 0 'local exclude: .kiro/ is ignored after the third run'
+assert_equal "$(grep -c '^# setup-openspeckit' "$LOCAL_EXCLUDE_FILE" || true)" 1 'local exclude: a later run with a new line adds no second comment'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_FILE" '/.specify/')" 1 'local exclude: after a third run /.specify/ is still there once'
+
+printf '%s\n' 'Given: a three-leg root whose spec leg is the --repo, with .specify/ there'
+LOCAL_EXCLUDE_LEG_ROOT="$LOCAL_EXCLUDE_ROOT/leg-root"
+make_three_leg_root "$LOCAL_EXCLUDE_LEG_ROOT"
+seed_speckit_state "$LOCAL_EXCLUDE_LEG_ROOT/spec"
+cp "$LOCAL_EXCLUDE_LEG_ROOT/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/leg-root-exclude.before"
+
+printf '%s\n' 'When: bootstrap runs with the leg as --repo'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_LEG_ROOT/spec" "$LOCAL_EXCLUDE_ROOT/leg.log" --skip-init --no-skill-links; then
+    pass 'local exclude: the bootstrap with a leg as --repo succeeds'
+else
+    fail 'local exclude: the bootstrap with a leg as --repo succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/leg.log"
+fi
+
+printf '%s\n' "Then: the leg's own exclude file gets the line, and the root's is byte-identical"
+LOCAL_EXCLUDE_LEG_FILE="$(git -C "$LOCAL_EXCLUDE_LEG_ROOT/spec" rev-parse --git-path info/exclude)"
+if [[ "$LOCAL_EXCLUDE_LEG_FILE" != /* ]]; then
+    LOCAL_EXCLUDE_LEG_FILE="$LOCAL_EXCLUDE_LEG_ROOT/spec/$LOCAL_EXCLUDE_LEG_FILE"
+fi
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/leg.log" "added /.specify/ to $LOCAL_EXCLUDE_LEG_ROOT/.git/info/exclude" "local exclude: a leg run never names the root's exclude file"
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_LEG_FILE" '/.specify/')" 1 'local exclude: the leg exclude file carries /.specify/ once'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_LEG_ROOT/spec" .specify/)" 0 'local exclude: .specify/ is ignored in the leg'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/leg-root-exclude.before" "$LOCAL_EXCLUDE_LEG_ROOT/.git/info/exclude"; then
+    pass "local exclude: a leg run leaves the root's exclude file byte-identical"
+else
+    fail "local exclude: a leg run changed the root's exclude file"
+fi
+
+printf '%s\n' 'Given: the linked worktree run above, and a new untracked file under .specify/ in the main worktree'
+mkdir -p "$LOCAL_EXCLUDE_MAIN_REPO/.specify"
+printf '%s\n' 'main worktree note' > "$LOCAL_EXCLUDE_MAIN_REPO/.specify/note.md"
+
+printf '%s\n' 'Then: the line the linked worktree run added hides it there too, as every worktree shares the exclude file'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_MAIN_REPO" .specify/)" 0 'local exclude: the common exclude line holds in the main worktree too'
+git -C "$LOCAL_EXCLUDE_MAIN_REPO" status --porcelain > "$LOCAL_EXCLUDE_ROOT/main-worktree-status.after"
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/main-worktree-status.after" '.specify/' 'local exclude: git status in the main worktree does not list .specify/'
+
+printf '%s\n' 'Given: a repository whose .git is a symlink to its git directory elsewhere'
+LOCAL_EXCLUDE_LINKED_GIT_REPO="$LOCAL_EXCLUDE_ROOT/linked-git-repo"
+LOCAL_EXCLUDE_LINKED_GIT_DIR="$LOCAL_EXCLUDE_ROOT/linked-git-dir"
+make_local_exclude_repo "$LOCAL_EXCLUDE_LINKED_GIT_REPO"
+mv "$LOCAL_EXCLUDE_LINKED_GIT_REPO/.git" "$LOCAL_EXCLUDE_LINKED_GIT_DIR"
+ln -s "$LOCAL_EXCLUDE_LINKED_GIT_DIR" "$LOCAL_EXCLUDE_LINKED_GIT_REPO/.git"
+cp "$LOCAL_EXCLUDE_LINKED_GIT_DIR/info/exclude" "$LOCAL_EXCLUDE_ROOT/linked-git-exclude.before"
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_LINKED_GIT_REPO" "$LOCAL_EXCLUDE_ROOT/linked-git.log"; then
+    fail 'local exclude: a symlinked .git is refused'
+else
+    pass 'local exclude: a symlinked .git is refused'
+fi
+
+printf '%s\n' 'Then: the refusal names the symlinked .git, and the exclude file behind it is unchanged'
+assert_contains "$LOCAL_EXCLUDE_ROOT/linked-git.log" "Refusing unsafe destination path $LOCAL_EXCLUDE_LINKED_GIT_REPO/.git/info/exclude: symlink parent at $LOCAL_EXCLUDE_LINKED_GIT_REPO/.git" 'local exclude: the symlinked .git refusal names the parent'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/linked-git-exclude.before" "$LOCAL_EXCLUDE_LINKED_GIT_DIR/info/exclude"; then
+    pass 'local exclude: the exclude file behind a symlinked .git is unchanged'
+else
+    fail 'local exclude: the exclude file behind a symlinked .git changed'
+fi
 
 printf '%s\n' 'Given: a three-leg root with its spec and code legs'
 LOCAL_EXCLUDE_THREE_LEG_ROOT="$LOCAL_EXCLUDE_ROOT/three-leg-root"

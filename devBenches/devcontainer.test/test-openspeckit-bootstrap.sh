@@ -5946,7 +5946,15 @@ run_local_exclude_bootstrap() {
     local repo="$1"
     local log_file="$2"
     shift 2
+    # The tool reads only the fixture's git config: no system file, and the
+    # global and XDG files under the fixture's HOME. On the CI runner (git
+    # 2.56.0) a system, global or XDG config that trusts /tmp repositories would
+    # keep git from refusing the dubious-ownership runs below, and the step
+    # would write its lines.
     HOME="$LOCAL_EXCLUDE_HOME" \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_GLOBAL="$LOCAL_EXCLUDE_HOME/.gitconfig" \
+        XDG_CONFIG_HOME="$LOCAL_EXCLUDE_HOME/.config" \
         AGENT_PROTOCOL_ROOT="$LOCAL_EXCLUDE_PROTOCOL_ROOT" \
         OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
         PATH="${LOCAL_EXCLUDE_PATH_FRONT:+$LOCAL_EXCLUDE_PATH_FRONT:}$LOCAL_EXCLUDE_BIN:/usr/bin:/bin" \
@@ -6392,8 +6400,38 @@ cp "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/ow
 make_local_exclude_repo "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT-repo"
 make_local_exclude_repo "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS-repo"
 
+# The three owner runs rest on git refusing their repositories on
+# GIT_TEST_ASSUME_DIFFERENT_OWNER alone, so that only a safe.directory the run
+# is handed (GIT_CONFIG_COUNT, GIT_CONFIG_PARAMETERS) can make the step write.
+# Ask plain git first, in the control's environment: the fixture's HOME, no
+# system config, a global and an XDG config under the fixture, and no config
+# from the environment (a count of 0 reads no GIT_CONFIG_KEY_n or VALUE_n). A
+# git that does not refuse here is trusted by something this test does not
+# control, and then none of the three runs proves anything about trust: their
+# trust assertions are one SKIP.
+local_exclude_control_git() {
+    HOME="$LOCAL_EXCLUDE_HOME" \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_GLOBAL="$LOCAL_EXCLUDE_HOME/.gitconfig" \
+        XDG_CONFIG_HOME="$LOCAL_EXCLUDE_HOME/.config" \
+        GIT_CONFIG_COUNT=0 \
+        GIT_CONFIG_PARAMETERS='' \
+        GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
+        LC_ALL=C \
+        git "$@"
+}
+LOCAL_EXCLUDE_OWNER_SKIP=""
+LOCAL_EXCLUDE_OWNER_PROBE_STATUS=0
+LOCAL_EXCLUDE_OWNER_PROBE="$(local_exclude_control_git -C "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO" rev-parse --git-dir 2>&1)" || LOCAL_EXCLUDE_OWNER_PROBE_STATUS=$?
+if [[ "$LOCAL_EXCLUDE_OWNER_PROBE_STATUS" != 0 ]] && [[ "$LOCAL_EXCLUDE_OWNER_PROBE" == *'dubious ownership'* ]]; then
+    pass 'local exclude: plain git refuses the control repository as another user'"'"'s, with the fixture config alone'
+else
+    LOCAL_EXCLUDE_SAFE_DIRECTORY="$(local_exclude_control_git config --show-origin --get-all safe.directory 2>&1 | tr '\n' ' ' || true)"
+    LOCAL_EXCLUDE_OWNER_SKIP="SKIP: local exclude: plain git does not report dubious ownership for the control repository, so the trust assertions of the three owner runs are skipped ($(git --version); rev-parse exited $LOCAL_EXCLUDE_OWNER_PROBE_STATUS; safe.directory: ${LOCAL_EXCLUDE_SAFE_DIRECTORY:-none})"
+fi
+
 printf '%s\n' 'When: bootstrap runs in each, with no safe.directory, with GIT_CONFIG_COUNT and its key and value, and with GIT_CONFIG_PARAMETERS'
-if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO" "$LOCAL_EXCLUDE_ROOT/owner-control.log"; then
+if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=0 GIT_CONFIG_PARAMETERS='' LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO" "$LOCAL_EXCLUDE_ROOT/owner-control.log"; then
     pass 'local exclude: the bootstrap in a repository git refuses succeeds'
 else
     fail 'local exclude: the bootstrap in a repository git refuses succeeds'
@@ -6413,18 +6451,22 @@ else
 fi
 
 printf '%s\n' "Then: with no safe.directory the step is a skip that gives git's message and writes nothing, and with it in the caller's environment the step writes its lines"
-assert_contains "$LOCAL_EXCLUDE_ROOT/owner-control.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_OWNER_CONTROL_REPO: fatal: detected dubious ownership" 'local exclude: a repository git refuses is a skip that gives git message'
-if cmp -s "$LOCAL_EXCLUDE_ROOT/owner-control-exclude.before" "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO/.git/info/exclude"; then
-    pass 'local exclude: a repository git refuses keeps its exclude file byte-identical'
+if [[ -n "$LOCAL_EXCLUDE_OWNER_SKIP" ]]; then
+    printf '%s\n' "$LOCAL_EXCLUDE_OWNER_SKIP"
 else
-    fail 'local exclude: a repository git refuses changed its exclude file'
+    assert_contains "$LOCAL_EXCLUDE_ROOT/owner-control.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_OWNER_CONTROL_REPO: fatal: detected dubious ownership" 'local exclude: a repository git refuses is a skip that gives git message'
+    if cmp -s "$LOCAL_EXCLUDE_ROOT/owner-control-exclude.before" "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO/.git/info/exclude"; then
+        pass 'local exclude: a repository git refuses keeps its exclude file byte-identical'
+    else
+        fail 'local exclude: a repository git refuses changed its exclude file'
+    fi
+    for owner_variable in GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS; do
+        owner_repo="$LOCAL_EXCLUDE_ROOT/owner-$owner_variable-repo"
+        assert_not_contains "$LOCAL_EXCLUDE_ROOT/owner-$owner_variable.log" 'skipped local git excludes' "local exclude: safe.directory in $owner_variable keeps the step from being skipped"
+        assert_equal "$(local_exclude_line_count "$owner_repo/.git/info/exclude" '/.specify/')" 1 "local exclude: with safe.directory in $owner_variable the exclude file carries /.specify/ once"
+        assert_contains "$LOCAL_EXCLUDE_ROOT/owner-$owner_variable.log" "added /.specify/ to $owner_repo/.git/info/exclude" "local exclude: with safe.directory in $owner_variable the log names the exclude file"
+    done
 fi
-for owner_variable in GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS; do
-    owner_repo="$LOCAL_EXCLUDE_ROOT/owner-$owner_variable-repo"
-    assert_not_contains "$LOCAL_EXCLUDE_ROOT/owner-$owner_variable.log" 'skipped local git excludes' "local exclude: safe.directory in $owner_variable keeps the step from being skipped"
-    assert_equal "$(local_exclude_line_count "$owner_repo/.git/info/exclude" '/.specify/')" 1 "local exclude: with safe.directory in $owner_variable the exclude file carries /.specify/ once"
-    assert_contains "$LOCAL_EXCLUDE_ROOT/owner-$owner_variable.log" "added /.specify/ to $owner_repo/.git/info/exclude" "local exclude: with safe.directory in $owner_variable the log names the exclude file"
-done
 
 printf '%s\n' 'Given: a git first on PATH that wraps the real one, answers rev-parse --local-env-vars as it is told, and notes whether GIT_FAKE_LISTED reaches each other call'
 LOCAL_EXCLUDE_GIT_SHIM="$LOCAL_EXCLUDE_ROOT/git-shim"

@@ -1658,13 +1658,15 @@ def link_or_copy_skill(src: Path, dst: Path, dry_run: bool, force: bool) -> None
     # descriptors. Only a symlink or a change met while reading the source (a
     # SourceChangedError, ENOTDIR, ELOOP, ENOENT or ENXIO, or a symlink loop in
     # the skills root's path) is a logged skip that writes nothing. Any other
-    # error stops the run, with a "stopped" line naming the skill. That is how
-    # a permission error or an I/O error stopped it before the skip existed. It
-    # is new for too many open files (EMFILE, ENFILE): since
-    # opensoft/openBenches#234 every source file of a skill is opened before
-    # the copy, so a skill with more files than the soft open-file limit allows
-    # stops the run, where the copy used to open one file at a time and such a
-    # skill copied. The limit and the open-first design are unchanged. The
+    # error from the listing or from opening a source file stops the run, with
+    # a "stopped" line naming the skill. That is how a permission error or an
+    # I/O error stopped it before the skip existed. It is new for too many open
+    # files (EMFILE, ENFILE): since opensoft/openBenches#234 every source file
+    # of a skill is opened before the copy, so a skill with more files than the
+    # soft open-file limit allows stops the run, where the copy used to open
+    # one file at a time and such a skill copied. The limit and the open-first
+    # design are unchanged. An error during the copy itself, once every source
+    # file is open, stops the run too, without a "stopped" line. The
     # destination is never resolved and its checks below are unchanged; log
     # lines keep the spelling the caller passed.
     try:

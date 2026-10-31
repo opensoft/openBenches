@@ -4292,7 +4292,11 @@ import os
 from pathlib import Path
 import runpy
 import signal
+import socket
+import subprocess
 import sys
+import time
+from types import SimpleNamespace
 
 namespace = runpy.run_path(sys.argv[1], run_name="setup_openspeckit_test")
 link_or_copy_skill = namespace["link_or_copy_skill"]
@@ -4692,6 +4696,178 @@ expect_logged_skip(
 )
 check(not (fixture_root / "loop-repo").exists(), "skip-only-links: the symlink loop leaves no destination")
 
+def run_and_capture(action):
+    """Run the action: return the error it raised (or None) and what it logged."""
+    captured = io.StringIO()
+    error = None
+    try:
+        with redirect_stdout(captured):
+            action()
+    except BaseException as exc:
+        error = exc
+    return error, captured.getvalue()
+
+
+# The listing walks the tree with os.walk and an onerror that re-raises, in the
+# order sorted(rglob("*")) gave. Path.rglob passes silently over a folder it
+# cannot read, so a skill with an unreadable subfolder was copied without that
+# folder's files and the run exited 0.
+source_tree_paths = tool_globals.get("source_tree_paths")
+listing_tree = fixture_root / "listing-tree"
+(listing_tree / "a" / "b").mkdir(parents=True)
+(listing_tree / "a" / "b" / "c.txt").write_text("nested\n", encoding="utf-8")
+(listing_tree / "a" / "d.txt").write_text("d\n", encoding="utf-8")
+(listing_tree / "a-b.txt").write_text("a-b\n", encoding="utf-8")
+(listing_tree / "a.txt").write_text("a\n", encoding="utf-8")
+(listing_tree / ".hidden").write_text("hidden\n", encoding="utf-8")
+(listing_tree / "empty").mkdir()
+(listing_tree / "z").mkdir()
+(listing_tree / "z" / "to-file").symlink_to("../a.txt")
+(listing_tree / "z" / "to-dir").symlink_to("../a", target_is_directory=True)
+(listing_tree / "z" / "dangling").symlink_to("nowhere")
+(listing_tree / "z" / "loop").symlink_to("loop")
+old_listing = sorted(listing_tree.rglob("*"))
+if callable(source_tree_paths):
+    new_listing = source_tree_paths(listing_tree)
+    check(
+        new_listing == old_listing and len(old_listing) == 13,
+        "tree listing: a readable tree with nested folders and symlinks lists the same paths in the same order as rglob",
+    )
+    check(
+        listing_tree / "z" / "to-dir" in new_listing
+        and listing_tree / "z" / "to-dir" / "b" not in new_listing,
+        "tree listing: a symlink to a folder is listed and not followed",
+    )
+else:
+    check(False, "tree listing: the listing is a function of its own")
+first_listed_symlink = next(path for path in old_listing if path.is_symlink())
+try:
+    original_entries(listing_tree)
+except SystemExit as exc:
+    check(
+        f"symlink found at {first_listed_symlink}" in str(exc),
+        "tree listing: the refusal names the first symlink in listing order",
+    )
+else:
+    check(False, "tree listing: a tree with symlinks is refused")
+plain_entries = original_entries(listing_tree / "a")
+check(
+    [entry.path for entry in plain_entries] == sorted((listing_tree / "a").rglob("*"))
+    and all(entry.mode == entry.path.lstat().st_mode for entry in plain_entries),
+    "tree listing: a readable tree without a symlink gives the entries rglob gave, with their modes",
+)
+
+if os.geteuid() == 0:
+    print("SKIP: a mode-000 folder is still readable by root")
+else:
+    unreadable_checkout = make_checkout("unreadable-folder-checkout")
+    unreadable_home = linked_home("unreadable-folder-home", unreadable_checkout)
+    unreadable_folder = unreadable_checkout / "skills" / "ct" / "private"
+    unreadable_folder.mkdir()
+    (unreadable_folder / "secret.txt").write_text("secret\n", encoding="utf-8")
+    unreadable_folder.chmod(0)
+    unreadable_skill = unreadable_home / ".agents" / "skills" / "ct"
+    unreadable_destination = fixture_root / "unreadable-folder-repo" / ".agents" / "skills" / "ct"
+    try:
+        listing_error = expect_error(
+            lambda: original_entries(unreadable_checkout / "skills" / "ct"),
+            PermissionError,
+            "tree listing: a folder that cannot be read stops the listing",
+            errno.EACCES,
+        )
+        check(
+            listing_error is not None and listing_error.filename == str(unreadable_folder),
+            "tree listing: the error names the folder that cannot be read",
+        )
+        skill_error, skill_output = run_and_capture(
+            lambda: link_or_copy_skill(unreadable_skill, unreadable_destination, False, False)
+        )
+        check(
+            isinstance(skill_error, PermissionError)
+            and skill_error.filename == str(unreadable_folder)
+            and "skipped " not in skill_output,
+            f"tree listing: a skill with a folder that cannot be read stops the run, not a skip (log: {skill_output.strip()!r})",
+        )
+        check(
+            f"stopped {unreadable_skill}: " in skill_output and str(unreadable_folder) in skill_output,
+            "stopped line: a listing error names the skill and the folder",
+        )
+        check(not (fixture_root / "unreadable-folder-repo").exists(), "tree listing: the skill with a folder that cannot be read leaves no destination")
+    finally:
+        unreadable_folder.chmod(0o755)
+
+# The same stop at any uid, root included: the folder read is injected to fail,
+# with os.scandir patched as the tool's code sees it, since a mode-000 folder is
+# still readable by root and the case above does not run there.
+injected_checkout = make_checkout("injected-folder-checkout")
+injected_home = linked_home("injected-folder-home", injected_checkout)
+injected_skill = injected_home / ".agents" / "skills" / "ct"
+injected_folder = injected_checkout / "skills" / "ct" / "nested"
+injected_destination = fixture_root / "injected-folder-repo" / ".agents" / "skills" / "ct"
+tool_os = tool_globals["os"]
+real_scandir = tool_os.scandir
+injected_reads = []
+
+
+def scandir_failing_for(folder):
+    def fake_scandir(path="."):
+        if os.fspath(path) == str(folder):
+            injected_reads.append(os.fspath(path))
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(folder))
+        return real_scandir(path)
+
+    return fake_scandir
+
+
+tool_os.scandir = scandir_failing_for(injected_folder)
+try:
+    injected_listing_error = expect_error(
+        lambda: original_entries(injected_checkout / "skills" / "ct"),
+        PermissionError,
+        "tree listing: an injected permission error at a folder read stops the listing",
+        errno.EACCES,
+    )
+    injected_skill_error, injected_skill_output = run_and_capture(
+        lambda: link_or_copy_skill(injected_skill, injected_destination, False, False)
+    )
+finally:
+    tool_os.scandir = real_scandir
+check(len(injected_reads) >= 2, f"tree listing: the injected folder read was reached by both calls ({len(injected_reads)} reads)")
+check(
+    injected_listing_error is not None and injected_listing_error.filename == str(injected_folder),
+    "tree listing: the injected error propagates out of the listing and names the folder",
+)
+check(
+    isinstance(injected_skill_error, PermissionError)
+    and injected_skill_error.filename == str(injected_folder)
+    and "skipped " not in injected_skill_output
+    and "copied " not in injected_skill_output,
+    f"tree listing: the injected error stops a skill copy, not a skip (log: {injected_skill_output.strip()!r})",
+)
+check(
+    f"stopped {injected_skill}: " in injected_skill_output,
+    "stopped line: an injected listing error names the skill",
+)
+check(not (fixture_root / "injected-folder-repo").exists(), "tree listing: the skill whose folder read failed leaves no destination")
+
+# A stopped run names the skill: the line logged before the error propagates.
+stopped_listing_error = PermissionError(errno.EACCES, os.strerror(errno.EACCES), "ct")
+stopped_listing_skill = listing_home / ".agents" / "skills" / "ct"
+tool_globals["safe_source_tree_entries"] = listing_raises(stopped_listing_error)
+try:
+    stopped_error, stopped_output = run_and_capture(
+        lambda: link_or_copy_skill(
+            stopped_listing_skill, fixture_root / "stopped-listing-repo" / ".agents" / "skills" / "ct", False, False
+        )
+    )
+finally:
+    tool_globals["safe_source_tree_entries"] = original_entries
+check(stopped_error is stopped_listing_error, "stopped line: the listing error still propagates as it was")
+check(
+    f"stopped {stopped_listing_skill}: {stopped_listing_error}" in stopped_output and "skipped " not in stopped_output,
+    f"stopped line: an error while listing a source names the skill (log: {stopped_output.strip()!r})",
+)
+
 # More races: a file removed, and a named pipe swapped in, after the listing.
 # The pipe case must not hang: a listed regular file's open used to block until
 # a writer appeared, so the whole case runs under an alarm and a hang is a FAIL.
@@ -4742,6 +4918,48 @@ check(
 )
 check(not (fixture_root / "fifo-race-repo").exists(), "linked-source race: the skill whose file became a pipe leaves no destination")
 check(open_descriptor_count() == fifo_descriptors_before, "linked-source race: the pipe case leaves no descriptor open")
+
+# A Unix socket swapped in after the listing is skipped like a named pipe. A
+# socket is not opened (ENXIO), where a named pipe opens and is then refused, so
+# its errno is in the set of link-or-change errors too.
+socket_checkout = make_checkout("socket-race-checkout")
+socket_home = linked_home("socket-race-home", socket_checkout)
+kept_sockets = []
+
+
+def swap_file_for_socket():
+    data = socket_checkout / "skills" / "ct" / "nested" / "data.txt"
+    data.unlink()
+    # Bound by a relative name: a fixture path can be longer than sun_path.
+    previous_directory = os.getcwd()
+    os.chdir(data.parent)
+    try:
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(data.name)
+    finally:
+        os.chdir(previous_directory)
+    kept_sockets.append(server)
+
+
+socket_destination = fixture_root / "socket-race-repo" / ".agents" / "skills" / "ct"
+socket_descriptors_before = open_descriptor_count()
+tool_globals["safe_source_tree_entries"] = listing_then(swap_file_for_socket)
+try:
+    with hang_guard(10):
+        expect_logged_skip(
+            lambda: link_or_copy_skill(socket_home / ".agents" / "skills" / "ct", socket_destination, False, False),
+            "linked-source race: a skill file swapped for a Unix socket after listing is a logged skip",
+        )
+finally:
+    tool_globals["safe_source_tree_entries"] = original_entries
+    for kept_socket in kept_sockets:
+        kept_socket.close()
+check(not (fixture_root / "socket-race-repo").exists(), "linked-source race: the skill whose file became a socket leaves no destination")
+check(open_descriptor_count() == socket_descriptors_before, "linked-source race: the socket case leaves no descriptor open")
+check(
+    tool_globals["is_link_or_change"](OSError(errno.ENXIO, os.strerror(errno.ENXIO), "data.txt")),
+    "linked-source race: ENXIO is a link-or-change error",
+)
 
 # A logged skip under force leaves what is already at the destination alone.
 force_checkout = make_checkout("force-skip-checkout")
@@ -4818,6 +5036,274 @@ with hang_guard(10):
 check(non_regular_error is not None and "Refusing to copy non-regular source file" in str(non_regular_error), "skip-only-links: the non-regular refusal keeps its message")
 check(open_descriptor_count() == direct_before, "skip-only-links: the two refusals close the descriptor they opened")
 
+# A file under a lease. The source is opened with O_NONBLOCK, so a regular file
+# under a lease (a Samba oplock, an NFS delegation) fails at once with
+# BlockingIOError, where a blocking open waits for the lease holder to give the
+# lease up. The open is retried for as long as a blocking open could have
+# waited, with a margin, then the error propagates.
+real_lease_break_seconds = tool_globals.get("lease_break_seconds")
+
+
+def flaky_open(name, failures, hits):
+    """os.open raising BlockingIOError for the first `failures` opens of `name` (all, if None)."""
+    def fake_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None and path == name:
+            hits.append(path)
+            if failures is None or len(hits) <= failures:
+                raise BlockingIOError(errno.EAGAIN, os.strerror(errno.EAGAIN), path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    return fake_open
+
+
+retry_checkout = make_checkout("lease-retry-checkout")
+retry_home = linked_home("lease-retry-home", retry_checkout)
+retry_destination = fixture_root / "lease-retry-repo" / ".agents" / "skills" / "ct"
+retry_hits = []
+retry_descriptors_before = open_descriptor_count()
+os.open = flaky_open("data.txt", 3, retry_hits)
+try:
+    retry_error, retry_output = run_and_capture(
+        lambda: link_or_copy_skill(retry_home / ".agents" / "skills" / "ct", retry_destination, False, False)
+    )
+finally:
+    os.open = real_open
+check(
+    retry_error is None
+    and (retry_destination / "nested" / "data.txt").read_bytes() == b"data\n"
+    and (retry_destination / "SKILL.md").read_bytes() == b"linked skill\n",
+    f"lease: a file whose first opens fail with BlockingIOError is still copied ({type(retry_error).__name__ if retry_error else 'no error'}: {retry_error})",
+)
+check(len(retry_hits) == 4, f"lease: the open was retried until it went through ({len(retry_hits)} opens)")
+check("skipped " not in retry_output and "stopped " not in retry_output, "lease: a retried open logs neither a skip nor a stop")
+check(open_descriptor_count() == retry_descriptors_before, "lease: the retried open leaves no descriptor open")
+
+persistent_checkout = make_checkout("lease-persistent-checkout")
+persistent_home = linked_home("lease-persistent-home", persistent_checkout)
+persistent_skill = persistent_home / ".agents" / "skills" / "ct"
+persistent_hits = []
+persistent_descriptors_before = open_descriptor_count()
+# The bound is lowered so the case does not wait the kernel's 45 seconds (the
+# margin on it still applies). A retry that never ends fails under the guard,
+# where it would hang until the job's own timeout.
+tool_globals["lease_break_seconds"] = lambda: 0.3
+os.open = flaky_open("data.txt", None, persistent_hits)
+persistent_started = time.monotonic()
+try:
+    with hang_guard(10):
+        persistent_error, persistent_output = run_and_capture(
+            lambda: link_or_copy_skill(
+                persistent_skill, fixture_root / "lease-persistent-repo" / ".agents" / "skills" / "ct", False, False
+            )
+        )
+finally:
+    os.open = real_open
+    if real_lease_break_seconds is not None:
+        tool_globals["lease_break_seconds"] = real_lease_break_seconds
+    else:
+        del tool_globals["lease_break_seconds"]
+persistent_elapsed = time.monotonic() - persistent_started
+check(
+    isinstance(persistent_error, BlockingIOError) and persistent_error.errno == errno.EAGAIN,
+    f"lease: a lease that is never given up propagates BlockingIOError ({type(persistent_error).__name__ if persistent_error else 'no error'})",
+)
+check(
+    len(persistent_hits) >= 3 and persistent_elapsed >= 0.3,
+    f"lease: the open was retried until the bound had passed ({len(persistent_hits)} opens in {persistent_elapsed:.2f} s)",
+)
+check(persistent_elapsed < 10, f"lease: the retry ends with the bound ({persistent_elapsed:.2f} s)")
+check(
+    f"stopped {persistent_skill}: " in persistent_output and "skipped " not in persistent_output,
+    f"stopped line: an error while opening a source file names the skill (log: {persistent_output.strip()!r})",
+)
+check(not (fixture_root / "lease-persistent-repo").exists(), "lease: a skill whose file stays under a lease leaves no destination")
+check(open_descriptor_count() == persistent_descriptors_before, "lease: the persistent case leaves no descriptor open")
+
+# The bound has a margin. The kernel breaks a lease only once its clock has
+# passed the break time, so the lease can break up to one clock tick after the
+# bound a retry counted from its first failure (4 ms at 250 Hz, 10 ms at
+# 100 Hz). A retry that gave up at the break time itself could give up just
+# before the lease broke. The cases need no real lease and no real wait: the
+# tool's time is a fake clock whose sleep advances it, and the open fails with
+# BlockingIOError until a tick past the bound. The clock counts its sleeps
+# instead of adding them up, so it does not drift.
+class FakeClock:
+    def __init__(self):
+        self.sleeps = 0
+        self.step = 0.0
+
+    def monotonic(self):
+        return 100.0 + self.sleeps * self.step
+
+    def sleep(self, seconds):
+        self.sleeps += 1
+        self.step = seconds
+
+    def elapsed(self):
+        return self.sleeps * self.step
+
+
+@contextmanager
+def patched_tool_globals(**replacements):
+    absent = object()
+    saved = {name: tool_globals.get(name, absent) for name in replacements}
+    tool_globals.update(replacements)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is absent:
+                del tool_globals[name]
+            else:
+                tool_globals[name] = value
+
+
+def leased_open(clock, name, release_after, first_failure):
+    """os.open failing with BlockingIOError for `name` until release_after s past its first failure."""
+    def fake_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None and path == name:
+            if not first_failure:
+                first_failure.append(clock.monotonic())
+            if release_after is None or clock.monotonic() < first_failure[0] + release_after:
+                raise BlockingIOError(errno.EAGAIN, os.strerror(errno.EAGAIN), path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    return fake_open
+
+
+margin_checkout = make_checkout("lease-margin-checkout")
+margin_file = margin_checkout / "skills" / "ct" / "nested" / "data.txt"
+margin_stat = margin_file.lstat()
+margin_entry = tool_globals["SourceTreeEntry"](
+    path=margin_file, mode=margin_stat.st_mode, device=margin_stat.st_dev, inode=margin_stat.st_ino
+)
+BREAK_SECONDS = 45.0
+margin = tool_globals.get("LEASE_BREAK_MARGIN_SECONDS")
+check(
+    isinstance(margin, (int, float)) and margin >= 0.010,
+    f"lease margin: the bound has a margin of at least one 100 Hz tick ({margin!r} s)",
+)
+
+
+def open_on_fake_clock(release_after):
+    """Open the file with a lease that breaks release_after s after the first failed open (never, if None)."""
+    clock = FakeClock()
+    first_failure = []
+    descriptors_before = open_descriptor_count()
+    descriptor = None
+    error = None
+    os.open = leased_open(clock, "data.txt", release_after, first_failure)
+    try:
+        with patched_tool_globals(
+            time=SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep),
+            lease_break_seconds=lambda: BREAK_SECONDS,
+        ):
+            with hang_guard(10):
+                try:
+                    descriptor = tool_globals["open_source_file"](margin_entry)
+                except BaseException as exc:
+                    error = exc
+    finally:
+        os.open = real_open
+    if descriptor is not None:
+        os.close(descriptor)
+    return descriptor, error, clock, open_descriptor_count() == descriptors_before
+
+
+for tick in (0.004, 0.010):
+    margin_descriptor, margin_error, margin_clock, margin_closed = open_on_fake_clock(BREAK_SECONDS + tick)
+    check(
+        margin_descriptor is not None and margin_error is None,
+        f"lease margin: a lease the kernel breaks {tick * 1000:.0f} ms after the break time is still waited out "
+        f"({type(margin_error).__name__ if margin_error else 'opened'} at +{margin_clock.elapsed():.3f} s)",
+    )
+    check(margin_closed, f"lease margin: the {tick * 1000:.0f} ms case leaves no descriptor open")
+
+# The bound is still finite: a lease that is never broken ends the retry one
+# margin past the break time, on the fake clock and so at once.
+never_descriptor, never_error, never_clock, never_closed = open_on_fake_clock(None)
+check(
+    never_descriptor is None
+    and isinstance(never_error, BlockingIOError)
+    and isinstance(margin, (int, float))
+    and BREAK_SECONDS + margin - 1e-6 <= never_clock.elapsed() < BREAK_SECONDS + margin + 0.5,
+    f"lease margin: a lease that is never broken ends the retry one margin past the break time "
+    f"({type(never_error).__name__ if never_error else 'opened'} at +{never_clock.elapsed():.3f} s)",
+)
+check(never_closed, "lease margin: the never-broken case leaves no descriptor open")
+
+# The bound is the kernel's lease-break time, and 45 seconds if it cannot be read.
+real_lease_path = tool_globals.get("LEASE_BREAK_TIME_PATH")
+lease_time_file = fixture_root / "lease-break-time"
+if callable(real_lease_break_seconds):
+    try:
+        for text, expected in (("7\n", 7.0), ("0\n", 0.0), ("-3\n", 0.0), ("not a number\n", 45.0), ("", 45.0)):
+            lease_time_file.write_text(text, encoding="utf-8")
+            tool_globals["LEASE_BREAK_TIME_PATH"] = lease_time_file
+            check(real_lease_break_seconds() == expected, f"lease: a lease-break time file holding {text!r} gives {expected} s")
+        tool_globals["LEASE_BREAK_TIME_PATH"] = fixture_root / "no-such-lease-break-time"
+        check(real_lease_break_seconds() == 45.0, "lease: a lease-break time file that cannot be read gives 45 s")
+    finally:
+        tool_globals["LEASE_BREAK_TIME_PATH"] = real_lease_path
+    if real_lease_path is not None and real_lease_path.is_file():
+        check(
+            real_lease_break_seconds() == float(int(real_lease_path.read_text(encoding="ascii"))),
+            "lease: the bound is the kernel's own lease-break time",
+        )
+else:
+    check(False, "lease: the bound is a function of its own")
+
+# A real lease, held by another process that gives it up a moment after the
+# kernel tells it another process opened the file.
+LEASE_HOLDER = """
+import fcntl, os, signal, sys, time
+descriptor = os.open(sys.argv[1], os.O_RDONLY)
+def give_up(signum, frame):
+    time.sleep(float(sys.argv[2]))
+    fcntl.fcntl(descriptor, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+signal.signal(signal.SIGIO, give_up)
+try:
+    fcntl.fcntl(descriptor, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+except OSError as exc:
+    print("unsupported: " + str(exc), flush=True)
+    sys.exit(0)
+print("ready", flush=True)
+signal.pause()
+"""
+real_lease_checkout = make_checkout("lease-real-checkout")
+real_lease_home = linked_home("lease-real-home", real_lease_checkout)
+real_lease_destination = fixture_root / "lease-real-repo" / ".agents" / "skills" / "ct"
+real_lease_file = real_lease_checkout / "skills" / "ct" / "nested" / "data.txt"
+lease_holder = subprocess.Popen(
+    [sys.executable, "-I", "-c", LEASE_HOLDER, str(real_lease_file), "0.5"],
+    stdout=subprocess.PIPE,
+    text=True,
+)
+try:
+    with hang_guard(30):
+        holder_state = lease_holder.stdout.readline().strip()
+        if holder_state != "ready":
+            print(f"SKIP: this filesystem or kernel gives no lease on a file ({holder_state})")
+        else:
+            real_lease_started = time.monotonic()
+            real_lease_error, real_lease_output = run_and_capture(
+                lambda: link_or_copy_skill(
+                    real_lease_home / ".agents" / "skills" / "ct", real_lease_destination, False, False
+                )
+            )
+            real_lease_elapsed = time.monotonic() - real_lease_started
+            check(
+                real_lease_error is None
+                and (real_lease_destination / "nested" / "data.txt").read_bytes() == b"data\n",
+                f"lease: a file under a real lease is copied once the holder gives it up ({type(real_lease_error).__name__ if real_lease_error else 'no error'}: {real_lease_error})",
+            )
+            check(real_lease_elapsed >= 0.4, f"lease: the open waited for the holder ({real_lease_elapsed:.2f} s)")
+            check("skipped " not in real_lease_output and "stopped " not in real_lease_output, "lease: waiting for a lease logs neither a skip nor a stop")
+finally:
+    lease_holder.terminate()
+    lease_holder.wait(timeout=10)
+    lease_holder.stdout.close()
+
 # A source file larger than one read chunk is copied byte for byte.
 big_checkout = make_checkout("big-checkout")
 big_data = bytes(range(256)) * (3 * 4096 + 1)
@@ -4872,6 +5358,125 @@ printf '%s\n' 'Then: the failure is named, is not logged as a skip, and leaves n
 assert_contains "$TMPDIR_ROOT/open-limit.log" 'Too many open files' 'the descriptor-limit failure is reported'
 assert_not_contains "$TMPDIR_ROOT/open-limit.log" 'skipped ' 'the descriptor-limit failure is not logged as a skip'
 assert_not_exists "$OPEN_LIMIT_REPO/.agents/skills/ct" 'a skill that could not be opened leaves no destination'
+
+printf '%s\n' 'Given: a skill with a folder inside it that cannot be read, beside a skill that can be copied'
+# The listing used to pass over a folder it could not read, so the skill was
+# copied without that folder's files and the run exited 0. The listing now
+# stops at it, and preflight uses the same listing, so the run stops before it
+# writes anything, for the skill that could be copied as well. A mode-000 folder
+# is still readable by root, so the case does not run as root.
+if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s\n' 'SKIP: a mode-000 folder is still readable by root'
+else
+    UNREADABLE_HOME="$TMPDIR_ROOT/unreadable-folder-home"
+    UNREADABLE_REPO="$TMPDIR_ROOT/unreadable-folder-repo"
+    UNREADABLE_FOLDER="$UNREADABLE_HOME/.agents/skills/ct/private"
+    mkdir -p "$UNREADABLE_HOME/.agents/skills/speckit-analyze" "$UNREADABLE_FOLDER" "$UNREADABLE_REPO"
+    printf '%s\n' 'a skill that can be copied' > "$UNREADABLE_HOME/.agents/skills/speckit-analyze/SKILL.md"
+    printf '%s\n' 'a skill with a folder that cannot be read' > "$UNREADABLE_HOME/.agents/skills/ct/SKILL.md"
+    printf '%s\n' 'inside the folder that cannot be read' > "$UNREADABLE_FOLDER/data.txt"
+    chmod 000 "$UNREADABLE_FOLDER"
+    git init -q "$UNREADABLE_REPO"
+    UNREADABLE_TREE_BEFORE="$(find "$UNREADABLE_REPO" -path "$UNREADABLE_REPO/.git" -prune -o -print | sort)"
+
+    printf '%s\n' 'When: bootstrap copies skills and one skill has a folder that cannot be read'
+    UNREADABLE_STATUS=0
+    env -u AGENT_PROTOCOL_ROOT \
+        HOME="$UNREADABLE_HOME" \
+        OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
+        python3 "$SETUP_SCRIPT" \
+            --repo "$UNREADABLE_REPO" \
+            "${LINKED_AGENTS_FLAGS[@]}" > "$TMPDIR_ROOT/unreadable-folder.log" 2>&1 || UNREADABLE_STATUS=$?
+    chmod 755 "$UNREADABLE_FOLDER"
+
+    printf '%s\n' 'Then: the run stops before any write, and the error names the folder'
+    if [[ "$UNREADABLE_STATUS" -ne 0 ]]; then
+        pass 'bootstrap exits non-zero when a skill has a folder that cannot be read'
+    else
+        fail 'bootstrap exits non-zero when a skill has a folder that cannot be read'
+    fi
+    assert_contains "$TMPDIR_ROOT/unreadable-folder.log" "Permission denied: '$UNREADABLE_FOLDER'" 'the error names the folder that cannot be read'
+    assert_not_contains "$TMPDIR_ROOT/unreadable-folder.log" 'copied ' 'a run stopped by a folder that cannot be read copies nothing'
+    assert_not_exists "$UNREADABLE_REPO/.agents/skills/speckit-analyze" 'the skill that could be copied is not copied either'
+    assert_not_exists "$UNREADABLE_REPO/.agents/skills/ct" 'a skill with a folder that cannot be read leaves no destination'
+    assert_equal \
+        "$(find "$UNREADABLE_REPO" -path "$UNREADABLE_REPO/.git" -prune -o -print | sort)" \
+        "$UNREADABLE_TREE_BEFORE" \
+        'a run stopped by a folder that cannot be read writes nothing to the repository'
+fi
+
+printf '%s\n' 'Given: a command template folder with a folder inside it that cannot be read'
+# The stop is in the listing every source tree goes through, so it is not only
+# for skills: the command templates, the worktree and overlay templates, the
+# target repository's .specify and staged outputs are listed by it too. The
+# command template root stands for them here. A mode-000 folder is still
+# readable by root, so the case does not run as root.
+if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s\n' 'SKIP: a mode-000 folder is still readable by root'
+else
+    UNREADABLE_COMMAND_ROOT="$TMPDIR_ROOT/unreadable-command-root"
+    UNREADABLE_COMMAND_HOME="$TMPDIR_ROOT/unreadable-command-home"
+    UNREADABLE_COMMAND_REPO="$TMPDIR_ROOT/unreadable-command-repo"
+    UNREADABLE_COMMAND_FOLDER="$UNREADABLE_COMMAND_ROOT/private"
+    mkdir -p "$UNREADABLE_COMMAND_FOLDER" "$UNREADABLE_COMMAND_HOME" "$UNREADABLE_COMMAND_REPO"
+    printf '%s\n' 'a command that can be copied' > "$UNREADABLE_COMMAND_ROOT/00-safe.md"
+    printf '%s\n' 'inside the folder that cannot be read' > "$UNREADABLE_COMMAND_FOLDER/hidden.md"
+    chmod 000 "$UNREADABLE_COMMAND_FOLDER"
+    git init -q "$UNREADABLE_COMMAND_REPO"
+    UNREADABLE_COMMAND_TREE_BEFORE="$(find "$UNREADABLE_COMMAND_REPO" "$UNREADABLE_COMMAND_HOME" -path "$UNREADABLE_COMMAND_REPO/.git" -prune -o -print | sort)"
+
+    printf '%s\n' 'When: bootstrap copies command templates and one folder of them cannot be read'
+    UNREADABLE_COMMAND_STATUS=0
+    env -u AGENT_PROTOCOL_ROOT \
+        HOME="$UNREADABLE_COMMAND_HOME" \
+        OPSX_COMMAND_TEMPLATE_ROOT="$UNREADABLE_COMMAND_ROOT" \
+        python3 "$SETUP_SCRIPT" \
+            --repo "$UNREADABLE_COMMAND_REPO" \
+            --no-skill-links \
+            "${LINKED_AGENTS_FLAGS[@]}" > "$TMPDIR_ROOT/unreadable-command.log" 2>&1 || UNREADABLE_COMMAND_STATUS=$?
+    chmod 755 "$UNREADABLE_COMMAND_FOLDER"
+
+    printf '%s\n' 'Then: the run exits 1 before any write, and the error names the folder'
+    assert_equal "$UNREADABLE_COMMAND_STATUS" 1 'bootstrap exits 1 when a command template folder cannot be read'
+    assert_contains "$TMPDIR_ROOT/unreadable-command.log" "Permission denied: '$UNREADABLE_COMMAND_FOLDER'" 'the error names the command template folder that cannot be read'
+    assert_not_contains "$TMPDIR_ROOT/unreadable-command.log" 'copied ' 'a run stopped by a command template folder that cannot be read copies nothing'
+    assert_equal \
+        "$(find "$UNREADABLE_COMMAND_REPO" "$UNREADABLE_COMMAND_HOME" -path "$UNREADABLE_COMMAND_REPO/.git" -prune -o -print | sort)" \
+        "$UNREADABLE_COMMAND_TREE_BEFORE" \
+        'a run stopped by a command template folder that cannot be read writes nothing'
+fi
+
+printf '%s\n' 'Given: a skill with a file that cannot be read'
+# A stopped run names the skill: the last log line used to name another skill,
+# and the traceback names only the file's base name.
+if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s\n' 'SKIP: a mode-000 file is still readable by root'
+else
+    STOPPED_HOME="$TMPDIR_ROOT/stopped-skill-home"
+    STOPPED_REPO="$TMPDIR_ROOT/stopped-skill-repo"
+    mkdir -p "$STOPPED_HOME/.agents/skills/ct" "$STOPPED_REPO"
+    printf '%s\n' 'a skill with a file that cannot be read' > "$STOPPED_HOME/.agents/skills/ct/SKILL.md"
+    printf '%s\n' 'a file that cannot be read' > "$STOPPED_HOME/.agents/skills/ct/secret.txt"
+    chmod 000 "$STOPPED_HOME/.agents/skills/ct/secret.txt"
+    git init -q "$STOPPED_REPO"
+
+    printf '%s\n' 'When: bootstrap copies skills and one skill file cannot be read'
+    STOPPED_STATUS=0
+    env -u AGENT_PROTOCOL_ROOT \
+        HOME="$STOPPED_HOME" \
+        OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
+        python3 "$SETUP_SCRIPT" \
+            --repo "$STOPPED_REPO" \
+            "${LINKED_AGENTS_FLAGS[@]}" > "$TMPDIR_ROOT/stopped-skill.log" 2>&1 || STOPPED_STATUS=$?
+    chmod 644 "$STOPPED_HOME/.agents/skills/ct/secret.txt"
+
+    printf '%s\n' 'Then: the run exits 1 and a stopped line names the skill'
+    assert_equal "$STOPPED_STATUS" 1 'bootstrap exits 1 when a skill file cannot be read'
+    assert_contains "$TMPDIR_ROOT/stopped-skill.log" "stopped $STOPPED_HOME/.agents/skills/ct: " 'a stopped run logs a line naming the skill path'
+    assert_contains "$TMPDIR_ROOT/stopped-skill.log" 'Permission denied' 'the stopped line carries the error'
+    assert_not_contains "$TMPDIR_ROOT/stopped-skill.log" 'skipped ' 'a file that cannot be read is not logged as a skip'
+    assert_not_exists "$STOPPED_REPO/.agents/skills/ct" 'a skill whose file cannot be read leaves no destination'
+fi
 
 printf '%s\n' 'Given: overlay template trees with and without the shape compatibility marker'
 make_fake_overlay_template() {

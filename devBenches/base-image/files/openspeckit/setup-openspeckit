@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import Final
 
@@ -271,12 +272,17 @@ SPECIFY_INTEGRATION_TOOL_ROOTS: Final = {
 # each from the same-named folder under the home directory.
 SKILL_HOME_DIRS: Final = (".claude", ".codex", ".agents")
 
-# Local exclude: the folders a run creates at the top of the repository are
-# kept out of `git status` through the repository's own exclude file, when they
-# are untracked and nothing ignores them yet. Folders only: root files such as
-# AGENTS.md or CLAUDE.md are tracked in many repositories. `.github` is never
-# excluded: it is a shared repository folder, and excluding it would hide the
-# workflow files someone adds there later.
+# Local exclude: the Speckit and agent folders at the top of the repository are
+# kept out of `git status` through the repository's own exclude file, when no
+# file under them is tracked and no ignore rule decides them yet. That holds for
+# a folder that was there before the run, holding only untracked files, as well
+# as for one the run creates. In a linked worktree the exclude file is the
+# common git directory's, which every worktree of the repository shares. A
+# negation (`!...`) git finds for a folder is the user's choice and is left as
+# it is. Folders only: root files such as AGENTS.md or CLAUDE.md are tracked in
+# many repositories. `.github` is never excluded: it is a shared repository
+# folder, and excluding it would hide the workflow files someone adds there
+# later.
 LOCAL_EXCLUDE_NEVER: Final = frozenset({".github"})
 LOCAL_EXCLUDE_COMMENT: Final = (
     "# setup-openspeckit: local Speckit and agent folders, untracked here"
@@ -865,6 +871,39 @@ def assert_preserved_first_line(path: Path, before: str, after: str) -> None:
     )
 
 
+def raise_walk_error(exc: OSError) -> None:
+    """Stop a tree walk at the first folder it cannot read."""
+    raise exc
+
+
+def source_tree_paths(src: Path) -> list[Path]:
+    """List every path below ``src``, sorted, and stop at a folder it cannot read.
+
+    ``Path.rglob`` passes silently over a folder it cannot read (Python 3.12), so
+    a skill with an unreadable subfolder was listed without that folder's files
+    and copied as a partial skill, and the run exited 0. ``os.walk`` with an
+    ``onerror`` that re-raises raises the error instead, naming the folder. The
+    listing is otherwise the one ``sorted(src.rglob("*"))`` gave: every file,
+    folder and symlink below ``src``, in ``Path`` order, with a symlink listed
+    and never followed.
+
+    The walk raises on any ``OSError`` its listing meets, where ``rglob``
+    swallowed every one: a folder it cannot read, a name too long at depth, or
+    a path that went away (``src`` itself, or a folder below it, removed or
+    replaced by a file before it was listed). Each is a change in the safe
+    direction: ``rglob`` returned a short listing, or none, and the caller
+    went on with it, where the walk now stops the caller with the error.
+    """
+    paths: list[Path] = []
+    for directory, directory_names, file_names in os.walk(
+        src, onerror=raise_walk_error, followlinks=False
+    ):
+        paths.extend(
+            Path(directory, name) for name in (*directory_names, *file_names)
+        )
+    return sorted(paths)
+
+
 def safe_source_tree_entries(src: Path) -> list[SourceTreeEntry]:
     source_mode = mode_without_following(src)
     if source_mode is None:
@@ -878,7 +917,7 @@ def safe_source_tree_entries(src: Path) -> list[SourceTreeEntry]:
             f"Refusing to copy unsafe source tree {src}: source root is not a directory"
         )
     entries: list[SourceTreeEntry] = []
-    for entry in sorted(src.rglob("*")):
+    for entry in source_tree_paths(src):
         entry_stat = entry.lstat()
         entry_mode = entry_stat.st_mode
         if stat.S_ISLNK(entry_mode):
@@ -1043,10 +1082,28 @@ class SourceChangedError(OSError):
 
 # The errors a symlink or a change met while reading a source gives: a path
 # component that became a file or a symlink (ENOTDIR, ELOOP), or one that went
-# away (ENOENT).
+# away (ENOENT). ENXIO is a listed file swapped for a Unix socket: opening a
+# socket fails with ENXIO, where a named pipe opens and is then refused as a
+# SourceChangedError. A socket is the same change, so it is skipped the same
+# way instead of stopping the run. A device node with no device behind it also
+# fails with ENXIO, and skipping that is just as safe: the skill is skipped as
+# a whole and nothing is written for it.
 SOURCE_LINK_OR_CHANGE_ERRNOS: Final = frozenset(
-    {errno.ENOTDIR, errno.ELOOP, errno.ENOENT}
+    {errno.ENOTDIR, errno.ELOOP, errno.ENOENT, errno.ENXIO}
 )
+
+# When another process opens a file under a lease, the kernel gives the lease
+# holder a number of seconds to give the lease up. The kernel reads the number
+# from this file, and 45 is its default, used here if the file cannot be read.
+LEASE_BREAK_TIME_PATH: Final = Path("/proc/sys/fs/lease-break-time")
+DEFAULT_LEASE_BREAK_SECONDS: Final = 45.0
+SOURCE_OPEN_RETRY_SECONDS: Final = 0.05
+# The kernel breaks a lease only once its clock has passed the break time, and
+# it checks on the clock tick, so the break can come up to one tick (4 ms at
+# 250 Hz, 10 ms at 100 Hz) after the instant the break time names. A retry that
+# gave up at that instant could give up just before the lease broke. This margin
+# is added to the bound, and one second covers any tick the kernel runs at.
+LEASE_BREAK_MARGIN_SECONDS: Final = 1.0
 
 
 def is_link_or_change(exc: OSError) -> bool:
@@ -1056,6 +1113,19 @@ def is_link_or_change(exc: OSError) -> bool:
     )
 
 
+def lease_break_seconds() -> float:
+    """The longest a blocking open of a file under a lease waits, in seconds.
+
+    The kernel lets a lease holder this long to give its lease up, and after
+    that it breaks the lease itself. Read from the kernel; if it cannot be read,
+    the kernel's default.
+    """
+    try:
+        return float(max(int(LEASE_BREAK_TIME_PATH.read_text(encoding="ascii")), 0))
+    except (OSError, ValueError):
+        return DEFAULT_LEASE_BREAK_SECONDS
+
+
 def open_source_file(source: SourceTreeEntry) -> int:
     """Open a listed source file without following a symlink anywhere on its path.
 
@@ -1063,15 +1133,43 @@ def open_source_file(source: SourceTreeEntry) -> int:
     symlink on the path raises (NotADirectoryError, or ELOOP at the leaf). The
     opened file must still be the regular file that was listed. The file is
     opened with O_NONBLOCK, so a named pipe swapped in after the listing cannot
-    hang the open; the checks below then refuse it. A regular file is read the
-    same either way.
+    hang the open; the checks below then refuse it.
+
+    O_NONBLOCK changes the open of a regular file in one way: a file under a
+    lease (a Samba oplock or an NFS delegation) fails at once with
+    BlockingIOError, where a blocking open waits for the lease holder to give
+    the lease up. The open is therefore retried, with a short sleep between
+    tries, for as long as a blocking open could have waited
+    (``lease_break_seconds``) plus ``LEASE_BREAK_MARGIN_SECONDS``, and the error
+    propagates after that. The margin is there because the kernel breaks a lease
+    only after the break time has passed, by up to one clock tick, so a retry
+    that gave up at exactly the break time could give up just before the lease
+    broke. Every caller of ``copy_regular_file_at`` opens through here, so each
+    gets the retry.
     """
+    deadline: float | None = None
     with directory_descriptor(source.path.parent) as source_parent_descriptor:
-        source_descriptor = os.open(
-            source.path.name,
-            REGULAR_FILE_OPEN_FLAGS | os.O_NONBLOCK,
-            dir_fd=source_parent_descriptor,
-        )
+        while True:
+            try:
+                source_descriptor = os.open(
+                    source.path.name,
+                    REGULAR_FILE_OPEN_FLAGS | os.O_NONBLOCK,
+                    dir_fd=source_parent_descriptor,
+                )
+            except BlockingIOError:
+                # The failed open is what started the lease break, so the wait
+                # is counted from it. The margin covers the kernel breaking the
+                # lease a tick after the break time (see the constant).
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = (
+                        now + lease_break_seconds() + LEASE_BREAK_MARGIN_SECONDS
+                    )
+                elif now >= deadline:
+                    raise
+                time.sleep(SOURCE_OPEN_RETRY_SECONDS)
+            else:
+                break
     try:
         source_stat = os.fstat(source_descriptor)
         if (source_stat.st_dev, source_stat.st_ino) != (
@@ -1483,10 +1581,7 @@ def run_specify_commands(
             staging_repo = Path(temporary_root) / "repo"
             staging_repo.mkdir(mode=0o755)
             staging_repo.chmod(0o755)
-            subprocess.run(
-                ["git", "init", "-q", str(staging_repo)],
-                check=True,
-            )
+            init_staging_repository(staging_repo)
             specify_source = repo / ".specify"
             specify_source_mode = mode_without_following(specify_source)
             specify_entries = safe_source_tree_entries(specify_source)
@@ -1561,12 +1656,19 @@ def link_or_copy_skill(src: Path, dst: Path, dry_run: bool, force: bool) -> None
     # (safe_source_tree_entries refuses one, as before). Every source file is
     # opened before the destination is touched, and the copy reads those
     # descriptors. Only a symlink or a change met while reading the source (a
-    # SourceChangedError, ENOTDIR, ELOOP or ENOENT, or a symlink loop in the
-    # skills root's path) is a logged skip that writes nothing. Any other
-    # error, such as a permission error, too many open files or an I/O error,
-    # stops the run as it did before. The destination is never resolved and its
-    # checks below are unchanged; log lines keep the spelling the caller
-    # passed.
+    # SourceChangedError, ENOTDIR, ELOOP, ENOENT or ENXIO, or a symlink loop in
+    # the skills root's path) is a logged skip that writes nothing. Any other
+    # error from the listing or from opening a source file stops the run, with
+    # a "stopped" line naming the skill. That is how a permission error or an
+    # I/O error stopped it before the skip existed. It is new for too many open
+    # files (EMFILE, ENFILE): since opensoft/openBenches#234 every source file
+    # of a skill is opened before the copy, so a skill with more files than the
+    # soft open-file limit allows stops the run, where the copy used to open
+    # one file at a time and such a skill copied. The limit and the open-first
+    # design are unchanged. An error during the copy itself, once every source
+    # file is open, stops the run too, without a "stopped" line. The
+    # destination is never resolved and its checks below are unchanged; log
+    # lines keep the spelling the caller passed.
     try:
         try:
             source_parent = src.parent.resolve()
@@ -1579,6 +1681,7 @@ def link_or_copy_skill(src: Path, dst: Path, dry_run: bool, force: bool) -> None
         entries = safe_source_tree_entries(source)
     except OSError as exc:
         if not is_link_or_change(exc):
+            log(f"stopped {src}: {exc}")
             raise
         log(f"skipped {src}: its source could not be read safely ({exc})")
         return
@@ -1599,6 +1702,7 @@ def link_or_copy_skill(src: Path, dst: Path, dry_run: bool, force: bool) -> None
             ]
         except OSError as exc:
             if not is_link_or_change(exc):
+                log(f"stopped {src}: {exc}")
                 raise
             log(
                 f"skipped {src}: a symlink or a change was met while reading "
@@ -4493,11 +4597,12 @@ def ensure_worktrees_ignored(repo: Path, dry_run: bool) -> None:
 
 
 def local_exclude_folders() -> tuple[str, ...]:
-    """The top-level folders a run can create in the repository, `.specify` first.
+    """The candidate folders at the top of the repository, `.specify` first.
 
-    Derived from the skill folders, the Spec Kit integration tool roots and the
-    first folder of every agent context file that lives in one, less
-    LOCAL_EXCLUDE_NEVER, in a stable order.
+    These are the folders a run can create, whether or not it does, and the
+    exclude step looks at each one that exists. Derived from the skill folders,
+    the Spec Kit integration tool roots and the first folder of every agent
+    context file that lives in one, less LOCAL_EXCLUDE_NEVER, in a stable order.
     """
     folders = set(SKILL_HOME_DIRS) | set(SPECIFY_INTEGRATION_TOOL_ROOTS.values())
     for _, relative_path in SUPPORTED_AGENT_CONTEXT_FILES:
@@ -4508,102 +4613,330 @@ def local_exclude_folders() -> tuple[str, ...]:
     return (".specify", *sorted(folders))
 
 
-def run_git_query(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str] | None:
-    """Run a read-only git command in ``repo``; None when git cannot be started."""
+GIT_LOCAL_ENVIRONMENT_VARIABLES: frozenset[str] | None = None
+
+# Two of the names git lists as repository-local carry configuration, not a
+# repository: GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT (the GIT_CONFIG_KEY_<n>
+# and GIT_CONFIG_VALUE_<n> pairs that go with the second are not listed, so they
+# are never dropped). They are kept: configuration cannot steer a write, and a
+# caller may hand git its `safe.directory` this way. git keeps exactly these two
+# when it runs a command in a submodule, where it drops the rest of the list.
+GIT_CONFIG_ENVIRONMENT_VARIABLES: Final = frozenset(
+    {"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"}
+)
+
+
+class GitEnvironmentError(Exception):
+    """git did not give a usable list of its repository-local variables."""
+
+
+def git_environment() -> dict[str, str]:
+    """The caller's environment without git's repository-local variables.
+
+    git lists them itself (`rev-parse --local-env-vars`: GIT_DIR, GIT_COMMON_DIR,
+    GIT_INDEX_FILE, GIT_WORK_TREE and the rest) and the tool does not repeat the
+    list. Every listed name is dropped, as git drops them before it runs a
+    command in a submodule, except GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT,
+    which git keeps there too (see GIT_CONFIG_ENVIRONMENT_VARIABLES). A git
+    command run with this environment works on the repository it is pointed at,
+    never on one the caller's variables name.
+
+    Raises GitEnvironmentError, saying why, when git cannot start, cannot give
+    the list, or gives one that does not name GIT_DIR: a list that names
+    nothing must never mean there is nothing to drop.
+    """
+    global GIT_LOCAL_ENVIRONMENT_VARIABLES
+    if GIT_LOCAL_ENVIRONMENT_VARIABLES is None:
+        try:
+            listed = subprocess.run(
+                ["git", "rev-parse", "--local-env-vars"],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except (OSError, ValueError) as exc:
+            raise GitEnvironmentError(f"git could not run: {exc}") from exc
+        if listed.returncode != 0:
+            raise GitEnvironmentError(
+                f"git rev-parse --local-env-vars failed: {git_failure_detail(listed)}"
+            )
+        names = frozenset(listed.stdout.split())
+        if "GIT_DIR" not in names:
+            raise GitEnvironmentError(
+                f"git rev-parse --local-env-vars did not name GIT_DIR: {listed.stdout!r}"
+            )
+        GIT_LOCAL_ENVIRONMENT_VARIABLES = names - GIT_CONFIG_ENVIRONMENT_VARIABLES
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in GIT_LOCAL_ENVIRONMENT_VARIABLES
+    }
+
+
+def init_staging_repository(staging_repo: Path) -> None:
+    """`git init -q` the staging folder with `git_environment()`.
+
+    A caller's GIT_DIR would otherwise make it re-initialise the repository that
+    variable names. A failure ends the run with git's own message.
+    """
     try:
-        return subprocess.run(
-            ["git", "-C", str(repo), *arguments],
+        created = subprocess.run(
+            ["git", "init", "-q", str(staging_repo)],
             check=False,
             text=True,
+            stderr=subprocess.PIPE,
+            env=git_environment(),
+        )
+    except GitEnvironmentError as exc:
+        raise SystemExit(f"Could not create the staging repository {staging_repo}: {exc}") from exc
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"Could not create the staging repository {staging_repo}: git could not run: {exc}"
+        ) from exc
+    if created.returncode != 0:
+        raise SystemExit(
+            f"Could not create the staging repository {staging_repo}: "
+            f"{git_failure_detail(created)}"
+        )
+    if created.stderr:
+        print(created.stderr, end="", file=sys.stderr)
+
+
+def run_git_query(
+    repo: Path, *arguments: str, stdin_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a read-only git command in ``repo``, with `git_environment()`.
+
+    A git that cannot start, or cannot list its local variables, comes back as
+    a failed result (status 127) whose stderr says why.
+    """
+    command = ["git", "-C", str(repo), *arguments]
+    try:
+        return subprocess.run(
+            command,
+            check=False,
+            text=True,
+            input=stdin_text,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=git_environment(),
         )
-    except (OSError, ValueError):
-        return None
+    except GitEnvironmentError as exc:
+        return subprocess.CompletedProcess(command, 127, "", str(exc))
+    except (OSError, ValueError) as exc:
+        return subprocess.CompletedProcess(command, 127, "", f"git could not run: {exc}")
 
 
-def local_exclude_path(repo: Path) -> Path | None:
-    """The repository's own exclude file, or None when ``repo`` is not the top of a work tree.
+def git_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
+    return result.stderr.strip() or f"git exited with status {result.returncode}"
+
+
+def local_exclude_path(repo: Path) -> tuple[Path | None, str]:
+    """The repository's own exclude file, or None and why the step is skipped.
 
     git names it (`rev-parse --git-path info/exclude`): in a linked worktree it is
-    the common git directory's. A relative answer is relative to ``repo``. A
-    directory inside some other repository is never given that repository's file.
+    the common git directory's, which every worktree of the repository shares. A
+    relative answer is relative to ``repo``. A directory inside some other
+    repository is never given that repository's file. A folder in no repository
+    at all (git exits 128 with "not a git repository") is the ordinary case of a
+    project with no git yet, and keeps its plain wording. Any other failure of
+    git here (missing, or refusing a repository it does not trust) is a skip
+    that gives git's own message.
     """
     toplevel = run_git_query(repo, "rev-parse", "--show-toplevel")
-    if toplevel is None or toplevel.returncode != 0:
-        return None
+    if toplevel.returncode != 0:
+        if toplevel.returncode == 128 and "not a git repository" in toplevel.stderr:
+            return None, f"{repo} is not the top of a git work tree"
+        return None, f"git rev-parse failed in {repo}: {git_failure_detail(toplevel)}"
     try:
         if Path(toplevel.stdout.rstrip("\n")).resolve() != repo.resolve():
-            return None
+            return None, f"{repo} is not the top of a git work tree"
     except (OSError, RuntimeError):
-        return None
+        return None, f"{repo} is not the top of a git work tree"
     answer = run_git_query(repo, "rev-parse", "--git-path", "info/exclude")
-    if answer is None or answer.returncode != 0 or not answer.stdout.rstrip("\n"):
-        return None
+    if answer.returncode != 0 or not answer.stdout.rstrip("\n"):
+        return None, f"git rev-parse failed in {repo}: {git_failure_detail(answer)}"
     exclude_path = Path(answer.stdout.rstrip("\n"))
-    return exclude_path if exclude_path.is_absolute() else repo / exclude_path
+    return (exclude_path if exclude_path.is_absolute() else repo / exclude_path), ""
 
 
-def missing_local_excludes(repo: Path) -> list[str]:
-    """The `/F/` lines for the candidate folders git would still show as untracked.
+def git_ignore_rules(repo: Path, folder: str, *paths: str) -> list[tuple[str, str, str]]:
+    """git's deciding rule for each of ``paths``, as (source, line, pattern).
 
-    A folder F qualifies when it is a real directory (a symlink is never
-    followed or excluded), no file under it is tracked, and no rule ignores it.
+    `git check-ignore --verbose --non-matching` gives the last rule that matches
+    each path, a negation (`!...`) included, and three empty fields when none
+    does. Any other answer stops the run as a failed git call.
     """
-    lines: list[str] = []
+    answer = run_git_query(
+        repo,
+        "check-ignore",
+        "--verbose",
+        "--non-matching",
+        "--stdin",
+        "-z",
+        stdin_text="".join(f"{path}\0" for path in paths),
+    )
+    if answer.returncode not in (0, 1):
+        raise SystemExit(
+            f"Could not check whether {repo / folder} is ignored: {git_failure_detail(answer)}"
+        )
+    fields = answer.stdout.split("\0")
+    if len(fields) != 4 * len(paths) + 1 or fields[-1] or fields[3::4] != list(paths):
+        raise SystemExit(
+            f"Could not check whether {repo / folder} is ignored: "
+            f"unexpected answer {answer.stdout!r}"
+        )
+    return [
+        (fields[index], fields[index + 1], fields[index + 2])
+        for index in range(0, 4 * len(paths), 4)
+    ]
+
+
+def ignores(rule: tuple[str, str, str]) -> bool:
+    pattern = rule[2]
+    return bool(pattern) and not pattern.startswith("!")
+
+
+def describe_ignore_rule(rule: tuple[str, str, str]) -> str:
+    source, line, pattern = rule
+    return f"{pattern} at {source}:{line}" if pattern else "no ignore rule matches"
+
+
+def missing_local_excludes(repo: Path, dry_run: bool) -> tuple[list[str], bool]:
+    """The candidate folders that need a line, and whether a candidate is absent.
+
+    A folder F needs one when it is a real directory (a symlink is never
+    followed or excluded), no file under it is tracked, and git finds no rule
+    for it. A folder git already ignores needs nothing. A negation git finds for
+    F, in the exclude file itself, a `.gitignore` or `core.excludesFile`, is the
+    user's choice: F gets no line, and the log names git's source and line.
+    """
+    folders: list[str] = []
+    absent = False
     for folder in local_exclude_folders():
         mode = mode_without_following(repo / folder)
-        if mode is None or not stat.S_ISDIR(mode):
+        if mode is None:
+            absent = True
+            continue
+        if not stat.S_ISDIR(mode):
             continue
         tracked = run_git_query(repo, "ls-files", "-z", "--", folder)
-        if tracked is None or tracked.returncode != 0:
-            detail = tracked.stderr.strip() if tracked is not None else "git could not run"
-            raise SystemExit(f"Could not list the tracked files under {repo / folder}: {detail}")
+        if tracked.returncode != 0:
+            raise SystemExit(
+                f"Could not list the tracked files under {repo / folder}: "
+                f"{git_failure_detail(tracked)}"
+            )
         if tracked.stdout:
             continue
-        ignored = run_git_query(repo, "check-ignore", "-q", "--", f"{folder}/")
-        if ignored is None or ignored.returncode not in (0, 1):
-            detail = ignored.stderr.strip() if ignored is not None else "git could not run"
-            raise SystemExit(f"Could not check whether {repo / folder} is ignored: {detail}")
-        if ignored.returncode == 1:
-            lines.append(f"/{folder}/")
-    return lines
+        # `F/` is what `git check-ignore -q F/` checks. git leaves a negation
+        # out of its answer for `F/`, so `F` is asked as well.
+        rules = git_ignore_rules(repo, folder, f"{folder}/", folder)
+        if ignores(rules[0]):
+            continue
+        negation = next((rule for rule in rules if rule[2].startswith("!")), None)
+        if negation is not None:
+            verb = "would leave" if dry_run else "left"
+            log(
+                f"{verb} {folder}/ visible: the negation "
+                f"{describe_ignore_rule(negation)} decides it"
+            )
+            continue
+        folders.append(folder)
+    return folders, absent
+
+
+def write_local_exclude(path: Path, content: bytes) -> None:
+    """Replace the exclude file with ``content``, byte for byte, as `write_text` writes.
+
+    The folders on its path are opened without following links, the bytes go to
+    an O_EXCL|O_NOFOLLOW temporary file that is renamed into place, and an
+    existing file keeps its mode (a new one is 0644).
+    """
+    with destination_file_parent(path, True) as parent_descriptor:
+        existing_mode = mode_at(parent_descriptor, path.name)
+        if existing_mode is not None and not stat.S_ISREG(existing_mode):
+            raise OSError(f"Refusing to replace non-regular destination file {path.name}")
+        file_mode = stat.S_IMODE(existing_mode) if existing_mode is not None else 0o644
+        temporary_name, descriptor = temporary_regular_file(parent_descriptor, path.name)
+        try:
+            with os.fdopen(descriptor, "wb") as file:
+                write_all(file.fileno(), content)
+                os.fchmod(file.fileno(), file_mode)
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+
+
+def check_local_excludes(repo: Path, exclude_path: Path, folders: list[str]) -> None:
+    """Check with git, after the write, that it ignores each folder given a line."""
+    visible: list[str] = []
+    for folder in folders:
+        (rule,) = git_ignore_rules(repo, folder, f"{folder}/")
+        if not ignores(rule):
+            log(f"git does not ignore {folder}/ after the write: {describe_ignore_rule(rule)}")
+            visible.append(f"{folder}/")
+    if visible:
+        raise SystemExit(
+            f"Could not exclude {', '.join(visible)} through {exclude_path}: "
+            "git does not ignore them after the write"
+        )
 
 
 def ensure_local_excludes(repo: Path, dry_run: bool) -> None:
-    """Keep the Speckit and agent folders a run leaves untracked out of `git status`.
+    """Keep the wholly untracked Speckit and agent folders out of `git status`.
 
     Appends an anchored `/F/` line to the repository's own exclude file for each
-    folder `missing_local_excludes` finds, keeping the file's existing bytes and
-    never repeating a line. The file is read and written as every other
-    destination is, so a symlinked or non-regular file, or a symlinked folder on
-    its path, is refused.
+    folder `missing_local_excludes` finds, whether the run created it or it was
+    there before, holding only untracked files. In a linked worktree that file
+    is shared by every worktree of the repository. git decides each folder, and
+    is asked again after the write. The file's existing bytes are kept, whatever
+    their encoding, and it is read and written as every other destination is,
+    so a symlinked or non-regular file, or a symlinked folder on its path, is
+    refused. A dry run sees only the folders that exist when it runs.
     """
-    exclude_path = local_exclude_path(repo)
+    exclude_path, skip_reason = local_exclude_path(repo)
     if exclude_path is None:
-        log(f"skipped local git excludes: {repo} is not the top of a git work tree")
+        log(f"skipped local git excludes: {skip_reason}")
         return
-    missing = missing_local_excludes(repo)
-    if not missing:
-        log(f"unchanged {exclude_path}")
+    folders, absent = missing_local_excludes(repo, dry_run)
+    unknown = f"folders the run would create are decided by a real run: {exclude_path}"
+    if not folders:
+        log(unknown if dry_run and absent else f"unchanged {exclude_path}")
         return
-    existing_bytes = read_destination_bytes(exclude_path)
     try:
-        existing_text = existing_bytes.decode("utf-8") if existing_bytes is not None else ""
-    except UnicodeDecodeError as exc:
-        raise SystemExit(f"Refusing to edit {exclude_path}: it is not UTF-8 text") from exc
-    present = {line.strip() for line in existing_text.splitlines()}
-    additions = [line for line in missing if line not in present]
-    if not additions:
-        log(f"unchanged {exclude_path}")
+        existing = read_destination_bytes(exclude_path) or b""
+    except OSError as exc:
+        raise SystemExit(f"Could not update {exclude_path}: {exc}") from exc
+    lines = [f"/{folder}/" for folder in folders]
+    comment = LOCAL_EXCLUDE_COMMENT.encode("utf-8")
+    if not any(line.rstrip(b"\r") == comment for line in existing.split(b"\n")):
+        lines.insert(0, LOCAL_EXCLUDE_COMMENT)
+    separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
+    content = existing + separator + "".join(f"{line}\n" for line in lines).encode("utf-8")
+    if dry_run:
+        log(f"would write {exclude_path}")
+        for folder in folders:
+            log(f"would add /{folder}/ to {exclude_path}")
+        if absent:
+            log(unknown)
         return
-    new_lines = additions if LOCAL_EXCLUDE_COMMENT in present else [LOCAL_EXCLUDE_COMMENT, *additions]
-    separator = "" if not existing_text or existing_text.endswith("\n") else "\n"
-    appended = "".join(f"{line}\n" for line in new_lines)
-    write_text(exclude_path, f"{existing_text}{separator}{appended}", dry_run)
-    verb = "would add" if dry_run else "added"
-    for line in additions:
-        log(f"{verb} {line} to {exclude_path}")
+    try:
+        write_local_exclude(exclude_path, content)
+    except OSError as exc:
+        raise SystemExit(f"Could not update {exclude_path}: {exc}") from exc
+    log(f"wrote {exclude_path}")
+    for folder in folders:
+        log(f"added /{folder}/ to {exclude_path}")
+    check_local_excludes(repo, exclude_path, folders)
 
 
 def ensure_worktree_overlay(
@@ -4855,9 +5188,10 @@ def main() -> int:
         if not args.no_global_agent_pointers:
             ensure_global_agent_pointers(agent_root, args.dry_run)
 
-        # After every write to the repository: what the run left untracked at
-        # its top goes to the repository's own exclude file (the assembly root's
-        # in a three-leg project; the legs are never touched).
+        # After every write to the repository: each candidate folder at its top
+        # with no tracked file, whether the run created it or it was there
+        # before, goes to the repository's own exclude file (the assembly
+        # root's in a three-leg project; the legs are never touched).
         ensure_local_excludes(repo, args.dry_run)
 
     if shape is not None and not args.dry_run:

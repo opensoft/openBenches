@@ -43,11 +43,12 @@ for ((attempt=0; attempt<100; attempt++)); do [[ ! -f "$session/alive" ]] || bre
 
 # Pass the current invocation's environment, not stale values captured when
 # the persistent container was created. Values are never put on the argv.
+# SSH_AUTH_SOCK comes from the container because it names the mounted socket.
 args=(--interactive --workdir "$PWD" --env WORKBENCHES_HOST_RPC)
 [[ ! -t 0 || ! -t 1 ]] || args+=(--tty)
 while IFS= read -r variable; do
     case "$variable" in
-        HOME|USER|LOGNAME|LANES_OS|DISPLAY|WAYLAND_DISPLAY|BROWSER|TERM|COLORTERM|LANG|LC_*|TMPDIR|XDG_*|SSH_AUTH_SOCK|GIT_*|GH_*|WORKBENCHES_*|AI_*|AZURE_*|OPENAI_*|ANTHROPIC_*|CLAUDE_*|CODEX_*|CHATGPT_*|PI_*|OMNIROUTE_*|OPENCODE_*|WAVE_*|PROJECTS_ROOT|WSL_*|npm_config_*|NPM_CONFIG_*)
+        HOME|USER|LOGNAME|LANES_OS|DISPLAY|WAYLAND_DISPLAY|BROWSER|TERM|COLORTERM|LANG|LC_*|TMPDIR|XDG_*|GIT_*|GH_*|WORKBENCHES_*|AI_*|AZURE_*|OPENAI_*|ANTHROPIC_*|CLAUDE_*|CODEX_*|CHATGPT_*|PI_*|OMNIROUTE_*|OPENCODE_*|WAVE_*|PROJECTS_ROOT|WSL_*|npm_config_*|NPM_CONFIG_*)
             case "$variable" in WORKBENCHES_NATIVE_PATH|WORKBENCHES_TOOLS_BIN|WORKBENCHES_DOCKER_ENDPOINT) continue ;; esac
             args+=(--env "$variable") ;;
     esac

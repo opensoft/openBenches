@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Service readiness and ownership checks without touching a Docker engine."""
 import os
+import socket
 import importlib.util
 import sys
 from pathlib import Path
@@ -109,11 +110,23 @@ workbenches_{role}_start && exit 20
     def test_remote_engine_is_rejected(self):
         self.assertEqual(self.shell('DOCKER_HOST=tcp://remote:2376; unset DOCKER_CONTEXT; workbenches_pin_docker && exit 20; echo rejected'), 'rejected')
 
-    def test_desktop_socket_access_uses_wsl_group_and_mac_vm_group(self):
-        for system, expected in (('Linux', '1001'), ('Darwin', '0')):
-            with self.subTest(system=system), tempfile.TemporaryDirectory() as home:
+    def test_desktop_tools_use_platform_socket_group_and_agent_mount(self):
+        for system, distro, expected_group, has_agent in (
+            ('Linux', 'Ubuntu', '1001', True),
+            ('Darwin', '', '0', True),
+            ('Linux', 'Ubuntu', '1001', False),
+        ):
+            with (self.subTest(system=system, has_agent=has_agent),
+                  tempfile.TemporaryDirectory() as home,
+                  socket.socket(socket.AF_UNIX) as agent):
+                agent_path = Path(home) / 'agent.sock'
+                if has_agent:
+                    agent.bind(str(agent_path))
+                else:
+                    agent_path.mkdir()
                 output = self.shell(f'''
 HOME={home!r}; XDG_CACHE_HOME="$HOME/.cache"
+WSL_DISTRO_NAME={distro!r}; SSH_AUTH_SOCK={str(agent_path)!r}
 workbenches_docker_state() {{ echo up; }}
 workbenches_pin_docker() {{ WORKBENCHES_DOCKER_ENDPOINT=unix:///var/run/docker.sock; }}
 workbenches_tools_fingerprint() {{ echo runtime; }}
@@ -130,7 +143,11 @@ workbenches_runtime_docker() {{
             if [[ "$3" == *OperatingSystem* ]]; then echo 'Docker Desktop'; else echo engine; fi ;;
         'create --name')
             while [[ $# -gt 0 ]]; do
-                if [[ "$1" == --group-add ]]; then echo "socket-group:$2" >&2; fi
+                case "$1:$2" in
+                    --group-add:*) echo "socket-group:$2" >&2 ;;
+                    --mount:*agent.sock*|--mount:*ssh-auth.sock*|--env:SSH_AUTH_SOCK=*)
+                        echo "$2" >&2 ;;
+                esac
                 shift
             done ;;
         'container start') : ;;
@@ -140,7 +157,13 @@ workbenches_runtime_docker() {{
 }}
 workbenches_tools_start 2>&1
 ''')
-                self.assertEqual(output, 'socket-group:' + expected)
+                expected = [f'socket-group:{expected_group}']
+                if has_agent:
+                    source = agent_path if distro else '/run/host-services/ssh-auth.sock'
+                    target = '/run/workbenches-ssh-agent.sock'
+                    expected.extend([f'type=bind,src={source},dst={target}',
+                                     f'SSH_AUTH_SOCK={target}'])
+                self.assertEqual(output.splitlines(), expected)
 
     def test_launcher_finishes_when_broker_ignores_term(self):
         with tempfile.TemporaryDirectory() as temporary:

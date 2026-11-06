@@ -251,17 +251,20 @@ Tests: `devcontainer.test/test-setup-workspace-repo.sh` (110 checks; fakes `open
 
 ## Wave Terminal Widgets
 
-`setup.sh` runs the Wave Terminal installer as a best-effort host setup step so
-all workBenches checkouts get the same desktop shortcuts. The installer comes
-from `opensoft/Install-Wave-Terminal`; setup prefers a sibling
+`setup.sh` checks the Wave widgets when Wave Terminal is already installed and
+syncs bench launch widgets with the verified installed runtimes after setup.
+Setup updates the managed shortcuts and preserves other Wave settings. If it
+detects that Wave saved changes during the sync, rerun setup to retry.
+
+Widget templates come from `opensoft/Install-Wave-Terminal`. Setup prefers a sibling
 `../Install-Wave-Terminal` checkout when present, then falls back to cloning it
 into `~/.cache/workbenches/Install-Wave-Terminal`.
 
-Installed widgets include:
+Available widgets are listed below. Bench widgets appear once their runtimes are installed.
 
 | Widget | Behavior |
 |--------|----------|
-| `terminal` | Overrides Wave's built-in terminal to open `wsl://Ubuntu-24.04` instead of PowerShell |
+| `terminal` | Opens the configured WSL connection in Wave's built-in terminal |
 | `projects` | Opens the Wave files view at `$HOME/projects` on the WSL connection |
 | `pyBench` | Starts or repairs `py-bench`, then opens an interactive shell |
 | `flutterBench` | Starts or repairs `flutter-bench`, then opens an interactive shell |
@@ -296,9 +299,10 @@ same project sessions should read
 The cross-provider ownership and composition model is documented in
 [AI credential ownership and profile composition](docs/ai-credential-ownership.md).
 
-The WSL connection defaults to `wsl://Ubuntu-24.04` and the projects widget
-defaults to `$HOME/projects`. Override them with `WAVE_WSL_CONNECTION` and
-`WAVE_PROJECTS_ROOT`. Widget font size defaults to `16`; override it with
+On WSL, the connection defaults to the current distro. When the distro name is
+unavailable, it falls back to `wsl://Ubuntu-24.04`. The projects widget defaults
+to `$HOME/projects`. Override them with `WAVE_WSL_CONNECTION` and
+`WAVE_PROJECTS_ROOT`. New widgets use font size `16` by default. Override it with
 `WAVE_WIDGET_FONT_SIZE`. Set `WORKBENCHES_SKIP_WAVE_WIDGETS=1` to skip this
 step.
 

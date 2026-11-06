@@ -9,6 +9,7 @@ fixture="$test_root/workBenches"
 mkdir -p "$fixture/scripts/lib" "$fixture/config" "$fixture/devBenches/testBench" \
     "$fixture/sysBenches/testBench" "$test_root/bin" "$test_root/home/.config/workbenches"
 cp "$repo_root/setup.sh" "$fixture/"
+cp "$repo_root/scripts/sync-wave-widgets.sh" "$fixture/scripts/"
 cp "$repo_root/bootstrap.sh" "$fixture/"
 cp "$repo_root/scripts/lib/"{docker-prerequisite.sh,tools-container.sh,setup-status-loader.sh,setup-terminal.sh,setup-prerequisites.sh,setup-prompts.sh} "$fixture/scripts/lib/"
 cp "$repo_root/scripts/setup_selection.py" "$fixture/scripts/"

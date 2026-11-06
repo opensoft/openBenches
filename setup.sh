@@ -59,63 +59,10 @@ log_header "SETUP STARTED"
 # Clean up old logs (keep last 10)
 ls -t "$LOG_DIR"/setup-*.log 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null
 
-# Install or update Wave Terminal widgets for this workBenches checkout.
-# This is best-effort because Wave is a desktop convenience, not a build
-# prerequisite.
-install_wave_terminal_widgets() {
-    if [ "${WORKBENCHES_SKIP_WAVE_WIDGETS:-}" = "1" ]; then
-        echo "Wave Terminal widget setup skipped by WORKBENCHES_SKIP_WAVE_WIDGETS=1."
-        return 0
-    fi
-
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "Wave Terminal widget setup skipped: python3 is not available."
-        return 0
-    fi
-
-    local installer_repo="${WAVE_TERMINAL_INSTALLER_REPO:-https://github.com/opensoft/Install-Wave-Terminal.git}"
-    local sibling_installer_dir
-    sibling_installer_dir="$(cd "$SCRIPT_DIR/.." && pwd)/Install-Wave-Terminal"
-    local installer_dir
-    if [ -z "${WAVE_TERMINAL_INSTALLER_DIR:-}" ] && [ -x "$sibling_installer_dir/scripts/install-workbenches-widgets.sh" ]; then
-        installer_dir="$sibling_installer_dir"
-    else
-        installer_dir="${WAVE_TERMINAL_INSTALLER_DIR:-$HOME/.cache/workbenches/Install-Wave-Terminal}"
-    fi
-    local installer_script="$installer_dir/scripts/install-workbenches-widgets.sh"
-    local projects_root="${WAVE_PROJECTS_ROOT:-${PROJECTS_ROOT:-$HOME/projects}}"
-    local wsl_connection="${WAVE_WSL_CONNECTION:-wsl://Ubuntu-24.04}"
-    local font_size="${WAVE_WIDGET_FONT_SIZE:-16}"
-
-    if [ ! -x "$installer_script" ]; then
-        if [ -e "$installer_dir" ]; then
-            echo "Wave Terminal widget setup skipped: $installer_dir exists but does not contain the installer."
-            return 0
-        fi
-
-        if ! command -v git >/dev/null 2>&1; then
-            echo "Wave Terminal widget setup skipped: git is not available."
-            return 0
-        fi
-
-        mkdir -p "$(dirname "$installer_dir")"
-        if ! workbenches_clone "$installer_repo" "$installer_dir" --depth 1; then
-            echo "Wave Terminal widget setup skipped: failed to clone $installer_repo."
-            return 0
-        fi
-    elif [ -d "$installer_dir/.git" ] && command -v git >/dev/null 2>&1; then
-        git -C "$installer_dir" pull --ff-only --quiet || \
-            echo "Wave Terminal installer update skipped; using existing checkout at $installer_dir."
-    fi
-
-    "$installer_script" \
-        --workbenches-root "$SCRIPT_DIR" \
-        --projects-root "$projects_root" \
-        --font-size "$font_size" \
-        --wsl-connection "$wsl_connection" || {
-            echo "Wave Terminal widget setup failed; continuing workBenches setup."
-            return 0
-        }
+# Wave shortcuts are a best-effort desktop convenience.
+sync_wave_widgets() {
+    run_logged "WAVE TERMINAL WIDGETS" bash "$SCRIPT_DIR/scripts/sync-wave-widgets.sh" </dev/null ||
+        echo "Wave Terminal widget sync could not finish. See $LOG_FILE for details."
 }
 
 # Parse arguments
@@ -139,6 +86,7 @@ python3 "$SCRIPT_DIR/scripts/setup_selection.py" rows "$selection_file" >/dev/nu
     git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || printf 'unavailable\n'
 } >> "$LOG_FILE"
 if python3 "$SCRIPT_DIR/scripts/setup_selection.py" empty "$selection_file"; then
+    sync_wave_widgets
     echo "No components selected. Setup complete."
     exit 0
 fi
@@ -226,10 +174,6 @@ fi
 # seed it before any container build without overwriting existing user workflows.
 # Claude account workflows are configured by the optional AI accounts step.
 
-# Wave Terminal widgets are host-user state. Install them before any image
-# builds so the desktop terminal shortcuts track the current checkout.
-if python3 "$SCRIPT_DIR/scripts/setup_selection.py" rows "$selection_file" | grep -q $'wave\tinstall'; then install_wave_terminal_widgets; fi
-
 # Ensure Layer 0 base image exists
 log_header "LAYER 0 BUILD"
 if [[ -z "$selected_bench_paths" ]]; then
@@ -300,12 +244,15 @@ if [ "$BUILD_FAILED" = false ]; then
         else
             log_header "INTERACTIVE SETUP FAILED"
             echo "✗ Interactive setup stopped (exit $interactive_status)."
+            [[ "$interactive_status" == 143 ]] || sync_wave_widgets
         fi
         exit "$interactive_status"
     fi
 else
     echo "Skipping component installation because a selected base layer failed."
 fi
+
+sync_wave_widgets
 
 # ========================================
 # SUMMARY

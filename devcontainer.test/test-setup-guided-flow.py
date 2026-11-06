@@ -82,6 +82,41 @@ class GuidedFlowTests(unittest.TestCase):
                         'guided': True, 'authMode': 'signin', 'entries': [self.entry]}
         self.payload = b'{"OPENAI_API_KEY":"fake-only-key"}'
 
+    def test_install_display_keeps_prompts_and_restores_terminal(self):
+        command = r'''source "$1"
+stty rows 24 cols 80
+trap 'finish_setup_install_screen "$?"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+start_setup_install_screen 1.6.1
+for ((line = 0; line < 30; line++)); do echo "Build line $line"; done
+read -r -p 'Continue installing? ' choice
+[[ "$choice" == yes ]] || exit 8
+case "$2" in
+    resize) stty rows 10 cols 40; kill -WINCH "$$"; echo 'Output after resize' ;;
+    INT|TERM) kill -s "$2" "$$" ;;
+    failure) exit 9 ;;
+esac
+'''
+        for action, expected_code, footer in (
+            ('success', 0, 'Setup complete'),
+            ('failure', 9, 'Setup stopped (exit 9)'),
+            ('INT', 130, 'Setup cancelled'),
+            ('TERM', 143, 'Setup cancelled'),
+            ('resize', 0, 'Setup complete'),
+        ):
+            with self.subTest(action=action):
+                args = ['bash', '-c', command, 'screen', str(ROOT / 'scripts/lib/setup-terminal.sh'), action]
+                status, output = terminal_run(args, dict(self.env, TERM='xterm'), [('Continue installing?', 'yes\n')])
+                self.assertEqual(status, expected_code, output)
+                self.assertIn('\x1b[10;23r', output)
+                self.assertIn('Ctrl+C to cancel', output)
+                self.assertIn('Build line 29', output)
+                self.assertEqual(output.count('\x1b[r'), 1, output)
+                self.assertTrue(output.rstrip().endswith(footer), output)
+                if action == 'resize':
+                    self.assertLess(output.index('\x1b[r'), output.index('Output after resize'))
+
     def manifest(self, names=('personal-1',)):
         data = {'version': 1, 'families': ['personal'], 'profiles': [
             {'name': name, 'email': name + '@example.com', 'family': 'personal', 'profilePath': 'personal/' + name, 'aliases': []}

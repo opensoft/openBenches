@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/image-names.sh"
 source "$SCRIPT_DIR/lib/setup-prerequisites.sh"
 source "$SCRIPT_DIR/lib/setup-status-loader.sh"
+source "$SCRIPT_DIR/lib/setup-terminal.sh"
 source "$SCRIPT_DIR/../bootstrap.sh"
 setup_version="$(workbenches_version)"
 LOG_DIR="$SCRIPT_DIR/../logs"
@@ -98,40 +99,6 @@ setup_ui_pair() {
     left="${left:0:$((width - ${#right} - 1))}"
     gap=$((width - ${#left} - ${#right}))
     printf '%s%*s%s' "$left" "$gap" '' "$right"
-}
-
-draw_setup_banner() {
-    # Original OpenSoft wordmark, with inset half-block shading inspired by
-    # https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/component/logo.tsx
-    local -a logo=(
-        '                                    ▄ '
-        '█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀▀ ▀█▀▀'
-        '█__█ █__█ █^^^ █__█ ▀▀▀█ █__█ █^^   █__'
-        '▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀ ▀▀▀▀ ▀▀▀▀ ▀     ▀▀▀'
-    )
-    local -a tones=(255 252 250 246)
-    local line char tone index position
-    printf '\n'
-    if (( setup_ui_width < 42 )); then
-        printf '  %bOpensoft%b\n\n' "$SILVER" "$NC"
-        return
-    fi
-    for index in "${!logo[@]}"; do
-        line="${logo[$index]}"
-        tone="\033[38;5;${tones[$index]}m"
-        printf '  %b' "$tone"
-        for ((position=0; position<${#line}; position++)); do
-            char="${line:$position:1}"
-            case "$char" in
-                _) printf '\033[48;5;237m %b%b' "$NC" "$tone" ;;
-                '^') printf '\033[48;5;237m▀%b%b' "$NC" "$tone" ;;
-                '~') printf '%b▀%b' "$SILVER_EDGE" "$tone" ;;
-                *) printf '%s' "$char" ;;
-            esac
-        done
-        printf '%b\n' "$NC"
-    done
-    printf '\n'
 }
 
 setup_requirement_counts() {
@@ -1111,7 +1078,7 @@ draw_row() {
 # Build a complete frame off-screen; discovery never runs in the renderer.
 render_setup_frame() {
     local os_label
-    draw_setup_banner
+    draw_setup_banner "$setup_ui_width"
     os_label="${setup_os_label:0:$((setup_ui_width - 20))}"
     printf '%b%s%b\n' "$SILVER" "$(setup_ui_pair "workBenches v$setup_version" "$os_label" "$setup_ui_width")" "$NC"
     printf '%b%s%b\n\n' "$SILVER_EDGE" "$(setup_ui_rule "$setup_ui_width")" "$NC"
@@ -1804,12 +1771,16 @@ check_dir_safe_to_replace() {
 process_selections() {
     log "Processing selections - applying configuration changes"
     echo -e "${SHOW_CURSOR}"
-    clear
+    if [[ "${WORKBENCHES_INSTALL_SCREEN:-}" != 1 ]]; then
+        clear
 
-    echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}${BLUE}  Applying Configuration Changes${NC}"
-    echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════════════${NC}"
-    echo ""
+        echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}${BLUE}  Applying Configuration Changes${NC}"
+        echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════════════${NC}"
+        echo ""
+    else
+        printf '\nApplying selected components…\n'
+    fi
 
     local any_selected=false
     local success_count=0

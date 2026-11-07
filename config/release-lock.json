@@ -59,7 +59,7 @@
     },
     {
       "path": "sysBenches/cloudBench",
-      "url": "https://github.com/opensoft/cloudBench-public.git",
+      "url": "https://github.com/opensoft/cloudBench.git",
       "commit": "a45f6180b0a22fa5aebc0b691d7b5728fc2f0497"
     }
   ]

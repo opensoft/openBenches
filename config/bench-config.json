@@ -8,7 +8,7 @@
   },
   "benches": {
     "cloudBench": {
-      "url": "https://github.com/opensoft/cloudBench-public.git",
+      "url": "https://github.com/opensoft/cloudBench.git",
       "path": "sysBenches/cloudBench",
       "description": "Cloud infrastructure and operations tools",
       "ai_keywords": ["cloud", "infrastructure", "devops", "kubernetes", "docker", "deployment", "admin", "monitoring", "logging"]

@@ -508,6 +508,9 @@ sysBenches/cloudBench/docs/amnezia-server-runbook.md
 | gentecBench | [opensoft/gentecBench](https://github.com/opensoft/gentecBench) |
 | simBench | [opensoft/simBench](https://github.com/opensoft/simBench) |
 
+For existing cloudBench checkouts and historical release pins, see the
+[cloudBench source transition](docs/cloudbench-source-transition.md).
+
 ### Faster workstation setup
 
 New Compose benches are created with the shared Wave mounts and must pass an

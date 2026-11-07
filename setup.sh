@@ -11,6 +11,7 @@ if [[ "${1:-}" == --version ]]; then
     exit 0
 fi
 source "$SCRIPT_DIR/scripts/lib/setup-prerequisites.sh"
+source "$SCRIPT_DIR/scripts/lib/setup-terminal.sh"
 
 # Cancellation during prerequisite/password prompts must stop the launcher.
 trap 'exit 130' INT
@@ -127,7 +128,8 @@ fi
 ensure_setup_platform || exit "$?"
 if [[ ! -t 0 || ! -t 1 ]]; then ensure_workstation_requirements || exit "$?"; fi
 selection_file="$(mktemp "${TMPDIR:-/tmp}/workbenches-selection.XXXXXX")" || exit 1
-trap 'rm -f "$selection_file"' EXIT
+unset WORKBENCHES_INSTALL_SCREEN
+trap 'setup_status=$?; finish_setup_install_screen "$setup_status"; rm -f "$selection_file"' EXIT
 "${SCRIPT_DIR}/scripts/interactive-setup.sh" --select-only "$selection_file" || exit "$?"
 # The child TUI owns startup checks; adopt its ready runtime for applying the plan.
 if [[ -t 0 && -t 1 ]]; then ensure_workstation_requirements || exit "$?"; fi
@@ -141,6 +143,7 @@ if python3 "$SCRIPT_DIR/scripts/setup_selection.py" empty "$selection_file"; the
     exit 0
 fi
 selected_bench_paths="$(python3 "$SCRIPT_DIR/scripts/setup_selection.py" benches "$selection_file")" || exit "$?"
+start_setup_install_screen "$(workbenches_version)"
 if workbenches_release_checkout; then
     export WORKBENCHES_FROZEN=1
     printf 'Source mode: frozen v%s\n' "$(workbenches_version)" >> "$LOG_FILE"

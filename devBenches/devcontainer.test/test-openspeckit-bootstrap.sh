@@ -4292,7 +4292,11 @@ import os
 from pathlib import Path
 import runpy
 import signal
+import socket
+import subprocess
 import sys
+import time
+from types import SimpleNamespace
 
 namespace = runpy.run_path(sys.argv[1], run_name="setup_openspeckit_test")
 link_or_copy_skill = namespace["link_or_copy_skill"]
@@ -4692,6 +4696,178 @@ expect_logged_skip(
 )
 check(not (fixture_root / "loop-repo").exists(), "skip-only-links: the symlink loop leaves no destination")
 
+def run_and_capture(action):
+    """Run the action: return the error it raised (or None) and what it logged."""
+    captured = io.StringIO()
+    error = None
+    try:
+        with redirect_stdout(captured):
+            action()
+    except BaseException as exc:
+        error = exc
+    return error, captured.getvalue()
+
+
+# The listing walks the tree with os.walk and an onerror that re-raises, in the
+# order sorted(rglob("*")) gave. Path.rglob passes silently over a folder it
+# cannot read, so a skill with an unreadable subfolder was copied without that
+# folder's files and the run exited 0.
+source_tree_paths = tool_globals.get("source_tree_paths")
+listing_tree = fixture_root / "listing-tree"
+(listing_tree / "a" / "b").mkdir(parents=True)
+(listing_tree / "a" / "b" / "c.txt").write_text("nested\n", encoding="utf-8")
+(listing_tree / "a" / "d.txt").write_text("d\n", encoding="utf-8")
+(listing_tree / "a-b.txt").write_text("a-b\n", encoding="utf-8")
+(listing_tree / "a.txt").write_text("a\n", encoding="utf-8")
+(listing_tree / ".hidden").write_text("hidden\n", encoding="utf-8")
+(listing_tree / "empty").mkdir()
+(listing_tree / "z").mkdir()
+(listing_tree / "z" / "to-file").symlink_to("../a.txt")
+(listing_tree / "z" / "to-dir").symlink_to("../a", target_is_directory=True)
+(listing_tree / "z" / "dangling").symlink_to("nowhere")
+(listing_tree / "z" / "loop").symlink_to("loop")
+old_listing = sorted(listing_tree.rglob("*"))
+if callable(source_tree_paths):
+    new_listing = source_tree_paths(listing_tree)
+    check(
+        new_listing == old_listing and len(old_listing) == 13,
+        "tree listing: a readable tree with nested folders and symlinks lists the same paths in the same order as rglob",
+    )
+    check(
+        listing_tree / "z" / "to-dir" in new_listing
+        and listing_tree / "z" / "to-dir" / "b" not in new_listing,
+        "tree listing: a symlink to a folder is listed and not followed",
+    )
+else:
+    check(False, "tree listing: the listing is a function of its own")
+first_listed_symlink = next(path for path in old_listing if path.is_symlink())
+try:
+    original_entries(listing_tree)
+except SystemExit as exc:
+    check(
+        f"symlink found at {first_listed_symlink}" in str(exc),
+        "tree listing: the refusal names the first symlink in listing order",
+    )
+else:
+    check(False, "tree listing: a tree with symlinks is refused")
+plain_entries = original_entries(listing_tree / "a")
+check(
+    [entry.path for entry in plain_entries] == sorted((listing_tree / "a").rglob("*"))
+    and all(entry.mode == entry.path.lstat().st_mode for entry in plain_entries),
+    "tree listing: a readable tree without a symlink gives the entries rglob gave, with their modes",
+)
+
+if os.geteuid() == 0:
+    print("SKIP: a mode-000 folder is still readable by root")
+else:
+    unreadable_checkout = make_checkout("unreadable-folder-checkout")
+    unreadable_home = linked_home("unreadable-folder-home", unreadable_checkout)
+    unreadable_folder = unreadable_checkout / "skills" / "ct" / "private"
+    unreadable_folder.mkdir()
+    (unreadable_folder / "secret.txt").write_text("secret\n", encoding="utf-8")
+    unreadable_folder.chmod(0)
+    unreadable_skill = unreadable_home / ".agents" / "skills" / "ct"
+    unreadable_destination = fixture_root / "unreadable-folder-repo" / ".agents" / "skills" / "ct"
+    try:
+        listing_error = expect_error(
+            lambda: original_entries(unreadable_checkout / "skills" / "ct"),
+            PermissionError,
+            "tree listing: a folder that cannot be read stops the listing",
+            errno.EACCES,
+        )
+        check(
+            listing_error is not None and listing_error.filename == str(unreadable_folder),
+            "tree listing: the error names the folder that cannot be read",
+        )
+        skill_error, skill_output = run_and_capture(
+            lambda: link_or_copy_skill(unreadable_skill, unreadable_destination, False, False)
+        )
+        check(
+            isinstance(skill_error, PermissionError)
+            and skill_error.filename == str(unreadable_folder)
+            and "skipped " not in skill_output,
+            f"tree listing: a skill with a folder that cannot be read stops the run, not a skip (log: {skill_output.strip()!r})",
+        )
+        check(
+            f"stopped {unreadable_skill}: " in skill_output and str(unreadable_folder) in skill_output,
+            "stopped line: a listing error names the skill and the folder",
+        )
+        check(not (fixture_root / "unreadable-folder-repo").exists(), "tree listing: the skill with a folder that cannot be read leaves no destination")
+    finally:
+        unreadable_folder.chmod(0o755)
+
+# The same stop at any uid, root included: the folder read is injected to fail,
+# with os.scandir patched as the tool's code sees it, since a mode-000 folder is
+# still readable by root and the case above does not run there.
+injected_checkout = make_checkout("injected-folder-checkout")
+injected_home = linked_home("injected-folder-home", injected_checkout)
+injected_skill = injected_home / ".agents" / "skills" / "ct"
+injected_folder = injected_checkout / "skills" / "ct" / "nested"
+injected_destination = fixture_root / "injected-folder-repo" / ".agents" / "skills" / "ct"
+tool_os = tool_globals["os"]
+real_scandir = tool_os.scandir
+injected_reads = []
+
+
+def scandir_failing_for(folder):
+    def fake_scandir(path="."):
+        if os.fspath(path) == str(folder):
+            injected_reads.append(os.fspath(path))
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(folder))
+        return real_scandir(path)
+
+    return fake_scandir
+
+
+tool_os.scandir = scandir_failing_for(injected_folder)
+try:
+    injected_listing_error = expect_error(
+        lambda: original_entries(injected_checkout / "skills" / "ct"),
+        PermissionError,
+        "tree listing: an injected permission error at a folder read stops the listing",
+        errno.EACCES,
+    )
+    injected_skill_error, injected_skill_output = run_and_capture(
+        lambda: link_or_copy_skill(injected_skill, injected_destination, False, False)
+    )
+finally:
+    tool_os.scandir = real_scandir
+check(len(injected_reads) >= 2, f"tree listing: the injected folder read was reached by both calls ({len(injected_reads)} reads)")
+check(
+    injected_listing_error is not None and injected_listing_error.filename == str(injected_folder),
+    "tree listing: the injected error propagates out of the listing and names the folder",
+)
+check(
+    isinstance(injected_skill_error, PermissionError)
+    and injected_skill_error.filename == str(injected_folder)
+    and "skipped " not in injected_skill_output
+    and "copied " not in injected_skill_output,
+    f"tree listing: the injected error stops a skill copy, not a skip (log: {injected_skill_output.strip()!r})",
+)
+check(
+    f"stopped {injected_skill}: " in injected_skill_output,
+    "stopped line: an injected listing error names the skill",
+)
+check(not (fixture_root / "injected-folder-repo").exists(), "tree listing: the skill whose folder read failed leaves no destination")
+
+# A stopped run names the skill: the line logged before the error propagates.
+stopped_listing_error = PermissionError(errno.EACCES, os.strerror(errno.EACCES), "ct")
+stopped_listing_skill = listing_home / ".agents" / "skills" / "ct"
+tool_globals["safe_source_tree_entries"] = listing_raises(stopped_listing_error)
+try:
+    stopped_error, stopped_output = run_and_capture(
+        lambda: link_or_copy_skill(
+            stopped_listing_skill, fixture_root / "stopped-listing-repo" / ".agents" / "skills" / "ct", False, False
+        )
+    )
+finally:
+    tool_globals["safe_source_tree_entries"] = original_entries
+check(stopped_error is stopped_listing_error, "stopped line: the listing error still propagates as it was")
+check(
+    f"stopped {stopped_listing_skill}: {stopped_listing_error}" in stopped_output and "skipped " not in stopped_output,
+    f"stopped line: an error while listing a source names the skill (log: {stopped_output.strip()!r})",
+)
+
 # More races: a file removed, and a named pipe swapped in, after the listing.
 # The pipe case must not hang: a listed regular file's open used to block until
 # a writer appeared, so the whole case runs under an alarm and a hang is a FAIL.
@@ -4742,6 +4918,48 @@ check(
 )
 check(not (fixture_root / "fifo-race-repo").exists(), "linked-source race: the skill whose file became a pipe leaves no destination")
 check(open_descriptor_count() == fifo_descriptors_before, "linked-source race: the pipe case leaves no descriptor open")
+
+# A Unix socket swapped in after the listing is skipped like a named pipe. A
+# socket is not opened (ENXIO), where a named pipe opens and is then refused, so
+# its errno is in the set of link-or-change errors too.
+socket_checkout = make_checkout("socket-race-checkout")
+socket_home = linked_home("socket-race-home", socket_checkout)
+kept_sockets = []
+
+
+def swap_file_for_socket():
+    data = socket_checkout / "skills" / "ct" / "nested" / "data.txt"
+    data.unlink()
+    # Bound by a relative name: a fixture path can be longer than sun_path.
+    previous_directory = os.getcwd()
+    os.chdir(data.parent)
+    try:
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(data.name)
+    finally:
+        os.chdir(previous_directory)
+    kept_sockets.append(server)
+
+
+socket_destination = fixture_root / "socket-race-repo" / ".agents" / "skills" / "ct"
+socket_descriptors_before = open_descriptor_count()
+tool_globals["safe_source_tree_entries"] = listing_then(swap_file_for_socket)
+try:
+    with hang_guard(10):
+        expect_logged_skip(
+            lambda: link_or_copy_skill(socket_home / ".agents" / "skills" / "ct", socket_destination, False, False),
+            "linked-source race: a skill file swapped for a Unix socket after listing is a logged skip",
+        )
+finally:
+    tool_globals["safe_source_tree_entries"] = original_entries
+    for kept_socket in kept_sockets:
+        kept_socket.close()
+check(not (fixture_root / "socket-race-repo").exists(), "linked-source race: the skill whose file became a socket leaves no destination")
+check(open_descriptor_count() == socket_descriptors_before, "linked-source race: the socket case leaves no descriptor open")
+check(
+    tool_globals["is_link_or_change"](OSError(errno.ENXIO, os.strerror(errno.ENXIO), "data.txt")),
+    "linked-source race: ENXIO is a link-or-change error",
+)
 
 # A logged skip under force leaves what is already at the destination alone.
 force_checkout = make_checkout("force-skip-checkout")
@@ -4818,6 +5036,274 @@ with hang_guard(10):
 check(non_regular_error is not None and "Refusing to copy non-regular source file" in str(non_regular_error), "skip-only-links: the non-regular refusal keeps its message")
 check(open_descriptor_count() == direct_before, "skip-only-links: the two refusals close the descriptor they opened")
 
+# A file under a lease. The source is opened with O_NONBLOCK, so a regular file
+# under a lease (a Samba oplock, an NFS delegation) fails at once with
+# BlockingIOError, where a blocking open waits for the lease holder to give the
+# lease up. The open is retried for as long as a blocking open could have
+# waited, with a margin, then the error propagates.
+real_lease_break_seconds = tool_globals.get("lease_break_seconds")
+
+
+def flaky_open(name, failures, hits):
+    """os.open raising BlockingIOError for the first `failures` opens of `name` (all, if None)."""
+    def fake_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None and path == name:
+            hits.append(path)
+            if failures is None or len(hits) <= failures:
+                raise BlockingIOError(errno.EAGAIN, os.strerror(errno.EAGAIN), path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    return fake_open
+
+
+retry_checkout = make_checkout("lease-retry-checkout")
+retry_home = linked_home("lease-retry-home", retry_checkout)
+retry_destination = fixture_root / "lease-retry-repo" / ".agents" / "skills" / "ct"
+retry_hits = []
+retry_descriptors_before = open_descriptor_count()
+os.open = flaky_open("data.txt", 3, retry_hits)
+try:
+    retry_error, retry_output = run_and_capture(
+        lambda: link_or_copy_skill(retry_home / ".agents" / "skills" / "ct", retry_destination, False, False)
+    )
+finally:
+    os.open = real_open
+check(
+    retry_error is None
+    and (retry_destination / "nested" / "data.txt").read_bytes() == b"data\n"
+    and (retry_destination / "SKILL.md").read_bytes() == b"linked skill\n",
+    f"lease: a file whose first opens fail with BlockingIOError is still copied ({type(retry_error).__name__ if retry_error else 'no error'}: {retry_error})",
+)
+check(len(retry_hits) == 4, f"lease: the open was retried until it went through ({len(retry_hits)} opens)")
+check("skipped " not in retry_output and "stopped " not in retry_output, "lease: a retried open logs neither a skip nor a stop")
+check(open_descriptor_count() == retry_descriptors_before, "lease: the retried open leaves no descriptor open")
+
+persistent_checkout = make_checkout("lease-persistent-checkout")
+persistent_home = linked_home("lease-persistent-home", persistent_checkout)
+persistent_skill = persistent_home / ".agents" / "skills" / "ct"
+persistent_hits = []
+persistent_descriptors_before = open_descriptor_count()
+# The bound is lowered so the case does not wait the kernel's 45 seconds (the
+# margin on it still applies). A retry that never ends fails under the guard,
+# where it would hang until the job's own timeout.
+tool_globals["lease_break_seconds"] = lambda: 0.3
+os.open = flaky_open("data.txt", None, persistent_hits)
+persistent_started = time.monotonic()
+try:
+    with hang_guard(10):
+        persistent_error, persistent_output = run_and_capture(
+            lambda: link_or_copy_skill(
+                persistent_skill, fixture_root / "lease-persistent-repo" / ".agents" / "skills" / "ct", False, False
+            )
+        )
+finally:
+    os.open = real_open
+    if real_lease_break_seconds is not None:
+        tool_globals["lease_break_seconds"] = real_lease_break_seconds
+    else:
+        del tool_globals["lease_break_seconds"]
+persistent_elapsed = time.monotonic() - persistent_started
+check(
+    isinstance(persistent_error, BlockingIOError) and persistent_error.errno == errno.EAGAIN,
+    f"lease: a lease that is never given up propagates BlockingIOError ({type(persistent_error).__name__ if persistent_error else 'no error'})",
+)
+check(
+    len(persistent_hits) >= 3 and persistent_elapsed >= 0.3,
+    f"lease: the open was retried until the bound had passed ({len(persistent_hits)} opens in {persistent_elapsed:.2f} s)",
+)
+check(persistent_elapsed < 10, f"lease: the retry ends with the bound ({persistent_elapsed:.2f} s)")
+check(
+    f"stopped {persistent_skill}: " in persistent_output and "skipped " not in persistent_output,
+    f"stopped line: an error while opening a source file names the skill (log: {persistent_output.strip()!r})",
+)
+check(not (fixture_root / "lease-persistent-repo").exists(), "lease: a skill whose file stays under a lease leaves no destination")
+check(open_descriptor_count() == persistent_descriptors_before, "lease: the persistent case leaves no descriptor open")
+
+# The bound has a margin. The kernel breaks a lease only once its clock has
+# passed the break time, so the lease can break up to one clock tick after the
+# bound a retry counted from its first failure (4 ms at 250 Hz, 10 ms at
+# 100 Hz). A retry that gave up at the break time itself could give up just
+# before the lease broke. The cases need no real lease and no real wait: the
+# tool's time is a fake clock whose sleep advances it, and the open fails with
+# BlockingIOError until a tick past the bound. The clock counts its sleeps
+# instead of adding them up, so it does not drift.
+class FakeClock:
+    def __init__(self):
+        self.sleeps = 0
+        self.step = 0.0
+
+    def monotonic(self):
+        return 100.0 + self.sleeps * self.step
+
+    def sleep(self, seconds):
+        self.sleeps += 1
+        self.step = seconds
+
+    def elapsed(self):
+        return self.sleeps * self.step
+
+
+@contextmanager
+def patched_tool_globals(**replacements):
+    absent = object()
+    saved = {name: tool_globals.get(name, absent) for name in replacements}
+    tool_globals.update(replacements)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is absent:
+                del tool_globals[name]
+            else:
+                tool_globals[name] = value
+
+
+def leased_open(clock, name, release_after, first_failure):
+    """os.open failing with BlockingIOError for `name` until release_after s past its first failure."""
+    def fake_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None and path == name:
+            if not first_failure:
+                first_failure.append(clock.monotonic())
+            if release_after is None or clock.monotonic() < first_failure[0] + release_after:
+                raise BlockingIOError(errno.EAGAIN, os.strerror(errno.EAGAIN), path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    return fake_open
+
+
+margin_checkout = make_checkout("lease-margin-checkout")
+margin_file = margin_checkout / "skills" / "ct" / "nested" / "data.txt"
+margin_stat = margin_file.lstat()
+margin_entry = tool_globals["SourceTreeEntry"](
+    path=margin_file, mode=margin_stat.st_mode, device=margin_stat.st_dev, inode=margin_stat.st_ino
+)
+BREAK_SECONDS = 45.0
+margin = tool_globals.get("LEASE_BREAK_MARGIN_SECONDS")
+check(
+    isinstance(margin, (int, float)) and margin >= 0.010,
+    f"lease margin: the bound has a margin of at least one 100 Hz tick ({margin!r} s)",
+)
+
+
+def open_on_fake_clock(release_after):
+    """Open the file with a lease that breaks release_after s after the first failed open (never, if None)."""
+    clock = FakeClock()
+    first_failure = []
+    descriptors_before = open_descriptor_count()
+    descriptor = None
+    error = None
+    os.open = leased_open(clock, "data.txt", release_after, first_failure)
+    try:
+        with patched_tool_globals(
+            time=SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep),
+            lease_break_seconds=lambda: BREAK_SECONDS,
+        ):
+            with hang_guard(10):
+                try:
+                    descriptor = tool_globals["open_source_file"](margin_entry)
+                except BaseException as exc:
+                    error = exc
+    finally:
+        os.open = real_open
+    if descriptor is not None:
+        os.close(descriptor)
+    return descriptor, error, clock, open_descriptor_count() == descriptors_before
+
+
+for tick in (0.004, 0.010):
+    margin_descriptor, margin_error, margin_clock, margin_closed = open_on_fake_clock(BREAK_SECONDS + tick)
+    check(
+        margin_descriptor is not None and margin_error is None,
+        f"lease margin: a lease the kernel breaks {tick * 1000:.0f} ms after the break time is still waited out "
+        f"({type(margin_error).__name__ if margin_error else 'opened'} at +{margin_clock.elapsed():.3f} s)",
+    )
+    check(margin_closed, f"lease margin: the {tick * 1000:.0f} ms case leaves no descriptor open")
+
+# The bound is still finite: a lease that is never broken ends the retry one
+# margin past the break time, on the fake clock and so at once.
+never_descriptor, never_error, never_clock, never_closed = open_on_fake_clock(None)
+check(
+    never_descriptor is None
+    and isinstance(never_error, BlockingIOError)
+    and isinstance(margin, (int, float))
+    and BREAK_SECONDS + margin - 1e-6 <= never_clock.elapsed() < BREAK_SECONDS + margin + 0.5,
+    f"lease margin: a lease that is never broken ends the retry one margin past the break time "
+    f"({type(never_error).__name__ if never_error else 'opened'} at +{never_clock.elapsed():.3f} s)",
+)
+check(never_closed, "lease margin: the never-broken case leaves no descriptor open")
+
+# The bound is the kernel's lease-break time, and 45 seconds if it cannot be read.
+real_lease_path = tool_globals.get("LEASE_BREAK_TIME_PATH")
+lease_time_file = fixture_root / "lease-break-time"
+if callable(real_lease_break_seconds):
+    try:
+        for text, expected in (("7\n", 7.0), ("0\n", 0.0), ("-3\n", 0.0), ("not a number\n", 45.0), ("", 45.0)):
+            lease_time_file.write_text(text, encoding="utf-8")
+            tool_globals["LEASE_BREAK_TIME_PATH"] = lease_time_file
+            check(real_lease_break_seconds() == expected, f"lease: a lease-break time file holding {text!r} gives {expected} s")
+        tool_globals["LEASE_BREAK_TIME_PATH"] = fixture_root / "no-such-lease-break-time"
+        check(real_lease_break_seconds() == 45.0, "lease: a lease-break time file that cannot be read gives 45 s")
+    finally:
+        tool_globals["LEASE_BREAK_TIME_PATH"] = real_lease_path
+    if real_lease_path is not None and real_lease_path.is_file():
+        check(
+            real_lease_break_seconds() == float(int(real_lease_path.read_text(encoding="ascii"))),
+            "lease: the bound is the kernel's own lease-break time",
+        )
+else:
+    check(False, "lease: the bound is a function of its own")
+
+# A real lease, held by another process that gives it up a moment after the
+# kernel tells it another process opened the file.
+LEASE_HOLDER = """
+import fcntl, os, signal, sys, time
+descriptor = os.open(sys.argv[1], os.O_RDONLY)
+def give_up(signum, frame):
+    time.sleep(float(sys.argv[2]))
+    fcntl.fcntl(descriptor, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+signal.signal(signal.SIGIO, give_up)
+try:
+    fcntl.fcntl(descriptor, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+except OSError as exc:
+    print("unsupported: " + str(exc), flush=True)
+    sys.exit(0)
+print("ready", flush=True)
+signal.pause()
+"""
+real_lease_checkout = make_checkout("lease-real-checkout")
+real_lease_home = linked_home("lease-real-home", real_lease_checkout)
+real_lease_destination = fixture_root / "lease-real-repo" / ".agents" / "skills" / "ct"
+real_lease_file = real_lease_checkout / "skills" / "ct" / "nested" / "data.txt"
+lease_holder = subprocess.Popen(
+    [sys.executable, "-I", "-c", LEASE_HOLDER, str(real_lease_file), "0.5"],
+    stdout=subprocess.PIPE,
+    text=True,
+)
+try:
+    with hang_guard(30):
+        holder_state = lease_holder.stdout.readline().strip()
+        if holder_state != "ready":
+            print(f"SKIP: this filesystem or kernel gives no lease on a file ({holder_state})")
+        else:
+            real_lease_started = time.monotonic()
+            real_lease_error, real_lease_output = run_and_capture(
+                lambda: link_or_copy_skill(
+                    real_lease_home / ".agents" / "skills" / "ct", real_lease_destination, False, False
+                )
+            )
+            real_lease_elapsed = time.monotonic() - real_lease_started
+            check(
+                real_lease_error is None
+                and (real_lease_destination / "nested" / "data.txt").read_bytes() == b"data\n",
+                f"lease: a file under a real lease is copied once the holder gives it up ({type(real_lease_error).__name__ if real_lease_error else 'no error'}: {real_lease_error})",
+            )
+            check(real_lease_elapsed >= 0.4, f"lease: the open waited for the holder ({real_lease_elapsed:.2f} s)")
+            check("skipped " not in real_lease_output and "stopped " not in real_lease_output, "lease: waiting for a lease logs neither a skip nor a stop")
+finally:
+    lease_holder.terminate()
+    lease_holder.wait(timeout=10)
+    lease_holder.stdout.close()
+
 # A source file larger than one read chunk is copied byte for byte.
 big_checkout = make_checkout("big-checkout")
 big_data = bytes(range(256)) * (3 * 4096 + 1)
@@ -4872,6 +5358,125 @@ printf '%s\n' 'Then: the failure is named, is not logged as a skip, and leaves n
 assert_contains "$TMPDIR_ROOT/open-limit.log" 'Too many open files' 'the descriptor-limit failure is reported'
 assert_not_contains "$TMPDIR_ROOT/open-limit.log" 'skipped ' 'the descriptor-limit failure is not logged as a skip'
 assert_not_exists "$OPEN_LIMIT_REPO/.agents/skills/ct" 'a skill that could not be opened leaves no destination'
+
+printf '%s\n' 'Given: a skill with a folder inside it that cannot be read, beside a skill that can be copied'
+# The listing used to pass over a folder it could not read, so the skill was
+# copied without that folder's files and the run exited 0. The listing now
+# stops at it, and preflight uses the same listing, so the run stops before it
+# writes anything, for the skill that could be copied as well. A mode-000 folder
+# is still readable by root, so the case does not run as root.
+if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s\n' 'SKIP: a mode-000 folder is still readable by root'
+else
+    UNREADABLE_HOME="$TMPDIR_ROOT/unreadable-folder-home"
+    UNREADABLE_REPO="$TMPDIR_ROOT/unreadable-folder-repo"
+    UNREADABLE_FOLDER="$UNREADABLE_HOME/.agents/skills/ct/private"
+    mkdir -p "$UNREADABLE_HOME/.agents/skills/speckit-analyze" "$UNREADABLE_FOLDER" "$UNREADABLE_REPO"
+    printf '%s\n' 'a skill that can be copied' > "$UNREADABLE_HOME/.agents/skills/speckit-analyze/SKILL.md"
+    printf '%s\n' 'a skill with a folder that cannot be read' > "$UNREADABLE_HOME/.agents/skills/ct/SKILL.md"
+    printf '%s\n' 'inside the folder that cannot be read' > "$UNREADABLE_FOLDER/data.txt"
+    chmod 000 "$UNREADABLE_FOLDER"
+    git init -q "$UNREADABLE_REPO"
+    UNREADABLE_TREE_BEFORE="$(find "$UNREADABLE_REPO" -path "$UNREADABLE_REPO/.git" -prune -o -print | sort)"
+
+    printf '%s\n' 'When: bootstrap copies skills and one skill has a folder that cannot be read'
+    UNREADABLE_STATUS=0
+    env -u AGENT_PROTOCOL_ROOT \
+        HOME="$UNREADABLE_HOME" \
+        OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
+        python3 "$SETUP_SCRIPT" \
+            --repo "$UNREADABLE_REPO" \
+            "${LINKED_AGENTS_FLAGS[@]}" > "$TMPDIR_ROOT/unreadable-folder.log" 2>&1 || UNREADABLE_STATUS=$?
+    chmod 755 "$UNREADABLE_FOLDER"
+
+    printf '%s\n' 'Then: the run stops before any write, and the error names the folder'
+    if [[ "$UNREADABLE_STATUS" -ne 0 ]]; then
+        pass 'bootstrap exits non-zero when a skill has a folder that cannot be read'
+    else
+        fail 'bootstrap exits non-zero when a skill has a folder that cannot be read'
+    fi
+    assert_contains "$TMPDIR_ROOT/unreadable-folder.log" "Permission denied: '$UNREADABLE_FOLDER'" 'the error names the folder that cannot be read'
+    assert_not_contains "$TMPDIR_ROOT/unreadable-folder.log" 'copied ' 'a run stopped by a folder that cannot be read copies nothing'
+    assert_not_exists "$UNREADABLE_REPO/.agents/skills/speckit-analyze" 'the skill that could be copied is not copied either'
+    assert_not_exists "$UNREADABLE_REPO/.agents/skills/ct" 'a skill with a folder that cannot be read leaves no destination'
+    assert_equal \
+        "$(find "$UNREADABLE_REPO" -path "$UNREADABLE_REPO/.git" -prune -o -print | sort)" \
+        "$UNREADABLE_TREE_BEFORE" \
+        'a run stopped by a folder that cannot be read writes nothing to the repository'
+fi
+
+printf '%s\n' 'Given: a command template folder with a folder inside it that cannot be read'
+# The stop is in the listing every source tree goes through, so it is not only
+# for skills: the command templates, the worktree and overlay templates, the
+# target repository's .specify and staged outputs are listed by it too. The
+# command template root stands for them here. A mode-000 folder is still
+# readable by root, so the case does not run as root.
+if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s\n' 'SKIP: a mode-000 folder is still readable by root'
+else
+    UNREADABLE_COMMAND_ROOT="$TMPDIR_ROOT/unreadable-command-root"
+    UNREADABLE_COMMAND_HOME="$TMPDIR_ROOT/unreadable-command-home"
+    UNREADABLE_COMMAND_REPO="$TMPDIR_ROOT/unreadable-command-repo"
+    UNREADABLE_COMMAND_FOLDER="$UNREADABLE_COMMAND_ROOT/private"
+    mkdir -p "$UNREADABLE_COMMAND_FOLDER" "$UNREADABLE_COMMAND_HOME" "$UNREADABLE_COMMAND_REPO"
+    printf '%s\n' 'a command that can be copied' > "$UNREADABLE_COMMAND_ROOT/00-safe.md"
+    printf '%s\n' 'inside the folder that cannot be read' > "$UNREADABLE_COMMAND_FOLDER/hidden.md"
+    chmod 000 "$UNREADABLE_COMMAND_FOLDER"
+    git init -q "$UNREADABLE_COMMAND_REPO"
+    UNREADABLE_COMMAND_TREE_BEFORE="$(find "$UNREADABLE_COMMAND_REPO" "$UNREADABLE_COMMAND_HOME" -path "$UNREADABLE_COMMAND_REPO/.git" -prune -o -print | sort)"
+
+    printf '%s\n' 'When: bootstrap copies command templates and one folder of them cannot be read'
+    UNREADABLE_COMMAND_STATUS=0
+    env -u AGENT_PROTOCOL_ROOT \
+        HOME="$UNREADABLE_COMMAND_HOME" \
+        OPSX_COMMAND_TEMPLATE_ROOT="$UNREADABLE_COMMAND_ROOT" \
+        python3 "$SETUP_SCRIPT" \
+            --repo "$UNREADABLE_COMMAND_REPO" \
+            --no-skill-links \
+            "${LINKED_AGENTS_FLAGS[@]}" > "$TMPDIR_ROOT/unreadable-command.log" 2>&1 || UNREADABLE_COMMAND_STATUS=$?
+    chmod 755 "$UNREADABLE_COMMAND_FOLDER"
+
+    printf '%s\n' 'Then: the run exits 1 before any write, and the error names the folder'
+    assert_equal "$UNREADABLE_COMMAND_STATUS" 1 'bootstrap exits 1 when a command template folder cannot be read'
+    assert_contains "$TMPDIR_ROOT/unreadable-command.log" "Permission denied: '$UNREADABLE_COMMAND_FOLDER'" 'the error names the command template folder that cannot be read'
+    assert_not_contains "$TMPDIR_ROOT/unreadable-command.log" 'copied ' 'a run stopped by a command template folder that cannot be read copies nothing'
+    assert_equal \
+        "$(find "$UNREADABLE_COMMAND_REPO" "$UNREADABLE_COMMAND_HOME" -path "$UNREADABLE_COMMAND_REPO/.git" -prune -o -print | sort)" \
+        "$UNREADABLE_COMMAND_TREE_BEFORE" \
+        'a run stopped by a command template folder that cannot be read writes nothing'
+fi
+
+printf '%s\n' 'Given: a skill with a file that cannot be read'
+# A stopped run names the skill: the last log line used to name another skill,
+# and the traceback names only the file's base name.
+if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s\n' 'SKIP: a mode-000 file is still readable by root'
+else
+    STOPPED_HOME="$TMPDIR_ROOT/stopped-skill-home"
+    STOPPED_REPO="$TMPDIR_ROOT/stopped-skill-repo"
+    mkdir -p "$STOPPED_HOME/.agents/skills/ct" "$STOPPED_REPO"
+    printf '%s\n' 'a skill with a file that cannot be read' > "$STOPPED_HOME/.agents/skills/ct/SKILL.md"
+    printf '%s\n' 'a file that cannot be read' > "$STOPPED_HOME/.agents/skills/ct/secret.txt"
+    chmod 000 "$STOPPED_HOME/.agents/skills/ct/secret.txt"
+    git init -q "$STOPPED_REPO"
+
+    printf '%s\n' 'When: bootstrap copies skills and one skill file cannot be read'
+    STOPPED_STATUS=0
+    env -u AGENT_PROTOCOL_ROOT \
+        HOME="$STOPPED_HOME" \
+        OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
+        python3 "$SETUP_SCRIPT" \
+            --repo "$STOPPED_REPO" \
+            "${LINKED_AGENTS_FLAGS[@]}" > "$TMPDIR_ROOT/stopped-skill.log" 2>&1 || STOPPED_STATUS=$?
+    chmod 644 "$STOPPED_HOME/.agents/skills/ct/secret.txt"
+
+    printf '%s\n' 'Then: the run exits 1 and a stopped line names the skill'
+    assert_equal "$STOPPED_STATUS" 1 'bootstrap exits 1 when a skill file cannot be read'
+    assert_contains "$TMPDIR_ROOT/stopped-skill.log" "stopped $STOPPED_HOME/.agents/skills/ct: " 'a stopped run logs a line naming the skill path'
+    assert_contains "$TMPDIR_ROOT/stopped-skill.log" 'Permission denied' 'the stopped line carries the error'
+    assert_not_contains "$TMPDIR_ROOT/stopped-skill.log" 'skipped ' 'a file that cannot be read is not logged as a skip'
+    assert_not_exists "$STOPPED_REPO/.agents/skills/ct" 'a skill whose file cannot be read leaves no destination'
+fi
 
 printf '%s\n' 'Given: overlay template trees with and without the shape compatibility marker'
 make_fake_overlay_template() {
@@ -5341,10 +5946,18 @@ run_local_exclude_bootstrap() {
     local repo="$1"
     local log_file="$2"
     shift 2
+    # The tool reads only the fixture's git config: no system file, and the
+    # global and XDG files under the fixture's HOME. On the CI runner (git
+    # 2.56.0) a system, global or XDG config that trusts /tmp repositories would
+    # keep git from refusing the dubious-ownership runs below, and the step
+    # would write its lines.
     HOME="$LOCAL_EXCLUDE_HOME" \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_GLOBAL="$LOCAL_EXCLUDE_HOME/.gitconfig" \
+        XDG_CONFIG_HOME="$LOCAL_EXCLUDE_HOME/.config" \
         AGENT_PROTOCOL_ROOT="$LOCAL_EXCLUDE_PROTOCOL_ROOT" \
         OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
-        PATH="$LOCAL_EXCLUDE_BIN:/usr/bin:/bin" \
+        PATH="${LOCAL_EXCLUDE_PATH_FRONT:+$LOCAL_EXCLUDE_PATH_FRONT:}$LOCAL_EXCLUDE_BIN:/usr/bin:/bin" \
         python3 "$SETUP_SCRIPT" \
         --repo "$repo" \
         --integration gemini \
@@ -5383,10 +5996,35 @@ local_exclude_line_count() {
     fi
 }
 
+local_exclude_inode_changed() {
+    local file="$1"
+    local before="$2"
+    if [[ "$(stat -c '%i' "$file")" != "$before" ]]; then
+        printf '%s\n' changed
+    else
+        printf '%s\n' same
+    fi
+}
+
+local_exclude_shim_seen() {
+    local notes="$1"
+    local state="$2"
+    local pattern="$3"
+    if grep -Eq -- "^$state .*$pattern" "$notes"; then
+        printf '%s\n' yes
+    else
+        printf '%s\n' no
+    fi
+}
+
 LOCAL_EXCLUDE_REPO="$LOCAL_EXCLUDE_ROOT/fresh-repo"
 LOCAL_EXCLUDE_FILE="$LOCAL_EXCLUDE_REPO/.git/info/exclude"
 make_local_exclude_repo "$LOCAL_EXCLUDE_REPO"
+# git makes its stock exclude file with the creator's umask: 0644 here keeps the
+# mode check after the run independent of it.
+chmod 0644 "$LOCAL_EXCLUDE_FILE"
 cp "$LOCAL_EXCLUDE_FILE" "$LOCAL_EXCLUDE_ROOT/fresh-exclude.before"
+LOCAL_EXCLUDE_FRESH_INODE="$(stat -c '%i' "$LOCAL_EXCLUDE_FILE")"
 git -C "$LOCAL_EXCLUDE_REPO" ls-files > "$LOCAL_EXCLUDE_ROOT/fresh-ls-files.before"
 
 printf '%s\n' 'When: bootstrap initializes the fresh repository'
@@ -5414,6 +6052,8 @@ if head -c "$(stat -c '%s' "$LOCAL_EXCLUDE_ROOT/fresh-exclude.before")" "$LOCAL_
 else
     fail 'local exclude: the exclude file keeps its existing bytes first'
 fi
+assert_mode "$LOCAL_EXCLUDE_FILE" 644 "local exclude: git's stock exclude file is still 0644"
+assert_equal "$(local_exclude_inode_changed "$LOCAL_EXCLUDE_FILE" "$LOCAL_EXCLUDE_FRESH_INODE")" changed 'local exclude: a real run replaces the exclude file by a rename, not in place'
 
 printf '%s\n' 'Then: .github/ and the root context files are never excluded'
 assert_regular_directory "$LOCAL_EXCLUDE_REPO/.github" 'local exclude: the run created an untracked .github/'
@@ -5530,6 +6170,7 @@ assert_not_exists "$LOCAL_EXCLUDE_BARE_INFO_REPO/.git/info" 'local exclude: --dr
 assert_contains "$LOCAL_EXCLUDE_ROOT/dry.log" "would add /.specify/ to $LOCAL_EXCLUDE_DRY_FILE" 'local exclude: --dry-run logs the .specify/ line it would add'
 assert_contains "$LOCAL_EXCLUDE_ROOT/dry.log" "would add /.claude/ to $LOCAL_EXCLUDE_DRY_FILE" 'local exclude: --dry-run logs the agent folder line it would add'
 assert_contains "$LOCAL_EXCLUDE_ROOT/dry-no-info.log" "would add /.specify/ to $LOCAL_EXCLUDE_BARE_INFO_FILE" 'local exclude: --dry-run logs the line it would add to an absent exclude file'
+assert_contains "$LOCAL_EXCLUDE_ROOT/dry.log" "folders the run would create are decided by a real run: $LOCAL_EXCLUDE_DRY_FILE" 'local exclude: --dry-run with lines to add also says a real run decides the folders it would create'
 assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_DRY_REPO" .specify/)" 1 'local exclude: after --dry-run .specify/ is still not ignored'
 
 printf '%s\n' 'When: bootstrap runs for real where info/ is missing'
@@ -5544,6 +6185,26 @@ printf '%s\n' 'Then: info/exclude is created with the lines'
 assert_regular_directory "$LOCAL_EXCLUDE_BARE_INFO_REPO/.git/info" 'local exclude: the run creates the missing info/ directory'
 assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_BARE_INFO_FILE" '/.specify/')" 1 'local exclude: the created exclude file carries /.specify/ once'
 assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_BARE_INFO_REPO" .specify/)" 0 'local exclude: .specify/ is ignored once info/exclude is created'
+assert_mode "$LOCAL_EXCLUDE_BARE_INFO_FILE" 644 'local exclude: an exclude file created with its info/ directory is 0644'
+
+printf '%s\n' 'Given: a repository whose info/ directory is there with no exclude file in it'
+LOCAL_EXCLUDE_NEW_FILE_REPO="$LOCAL_EXCLUDE_ROOT/no-exclude-file-repo"
+LOCAL_EXCLUDE_NEW_FILE="$LOCAL_EXCLUDE_NEW_FILE_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_NEW_FILE_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_NEW_FILE_REPO/.git/info"
+assert_not_exists "$LOCAL_EXCLUDE_NEW_FILE" 'local exclude: the fixture has no exclude file at all'
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NEW_FILE_REPO" "$LOCAL_EXCLUDE_ROOT/no-exclude-file.log"; then
+    pass 'local exclude: the bootstrap with no exclude file succeeds'
+else
+    fail 'local exclude: the bootstrap with no exclude file succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/no-exclude-file.log"
+fi
+
+printf '%s\n' 'Then: the new exclude file carries the lines and is 0644'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_NEW_FILE" '/.specify/')" 1 'local exclude: the new exclude file carries /.specify/ once'
+assert_mode "$LOCAL_EXCLUDE_NEW_FILE" 644 'local exclude: a new exclude file is 0644'
 
 printf '%s\n' 'Given: a linked worktree of a repository'
 LOCAL_EXCLUDE_MAIN_REPO="$LOCAL_EXCLUDE_ROOT/worktree-main"
@@ -5610,6 +6271,736 @@ else
     fail 'local exclude: the outside exclude file behind a symlinked info/ changed'
 fi
 assert_equal "$(ls -A "$LOCAL_EXCLUDE_OUTSIDE/info-dir")" 'exclude' 'local exclude: nothing new is written in the outside info/ target'
+
+# Local exclude, continued: git decides each folder, the caller's git
+# environment never moves the lines to another repository, and the last step's
+# failures are named. A candidate folder that was there before the run, holding
+# only untracked files, is excluded as one the run creates is.
+local_exclude_starts_with() {
+    local file="$1"
+    local before="$2"
+    head -c "$(stat -c '%s' "$before")" "$file" | cmp -s - "$before"
+}
+
+printf '%s\n' 'Given: a folder inside another repository, as --repo'
+LOCAL_EXCLUDE_OUTER_REPO="$LOCAL_EXCLUDE_ROOT/outer-repo"
+LOCAL_EXCLUDE_INNER_DIR="$LOCAL_EXCLUDE_OUTER_REPO/sub"
+make_local_exclude_repo "$LOCAL_EXCLUDE_OUTER_REPO"
+mkdir "$LOCAL_EXCLUDE_INNER_DIR"
+cp "$LOCAL_EXCLUDE_OUTER_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/outer-exclude.before"
+
+printf '%s\n' 'When: bootstrap runs with that folder as --repo'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_INNER_DIR" "$LOCAL_EXCLUDE_ROOT/outer-sub.log"; then
+    pass 'local exclude: the bootstrap in a folder inside another repository succeeds'
+else
+    fail 'local exclude: the bootstrap in a folder inside another repository succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/outer-sub.log"
+fi
+
+printf '%s\n' "Then: the step is skipped, and the outer repository's exclude file is byte-identical"
+assert_contains "$LOCAL_EXCLUDE_ROOT/outer-sub.log" "skipped local git excludes: $LOCAL_EXCLUDE_INNER_DIR is not the top of a git work tree" 'local exclude: a folder inside another repository logs the skip'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/outer-exclude.before" "$LOCAL_EXCLUDE_OUTER_REPO/.git/info/exclude"; then
+    pass "local exclude: the outer repository's exclude file is byte-identical"
+else
+    fail "local exclude: the outer repository's exclude file changed"
+fi
+
+printf '%s\n' 'Given: a folder in no repository at all, with git told not to look above the test folder'
+LOCAL_EXCLUDE_NO_REPO="$LOCAL_EXCLUDE_ROOT/no-repo-at-all"
+mkdir "$LOCAL_EXCLUDE_NO_REPO"
+
+printf '%s\n' 'When: bootstrap runs with that folder as --repo'
+if GIT_CEILING_DIRECTORIES="$LOCAL_EXCLUDE_ROOT" LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NO_REPO" "$LOCAL_EXCLUDE_ROOT/no-repo.log"; then
+    pass 'local exclude: the bootstrap in a folder in no repository succeeds'
+else
+    fail 'local exclude: the bootstrap in a folder in no repository succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/no-repo.log"
+fi
+
+printf '%s\n' 'Then: the skip keeps its plain wording and does not read like a failed git call'
+assert_contains "$LOCAL_EXCLUDE_ROOT/no-repo.log" "skipped local git excludes: $LOCAL_EXCLUDE_NO_REPO is not the top of a git work tree" 'local exclude: a folder in no repository logs the plain skip'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/no-repo.log" 'git rev-parse failed' 'local exclude: a folder in no repository is not reported as a failed git call'
+assert_not_exists "$LOCAL_EXCLUDE_NO_REPO/.git" 'local exclude: a folder in no repository gets no git directory'
+
+printf '%s\n' 'Given: an exclude file whose last line, *.swp, has no final newline'
+LOCAL_EXCLUDE_NO_NEWLINE_REPO="$LOCAL_EXCLUDE_ROOT/no-final-newline-repo"
+LOCAL_EXCLUDE_NO_NEWLINE_FILE="$LOCAL_EXCLUDE_NO_NEWLINE_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_NO_NEWLINE_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_NO_NEWLINE_REPO/.git/info"
+printf '%s' '*.swp' > "$LOCAL_EXCLUDE_NO_NEWLINE_FILE"
+printf '%s\n' 'scratch' > "$LOCAL_EXCLUDE_NO_NEWLINE_REPO/notes.swp"
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NO_NEWLINE_REPO" "$LOCAL_EXCLUDE_ROOT/no-final-newline.log"; then
+    pass 'local exclude: the bootstrap with no final newline succeeds'
+else
+    fail 'local exclude: the bootstrap with no final newline succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/no-final-newline.log"
+fi
+
+printf '%s\n' "Then: the user's pattern stays whole and working, and the block starts on its own line"
+assert_equal "$(sed -n '1p' "$LOCAL_EXCLUDE_NO_NEWLINE_FILE")" '*.swp' 'local exclude: the last pattern keeps its own line'
+assert_equal "$(sed -n '2p' "$LOCAL_EXCLUDE_NO_NEWLINE_FILE")" '# setup-openspeckit: local Speckit and agent folders, untracked here' 'local exclude: the block starts on the next line'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_NO_NEWLINE_REPO" notes.swp)" 0 'local exclude: the last pattern still ignores notes.swp'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_NO_NEWLINE_REPO" .specify/)" 0 'local exclude: .specify/ is ignored after a file with no final newline'
+
+printf '%s\n' "Given: another repository that tracks .specify/ and .claude/ files, and a caller whose GIT_DIR, GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_WORK_TREE or GIT_OBJECT_DIRECTORY names it"
+LOCAL_EXCLUDE_OTHER_REPO="$LOCAL_EXCLUDE_ROOT/other-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_OTHER_REPO"
+mkdir "$LOCAL_EXCLUDE_OTHER_REPO/.specify" "$LOCAL_EXCLUDE_OTHER_REPO/.claude"
+printf '%s\n' 'tracked elsewhere' > "$LOCAL_EXCLUDE_OTHER_REPO/.specify/tracked.md"
+printf '%s\n' '{}' > "$LOCAL_EXCLUDE_OTHER_REPO/.claude/settings.json"
+git_fixture -C "$LOCAL_EXCLUDE_OTHER_REPO" add .specify/tracked.md .claude/settings.json
+git_fixture -C "$LOCAL_EXCLUDE_OTHER_REPO" commit -q -m 'track .specify and .claude files'
+cp "$LOCAL_EXCLUDE_OTHER_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/other-exclude.before"
+cp "$LOCAL_EXCLUDE_OTHER_REPO/.git/index" "$LOCAL_EXCLUDE_ROOT/other-index.before"
+# git 2.43 lets GIT_OBJECT_DIRECTORY change no answer the step asks for, so its
+# pass is no proof by itself: the git that lists a name no real variable has,
+# further down, pins that the list is git's and not the tool's.
+for git_variable in GIT_DIR GIT_COMMON_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY; do
+    case "$git_variable" in
+        GIT_INDEX_FILE) git_value="$LOCAL_EXCLUDE_OTHER_REPO/.git/index" ;;
+        GIT_WORK_TREE) git_value="$LOCAL_EXCLUDE_OTHER_REPO" ;;
+        GIT_OBJECT_DIRECTORY) git_value="$LOCAL_EXCLUDE_OTHER_REPO/.git/objects" ;;
+        *) git_value="$LOCAL_EXCLUDE_OTHER_REPO/.git" ;;
+    esac
+    env_repo="$LOCAL_EXCLUDE_ROOT/caller-$git_variable-repo"
+    make_local_exclude_repo "$env_repo"
+
+    printf '%s\n' "When: bootstrap runs on a fresh repository with $git_variable set to the other repository"
+    if (export "$git_variable=$git_value"; run_local_exclude_bootstrap "$env_repo" "$LOCAL_EXCLUDE_ROOT/caller-$git_variable.log"); then
+        pass "local exclude: the bootstrap with $git_variable set succeeds"
+    else
+        fail "local exclude: the bootstrap with $git_variable set succeeds"
+        cat "$LOCAL_EXCLUDE_ROOT/caller-$git_variable.log"
+    fi
+
+    printf '%s\n' "Then: the target repository gets its lines, and the other repository's exclude file and index are byte-identical"
+    for folder in .specify .claude; do
+        assert_equal "$(local_exclude_line_count "$env_repo/.git/info/exclude" "/$folder/")" 1 "local exclude: with $git_variable set the target exclude file carries /$folder/ once"
+    done
+    assert_equal "$(local_exclude_ignore_exit "$env_repo" .specify/)" 0 "local exclude: with $git_variable set git check-ignore passes for .specify/ in the target"
+    assert_contains "$LOCAL_EXCLUDE_ROOT/caller-$git_variable.log" "added /.specify/ to $env_repo/.git/info/exclude" "local exclude: with $git_variable set the log names the target exclude file"
+    if cmp -s "$LOCAL_EXCLUDE_ROOT/other-exclude.before" "$LOCAL_EXCLUDE_OTHER_REPO/.git/info/exclude"; then
+        pass "local exclude: with $git_variable set the other repository's exclude file is byte-identical"
+    else
+        fail "local exclude: with $git_variable set the other repository's exclude file changed"
+    fi
+    if cmp -s "$LOCAL_EXCLUDE_ROOT/other-index.before" "$LOCAL_EXCLUDE_OTHER_REPO/.git/index"; then
+        pass "local exclude: with $git_variable set the other repository's index is byte-identical"
+    else
+        fail "local exclude: with $git_variable set the other repository's index changed"
+    fi
+done
+
+printf '%s\n' "Given: git told to treat every repository as another user's, and callers that name safe.directory only through the environment"
+LOCAL_EXCLUDE_OWNER_CONTROL_REPO="$LOCAL_EXCLUDE_ROOT/owner-control-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO"
+cp "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/owner-control-exclude.before"
+make_local_exclude_repo "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS-repo"
+
+# The three owner runs rest on git refusing their repositories on
+# GIT_TEST_ASSUME_DIFFERENT_OWNER alone, so that only a safe.directory the run
+# is handed (GIT_CONFIG_COUNT, GIT_CONFIG_PARAMETERS) can make the step write.
+# Ask plain git first, in the control's environment: the fixture's HOME, no
+# system config, a global and an XDG config under the fixture, and no config
+# from the environment (a count of 0 reads no GIT_CONFIG_KEY_n or VALUE_n). A
+# git that does not refuse here is trusted by something this test does not
+# control, and then none of the three runs proves anything about trust: their
+# trust assertions are one SKIP.
+local_exclude_control_git() {
+    HOME="$LOCAL_EXCLUDE_HOME" \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_GLOBAL="$LOCAL_EXCLUDE_HOME/.gitconfig" \
+        XDG_CONFIG_HOME="$LOCAL_EXCLUDE_HOME/.config" \
+        GIT_CONFIG_COUNT=0 \
+        GIT_CONFIG_PARAMETERS='' \
+        GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
+        LC_ALL=C \
+        git "$@"
+}
+LOCAL_EXCLUDE_OWNER_SKIP=""
+LOCAL_EXCLUDE_OWNER_PROBE_STATUS=0
+LOCAL_EXCLUDE_OWNER_PROBE="$(local_exclude_control_git -C "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO" rev-parse --git-dir 2>&1)" || LOCAL_EXCLUDE_OWNER_PROBE_STATUS=$?
+if [[ "$LOCAL_EXCLUDE_OWNER_PROBE_STATUS" != 0 ]] && [[ "$LOCAL_EXCLUDE_OWNER_PROBE" == *'dubious ownership'* ]]; then
+    pass 'local exclude: plain git refuses the control repository as another user'"'"'s, with the fixture config alone'
+else
+    LOCAL_EXCLUDE_SAFE_DIRECTORY="$(local_exclude_control_git config --show-origin --get-all safe.directory 2>&1 | tr '\n' ' ' || true)"
+    LOCAL_EXCLUDE_OWNER_SKIP="SKIP: local exclude: plain git does not report dubious ownership for the control repository, so the trust assertions of the three owner runs are skipped ($(git --version); rev-parse exited $LOCAL_EXCLUDE_OWNER_PROBE_STATUS; safe.directory: ${LOCAL_EXCLUDE_SAFE_DIRECTORY:-none})"
+fi
+
+printf '%s\n' 'When: bootstrap runs in each, with no safe.directory, with GIT_CONFIG_COUNT and its key and value, and with GIT_CONFIG_PARAMETERS'
+if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=0 GIT_CONFIG_PARAMETERS='' LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO" "$LOCAL_EXCLUDE_ROOT/owner-control.log"; then
+    pass 'local exclude: the bootstrap in a repository git refuses succeeds'
+else
+    fail 'local exclude: the bootstrap in a repository git refuses succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/owner-control.log"
+fi
+if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' run_local_exclude_bootstrap "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT-repo" "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT.log"; then
+    pass 'local exclude: the bootstrap with safe.directory in GIT_CONFIG_COUNT succeeds'
+else
+    fail 'local exclude: the bootstrap with safe.directory in GIT_CONFIG_COUNT succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_COUNT.log"
+fi
+if GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_PARAMETERS="'safe.directory=*'" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS-repo" "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS.log"; then
+    pass 'local exclude: the bootstrap with safe.directory in GIT_CONFIG_PARAMETERS succeeds'
+else
+    fail 'local exclude: the bootstrap with safe.directory in GIT_CONFIG_PARAMETERS succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/owner-GIT_CONFIG_PARAMETERS.log"
+fi
+
+printf '%s\n' "Then: with no safe.directory the step is a skip that gives git's message and writes nothing, and with it in the caller's environment the step writes its lines"
+if [[ -n "$LOCAL_EXCLUDE_OWNER_SKIP" ]]; then
+    printf '%s\n' "$LOCAL_EXCLUDE_OWNER_SKIP"
+else
+    assert_contains "$LOCAL_EXCLUDE_ROOT/owner-control.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_OWNER_CONTROL_REPO: fatal: detected dubious ownership" 'local exclude: a repository git refuses is a skip that gives git message'
+    if cmp -s "$LOCAL_EXCLUDE_ROOT/owner-control-exclude.before" "$LOCAL_EXCLUDE_OWNER_CONTROL_REPO/.git/info/exclude"; then
+        pass 'local exclude: a repository git refuses keeps its exclude file byte-identical'
+    else
+        fail 'local exclude: a repository git refuses changed its exclude file'
+    fi
+    for owner_variable in GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS; do
+        owner_repo="$LOCAL_EXCLUDE_ROOT/owner-$owner_variable-repo"
+        assert_not_contains "$LOCAL_EXCLUDE_ROOT/owner-$owner_variable.log" 'skipped local git excludes' "local exclude: safe.directory in $owner_variable keeps the step from being skipped"
+        assert_equal "$(local_exclude_line_count "$owner_repo/.git/info/exclude" '/.specify/')" 1 "local exclude: with safe.directory in $owner_variable the exclude file carries /.specify/ once"
+        assert_contains "$LOCAL_EXCLUDE_ROOT/owner-$owner_variable.log" "added /.specify/ to $owner_repo/.git/info/exclude" "local exclude: with safe.directory in $owner_variable the log names the exclude file"
+    done
+fi
+
+printf '%s\n' 'Given: a git first on PATH that wraps the real one, answers rev-parse --local-env-vars as it is told, and notes whether GIT_FAKE_LISTED reaches each other call'
+LOCAL_EXCLUDE_GIT_SHIM="$LOCAL_EXCLUDE_ROOT/git-shim"
+LOCAL_EXCLUDE_REAL_GIT="$(command -v git)"
+mkdir -p "$LOCAL_EXCLUDE_GIT_SHIM"
+cat > "$LOCAL_EXCLUDE_GIT_SHIM/git" <<'EOF'
+#!/usr/bin/env bash
+# FAKE_GIT_REAL is the real git. `rev-parse --local-env-vars` answers as FAKE_GIT_LIST
+# says: fail (status 2 and a message), garbled (a list that names nothing) or extra
+# (git's own list and one more name, GIT_FAKE_LISTED). With FAKE_GIT_INIT=fail, `init`
+# is refused. Every other call is noted in FAKE_GIT_NOTES, with whether
+# GIT_FAKE_LISTED reached it, and passed on.
+if [[ "${1:-}" == init && "${FAKE_GIT_INIT:-}" == fail ]]; then
+    echo 'fake git: init refused' >&2
+    exit 128
+fi
+if [[ "${1:-}" == rev-parse && "${2:-}" == --local-env-vars ]]; then
+    case "${FAKE_GIT_LIST:-}" in
+        fail)
+            echo 'fake git: no list today' >&2
+            exit 2
+            ;;
+        garbled)
+            echo 'GIT_NOT_THE_REPOSITORY'
+            exit 0
+            ;;
+        extra)
+            "$FAKE_GIT_REAL" "$@"
+            echo 'GIT_FAKE_LISTED'
+            exit 0
+            ;;
+    esac
+fi
+if [[ -n "${FAKE_GIT_NOTES:-}" ]]; then
+    if [[ -v GIT_FAKE_LISTED ]]; then state=present; else state=absent; fi
+    printf '%s %s\n' "$state" "$*" >> "$FAKE_GIT_NOTES"
+fi
+exec "$FAKE_GIT_REAL" "$@"
+EOF
+chmod 0755 "$LOCAL_EXCLUDE_GIT_SHIM/git"
+LOCAL_EXCLUDE_LISTED_REPO="$LOCAL_EXCLUDE_ROOT/shim-listed-repo"
+LOCAL_EXCLUDE_LISTED_NOTES="$LOCAL_EXCLUDE_ROOT/shim-listed.notes"
+make_local_exclude_repo "$LOCAL_EXCLUDE_LISTED_REPO"
+: > "$LOCAL_EXCLUDE_LISTED_NOTES"
+
+printf '%s\n' 'When: bootstrap runs with GIT_FAKE_LISTED set, and that git naming it in its list beside its own'
+if GIT_FAKE_LISTED=1 FAKE_GIT_LIST=extra FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" FAKE_GIT_NOTES="$LOCAL_EXCLUDE_LISTED_NOTES" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_LISTED_REPO" "$LOCAL_EXCLUDE_ROOT/shim-listed.log"; then
+    pass 'local exclude: the bootstrap with a list that names another variable succeeds'
+else
+    fail 'local exclude: the bootstrap with a list that names another variable succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/shim-listed.log"
+fi
+
+printf '%s\n' 'Then: the step and the staging git init run without the variable the list names, which only git can know'
+for git_call in 'rev-parse --git-path' 'ls-files' 'check-ignore' 'init -q'; do
+    assert_equal "$(local_exclude_shim_seen "$LOCAL_EXCLUDE_LISTED_NOTES" absent "$git_call")" yes "local exclude: git $git_call runs without a variable git lists"
+    assert_equal "$(local_exclude_shim_seen "$LOCAL_EXCLUDE_LISTED_NOTES" present "$git_call")" no "local exclude: git $git_call never gets a variable git lists"
+done
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_LISTED_REPO/.git/info/exclude" '/.specify/')" 1 'local exclude: the exclude file carries /.specify/ once beside a list that names another variable'
+
+printf '%s\n' 'Given: that git set to fail to list the variables, or to list names without GIT_DIR, and a caller whose GIT_DIR names another repository'
+LOCAL_EXCLUDE_NOLIST_SKIP_REPO="$LOCAL_EXCLUDE_ROOT/shim-fail-skip-repo"
+LOCAL_EXCLUDE_NOLIST_INIT_REPO="$LOCAL_EXCLUDE_ROOT/shim-fail-init-repo"
+LOCAL_EXCLUDE_GARBLED_REPO="$LOCAL_EXCLUDE_ROOT/shim-garbled-repo"
+for nolist_repo in "$LOCAL_EXCLUDE_NOLIST_SKIP_REPO" "$LOCAL_EXCLUDE_NOLIST_INIT_REPO" "$LOCAL_EXCLUDE_GARBLED_REPO"; do
+    make_local_exclude_repo "$nolist_repo"
+    cp "$nolist_repo/.git/info/exclude" "$nolist_repo.exclude.before"
+done
+
+printf '%s\n' 'When: bootstrap runs with --skip-init and a failed list, with a failed list and the staging git init, and with --skip-init and a garbled list'
+if FAKE_GIT_LIST=fail FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" GIT_DIR="$LOCAL_EXCLUDE_OTHER_REPO/.git" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NOLIST_SKIP_REPO" "$LOCAL_EXCLUDE_ROOT/shim-fail-skip.log" --skip-init; then
+    pass 'local exclude: the bootstrap with a failed list and --skip-init exits 0 with the step skipped'
+else
+    fail 'local exclude: the bootstrap with a failed list and --skip-init exits 0 with the step skipped'
+    cat "$LOCAL_EXCLUDE_ROOT/shim-fail-skip.log"
+fi
+if FAKE_GIT_LIST=fail FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" GIT_DIR="$LOCAL_EXCLUDE_OTHER_REPO/.git" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NOLIST_INIT_REPO" "$LOCAL_EXCLUDE_ROOT/shim-fail-init.log"; then
+    fail 'local exclude: a failed list stops the staging git init'
+else
+    pass 'local exclude: a failed list stops the staging git init'
+fi
+if FAKE_GIT_LIST=garbled FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" GIT_DIR="$LOCAL_EXCLUDE_OTHER_REPO/.git" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_GARBLED_REPO" "$LOCAL_EXCLUDE_ROOT/shim-garbled.log" --skip-init; then
+    pass 'local exclude: the bootstrap with a garbled list and --skip-init exits 0 with the step skipped'
+else
+    fail 'local exclude: the bootstrap with a garbled list and --skip-init exits 0 with the step skipped'
+    cat "$LOCAL_EXCLUDE_ROOT/shim-garbled.log"
+fi
+
+printf '%s\n' "Then: each fails closed with git's reason, the staging failure is a message and not a traceback, and neither repository's exclude file or index changes"
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-fail-skip.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_NOLIST_SKIP_REPO: git rev-parse --local-env-vars failed: fake git: no list today" 'local exclude: a failed list is a skip that gives git message'
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-fail-init.log" "Could not create the staging repository " 'local exclude: a failed list stops the staging git init with a message'
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-fail-init.log" "git rev-parse --local-env-vars failed: fake git: no list today" 'local exclude: the staging failure gives git message'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/shim-fail-init.log" 'Traceback' 'local exclude: the staging failure is a message, not a traceback'
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-garbled.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_GARBLED_REPO: git rev-parse --local-env-vars did not name GIT_DIR" 'local exclude: a list that does not name GIT_DIR is a skip'
+for nolist_repo in "$LOCAL_EXCLUDE_NOLIST_SKIP_REPO" "$LOCAL_EXCLUDE_NOLIST_INIT_REPO" "$LOCAL_EXCLUDE_GARBLED_REPO"; do
+    if cmp -s "$nolist_repo.exclude.before" "$nolist_repo/.git/info/exclude"; then
+        pass "local exclude: the exclude file of ${nolist_repo##*/} is byte-identical"
+    else
+        fail "local exclude: the exclude file of ${nolist_repo##*/} changed"
+    fi
+done
+if cmp -s "$LOCAL_EXCLUDE_ROOT/other-exclude.before" "$LOCAL_EXCLUDE_OTHER_REPO/.git/info/exclude" \
+    && cmp -s "$LOCAL_EXCLUDE_ROOT/other-index.before" "$LOCAL_EXCLUDE_OTHER_REPO/.git/index"; then
+    pass "local exclude: with no usable list the other repository's exclude file and index are byte-identical"
+else
+    fail "local exclude: with no usable list the other repository's exclude file or index changed"
+fi
+
+printf '%s\n' 'Given: that git set to refuse the staging git init'
+LOCAL_EXCLUDE_INIT_REFUSED_REPO="$LOCAL_EXCLUDE_ROOT/shim-init-refused-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_INIT_REFUSED_REPO"
+
+printf '%s\n' 'When: bootstrap runs there'
+if FAKE_GIT_INIT=fail FAKE_GIT_REAL="$LOCAL_EXCLUDE_REAL_GIT" LOCAL_EXCLUDE_PATH_FRONT="$LOCAL_EXCLUDE_GIT_SHIM" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_INIT_REFUSED_REPO" "$LOCAL_EXCLUDE_ROOT/shim-init-refused.log"; then
+    fail 'local exclude: a refused staging git init stops the run'
+else
+    pass 'local exclude: a refused staging git init stops the run'
+fi
+
+printf '%s\n' "Then: the run ends with git's own message, not a traceback"
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-init-refused.log" 'Could not create the staging repository ' 'local exclude: a refused staging git init names the staging repository'
+assert_contains "$LOCAL_EXCLUDE_ROOT/shim-init-refused.log" '/repo: fake git: init refused' 'local exclude: a refused staging git init gives git stderr'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/shim-init-refused.log" 'Traceback' 'local exclude: a refused staging git init is a message, not a traceback'
+
+printf '%s\n' "Given: a negation !/.specify/ in the exclude file itself, and another in a tracked .gitignore"
+LOCAL_EXCLUDE_NEGATED_REPO="$LOCAL_EXCLUDE_ROOT/negated-exclude-repo"
+LOCAL_EXCLUDE_NEGATED_FILE="$LOCAL_EXCLUDE_NEGATED_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_NEGATED_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_NEGATED_REPO/.git/info"
+printf '%s\n' '# my own rules' '!/.specify/' > "$LOCAL_EXCLUDE_NEGATED_FILE"
+cp "$LOCAL_EXCLUDE_NEGATED_FILE" "$LOCAL_EXCLUDE_ROOT/negated-exclude.before"
+LOCAL_EXCLUDE_NEGATED_IGNORE_REPO="$LOCAL_EXCLUDE_ROOT/negated-gitignore-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO"
+printf '%s\n' '!/.specify/' > "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO/.gitignore"
+git_fixture -C "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO" add .gitignore
+git_fixture -C "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO" commit -q -m 'keep .specify visible'
+
+printf '%s\n' 'When: bootstrap runs in each'
+for negated_repo in "$LOCAL_EXCLUDE_NEGATED_REPO" "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO"; do
+    if run_local_exclude_bootstrap "$negated_repo" "$negated_repo.log"; then
+        pass "local exclude: the bootstrap with a negation succeeds in ${negated_repo##*/}"
+    else
+        fail "local exclude: the bootstrap with a negation succeeds in ${negated_repo##*/}"
+        cat "$negated_repo.log"
+    fi
+done
+
+printf '%s\n' 'Then: .specify/ gets no line and stays visible, the log names the negation and where git found it, and the other folders get their lines'
+if local_exclude_starts_with "$LOCAL_EXCLUDE_NEGATED_FILE" "$LOCAL_EXCLUDE_ROOT/negated-exclude.before"; then
+    pass "local exclude: the user's negation is kept as it was"
+else
+    fail "local exclude: the user's negation is not kept as it was"
+fi
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_NEGATED_FILE" '/.specify/')" 0 'local exclude: no /.specify/ line is added after a negation in the exclude file'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_NEGATED_REPO" .specify/)" 1 'local exclude: .specify/ stays visible as the exclude file negation asks'
+assert_contains "$LOCAL_EXCLUDE_NEGATED_REPO.log" 'left .specify/ visible: the negation !/.specify/ at .git/info/exclude:2 decides it' 'local exclude: the log names the negation in the exclude file and its line'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_NEGATED_FILE" '/.claude/')" 1 'local exclude: the other folders still get their lines beside a negation'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO/.git/info/exclude" '/.specify/')" 0 'local exclude: no /.specify/ line is added under a negation in the tracked .gitignore'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO" .specify/)" 1 'local exclude: .specify/ stays visible as the .gitignore negation asks'
+assert_contains "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO.log" 'left .specify/ visible: the negation !/.specify/ at .gitignore:1 decides it' 'local exclude: the log names the negation in the .gitignore and its line'
+assert_not_contains "$LOCAL_EXCLUDE_NEGATED_IGNORE_REPO.log" 'added /.specify/' 'local exclude: the log never claims a line for a negated folder'
+
+printf '%s\n' 'When: bootstrap runs again in the exclude file negation repository, with --dry-run'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_NEGATED_REPO" "$LOCAL_EXCLUDE_NEGATED_REPO.dry.log" --dry-run; then
+    pass 'local exclude: the dry run with a negation succeeds'
+else
+    fail 'local exclude: the dry run with a negation succeeds'
+    cat "$LOCAL_EXCLUDE_NEGATED_REPO.dry.log"
+fi
+
+printf '%s\n' 'Then: the dry run says it would leave .specify/ visible, and never that it left it'
+assert_contains "$LOCAL_EXCLUDE_NEGATED_REPO.dry.log" 'would leave .specify/ visible: the negation !/.specify/ at .git/info/exclude:2 decides it' 'local exclude: a dry run says it would leave a negated folder visible'
+assert_not_contains "$LOCAL_EXCLUDE_NEGATED_REPO.dry.log" 'left .specify/ visible' 'local exclude: a dry run never says it left a negated folder visible'
+
+printf '%s\n' 'Given: a tracked .gitignore holding .specify/* and !.specify/keep.md'
+LOCAL_EXCLUDE_PARTIAL_REPO="$LOCAL_EXCLUDE_ROOT/partial-ignore-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_PARTIAL_REPO"
+printf '%s\n' '.specify/*' '!.specify/keep.md' > "$LOCAL_EXCLUDE_PARTIAL_REPO/.gitignore"
+git_fixture -C "$LOCAL_EXCLUDE_PARTIAL_REPO" add .gitignore
+git_fixture -C "$LOCAL_EXCLUDE_PARTIAL_REPO" commit -q -m 'ignore what is in .specify, but keep.md'
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_PARTIAL_REPO" "$LOCAL_EXCLUDE_ROOT/partial-ignore.log"; then
+    pass 'local exclude: the bootstrap with .specify/* in the .gitignore succeeds'
+else
+    fail 'local exclude: the bootstrap with .specify/* in the .gitignore succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/partial-ignore.log"
+fi
+
+printf '%s\n' 'Then: git reads .specify/ as ignored by that pattern, so it gets no line, and the other folders do'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_PARTIAL_REPO/.git/info/exclude" '/.specify/')" 0 'local exclude: .specify/* in the .gitignore leaves .specify/ with no line'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_PARTIAL_REPO" .specify/)" 0 'local exclude: .specify/ is ignored through .specify/*'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_PARTIAL_REPO/.git/info/exclude" '/.claude/')" 1 'local exclude: the other folders still get their lines beside .specify/*'
+
+printf '%s\n' 'Given: a copy of the tool whose writer keeps the old bytes, so the lines never reach the file'
+LOCAL_EXCLUDE_LOST_WRITE_REPO="$LOCAL_EXCLUDE_ROOT/lost-write-repo"
+LOCAL_EXCLUDE_LOST_WRITE_TOOL="$LOCAL_EXCLUDE_ROOT/lost-write-tool/setup-openspeckit"
+make_local_exclude_repo "$LOCAL_EXCLUDE_LOST_WRITE_REPO"
+mkdir "$LOCAL_EXCLUDE_ROOT/lost-write-tool"
+if python3 - "$SETUP_SCRIPT" "$LOCAL_EXCLUDE_LOST_WRITE_TOOL" <<'EOF'
+import sys
+source, target = sys.argv[1], sys.argv[2]
+text = open(source, encoding="utf-8").read()
+call = "write_local_exclude(exclude_path, content)"
+if text.count(call) != 1:
+    sys.exit(f"expected one {call!r} in {source}")
+open(target, "w", encoding="utf-8").write(text.replace(call, "write_local_exclude(exclude_path, existing)"))
+EOF
+then
+    pass 'local exclude: the writer of the tool copy is patched'
+else
+    fail 'local exclude: the writer of the tool copy is patched'
+fi
+
+printf '%s\n' 'When: that copy runs on a fresh repository'
+if SETUP_SCRIPT="$LOCAL_EXCLUDE_LOST_WRITE_TOOL" run_local_exclude_bootstrap "$LOCAL_EXCLUDE_LOST_WRITE_REPO" "$LOCAL_EXCLUDE_ROOT/lost-write.log"; then
+    fail 'local exclude: a write git does not see fails the run'
+else
+    pass 'local exclude: a write git does not see fails the run'
+fi
+
+printf '%s\n' "Then: git is asked again after the write, and its answer is logged"
+assert_contains "$LOCAL_EXCLUDE_ROOT/lost-write.log" 'git does not ignore .specify/ after the write: no ignore rule matches' 'local exclude: the check after the write logs git answer for .specify/'
+for folder in "${LOCAL_EXCLUDE_FOLDERS[@]:1}"; do
+    assert_contains "$LOCAL_EXCLUDE_ROOT/lost-write.log" "git does not ignore $folder/ after the write: no ignore rule matches" "local exclude: the check after the write logs git answer for $folder/ too"
+done
+assert_contains "$LOCAL_EXCLUDE_ROOT/lost-write.log" "through $LOCAL_EXCLUDE_LOST_WRITE_REPO/.git/info/exclude: git does not ignore them after the write" 'local exclude: the failure names the exclude file'
+
+printf '%s\n' 'Given: an exclude file with /.specify/ behind a leading space, /.agents/ after a U+2028 on its line, and .claude and /.codex in other spellings'
+LOCAL_EXCLUDE_SPELLING_REPO="$LOCAL_EXCLUDE_ROOT/spelling-repo"
+LOCAL_EXCLUDE_SPELLING_FILE="$LOCAL_EXCLUDE_SPELLING_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_SPELLING_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_SPELLING_REPO/.git/info"
+printf ' /.specify/\nx\342\200\250/.agents/\n.claude\n/.codex\n' > "$LOCAL_EXCLUDE_SPELLING_FILE"
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_SPELLING_REPO" "$LOCAL_EXCLUDE_ROOT/spelling.log"; then
+    pass 'local exclude: the bootstrap with other spellings succeeds'
+else
+    fail 'local exclude: the bootstrap with other spellings succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/spelling.log"
+fi
+
+printf '%s\n' 'Then: a line git reads as another pattern does not count, and an equivalent pattern gets no duplicate'
+for folder in .specify .agents; do
+    assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_SPELLING_FILE" "/$folder/")" 1 "local exclude: /$folder/ is added where git reads the existing line as another pattern"
+    assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_SPELLING_REPO" "$folder/")" 0 "local exclude: $folder/ is ignored after the run"
+done
+for folder in .claude .codex; do
+    assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_SPELLING_FILE" "/$folder/")" 0 "local exclude: an equivalent pattern for $folder/ gets no duplicate line"
+    assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_SPELLING_REPO" "$folder/")" 0 "local exclude: $folder/ stays ignored through its own spelling"
+done
+
+printf '%s\n' 'Given: a fresh repository with the stock exclude file, before the run creates any folder'
+LOCAL_EXCLUDE_FRESH_DRY_REPO="$LOCAL_EXCLUDE_ROOT/fresh-dry-repo"
+LOCAL_EXCLUDE_FRESH_DRY_FILE="$LOCAL_EXCLUDE_FRESH_DRY_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_FRESH_DRY_REPO"
+cp -p "$LOCAL_EXCLUDE_FRESH_DRY_FILE" "$LOCAL_EXCLUDE_ROOT/fresh-dry-exclude.before"
+LOCAL_EXCLUDE_FRESH_DRY_STAT="$(stat -c '%i %y' "$LOCAL_EXCLUDE_FRESH_DRY_FILE")"
+
+printf '%s\n' 'When: bootstrap runs there with --dry-run'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_FRESH_DRY_REPO" "$LOCAL_EXCLUDE_ROOT/fresh-dry.log" --dry-run; then
+    pass 'local exclude: the dry run on a fresh repository succeeds'
+else
+    fail 'local exclude: the dry run on a fresh repository succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/fresh-dry.log"
+fi
+
+printf '%s\n' 'Then: the exclude file is untouched, and the log leaves the folders the run would create to a real run'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/fresh-dry-exclude.before" "$LOCAL_EXCLUDE_FRESH_DRY_FILE"; then
+    pass 'local exclude: the fresh dry run leaves the exclude file byte-identical'
+else
+    fail 'local exclude: the fresh dry run changes the exclude file'
+fi
+assert_equal "$(stat -c '%i %y' "$LOCAL_EXCLUDE_FRESH_DRY_FILE")" "$LOCAL_EXCLUDE_FRESH_DRY_STAT" 'local exclude: the fresh dry run keeps the inode and mtime'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/fresh-dry.log" "unchanged $LOCAL_EXCLUDE_FRESH_DRY_FILE" 'local exclude: the fresh dry run never calls the exclude file unchanged'
+assert_contains "$LOCAL_EXCLUDE_ROOT/fresh-dry.log" "folders the run would create are decided by a real run: $LOCAL_EXCLUDE_FRESH_DRY_FILE" 'local exclude: the fresh dry run says a real run decides the folders it creates'
+
+printf '%s\n' 'Given: a repository whose info/ directory is read-only'
+LOCAL_EXCLUDE_READONLY_REPO="$LOCAL_EXCLUDE_ROOT/readonly-info-repo"
+LOCAL_EXCLUDE_READONLY_FILE="$LOCAL_EXCLUDE_READONLY_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_READONLY_REPO"
+cp "$LOCAL_EXCLUDE_READONLY_FILE" "$LOCAL_EXCLUDE_ROOT/readonly-exclude.before"
+chmod 0555 "$LOCAL_EXCLUDE_READONLY_REPO/.git/info"
+if [[ -w "$LOCAL_EXCLUDE_READONLY_REPO/.git/info" ]]; then
+    printf '%s\n' 'SKIP: local exclude: a read-only info/ cannot be shown by a user who can write anywhere'
+else
+    printf '%s\n' 'When: bootstrap runs there'
+    if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_READONLY_REPO" "$LOCAL_EXCLUDE_ROOT/readonly-info.log"; then
+        fail 'local exclude: a failed write fails the run'
+    else
+        pass 'local exclude: a failed write fails the run'
+    fi
+
+    printf '%s\n' 'Then: the error names the exclude file, and the file is unchanged'
+    assert_contains "$LOCAL_EXCLUDE_ROOT/readonly-info.log" "Could not update $LOCAL_EXCLUDE_READONLY_FILE: " 'local exclude: a failed write names the exclude file'
+    assert_not_contains "$LOCAL_EXCLUDE_ROOT/readonly-info.log" 'Traceback' 'local exclude: a failed write is an error, not a traceback'
+    if cmp -s "$LOCAL_EXCLUDE_ROOT/readonly-exclude.before" "$LOCAL_EXCLUDE_READONLY_FILE"; then
+        pass 'local exclude: a failed write leaves the exclude file unchanged'
+    else
+        fail 'local exclude: a failed write changed the exclude file'
+    fi
+fi
+chmod 0755 "$LOCAL_EXCLUDE_READONLY_REPO/.git/info"
+
+printf '%s\n' 'Given: a repository whose exclude file is mode 000'
+LOCAL_EXCLUDE_UNREADABLE_REPO="$LOCAL_EXCLUDE_ROOT/unreadable-exclude-repo"
+LOCAL_EXCLUDE_UNREADABLE_FILE="$LOCAL_EXCLUDE_UNREADABLE_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_UNREADABLE_REPO"
+cp "$LOCAL_EXCLUDE_UNREADABLE_FILE" "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.before"
+chmod 0000 "$LOCAL_EXCLUDE_UNREADABLE_FILE"
+if [[ -r "$LOCAL_EXCLUDE_UNREADABLE_FILE" ]]; then
+    printf '%s\n' 'SKIP: local exclude: a mode 000 exclude file cannot be shown by a user who can read anywhere'
+else
+    printf '%s\n' 'When: bootstrap runs there'
+    if LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_UNREADABLE_REPO" "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.log"; then
+        fail 'local exclude: a failed read fails the run'
+    else
+        pass 'local exclude: a failed read fails the run'
+    fi
+
+    printf '%s\n' 'Then: the error names the exclude file, as an error and not a traceback'
+    assert_contains "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.log" "Could not update $LOCAL_EXCLUDE_UNREADABLE_FILE: " 'local exclude: a failed read names the exclude file'
+    assert_not_contains "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.log" 'Traceback' 'local exclude: a failed read is an error, not a traceback'
+fi
+chmod 0644 "$LOCAL_EXCLUDE_UNREADABLE_FILE"
+if cmp -s "$LOCAL_EXCLUDE_ROOT/unreadable-exclude.before" "$LOCAL_EXCLUDE_UNREADABLE_FILE"; then
+    pass 'local exclude: a failed read leaves the exclude file unchanged'
+else
+    fail 'local exclude: a failed read changed the exclude file'
+fi
+
+printf '%s\n' 'Given: an exclude file that is not UTF-8, one with CRLF lines and mode 0640, and one with CRLF lines that already holds the comment line'
+LOCAL_EXCLUDE_BYTES_REPO="$LOCAL_EXCLUDE_ROOT/non-utf8-repo"
+LOCAL_EXCLUDE_BYTES_FILE="$LOCAL_EXCLUDE_BYTES_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_BYTES_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_BYTES_REPO/.git/info"
+printf '\377\376-pattern\n# caf\351\n' > "$LOCAL_EXCLUDE_BYTES_FILE"
+cp "$LOCAL_EXCLUDE_BYTES_FILE" "$LOCAL_EXCLUDE_ROOT/non-utf8-exclude.before"
+LOCAL_EXCLUDE_CRLF_REPO="$LOCAL_EXCLUDE_ROOT/crlf-repo"
+LOCAL_EXCLUDE_CRLF_FILE="$LOCAL_EXCLUDE_CRLF_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_CRLF_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_CRLF_REPO/.git/info"
+printf '# my own rules\r\n*.tmp\r\n' > "$LOCAL_EXCLUDE_CRLF_FILE"
+# 0640 is neither the 0600 of the temporary file the tool writes nor the 0644 of a
+# stock or a new exclude file, so only a tool that sets the mode keeps it.
+chmod 0640 "$LOCAL_EXCLUDE_CRLF_FILE"
+cp "$LOCAL_EXCLUDE_CRLF_FILE" "$LOCAL_EXCLUDE_ROOT/crlf-exclude.before"
+LOCAL_EXCLUDE_CRLF_COMMENT_REPO="$LOCAL_EXCLUDE_ROOT/crlf-comment-repo"
+LOCAL_EXCLUDE_CRLF_COMMENT_FILE="$LOCAL_EXCLUDE_CRLF_COMMENT_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_CRLF_COMMENT_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir "$LOCAL_EXCLUDE_CRLF_COMMENT_REPO/.git/info"
+printf '# setup-openspeckit: local Speckit and agent folders, untracked here\r\n*.tmp\r\n' > "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE"
+cp "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE" "$LOCAL_EXCLUDE_ROOT/crlf-comment-exclude.before"
+
+printf '%s\n' 'When: bootstrap runs in each'
+for bytes_repo in "$LOCAL_EXCLUDE_BYTES_REPO" "$LOCAL_EXCLUDE_CRLF_REPO" "$LOCAL_EXCLUDE_CRLF_COMMENT_REPO"; do
+    if run_local_exclude_bootstrap "$bytes_repo" "$bytes_repo.log"; then
+        pass "local exclude: the bootstrap succeeds in ${bytes_repo##*/}"
+    else
+        fail "local exclude: the bootstrap succeeds in ${bytes_repo##*/}"
+        cat "$bytes_repo.log"
+    fi
+done
+
+printf '%s\n' 'Then: each keeps its bytes first and gains the lines, and the mode is kept'
+if local_exclude_starts_with "$LOCAL_EXCLUDE_BYTES_FILE" "$LOCAL_EXCLUDE_ROOT/non-utf8-exclude.before"; then
+    pass 'local exclude: a non-UTF-8 exclude file keeps its bytes'
+else
+    fail 'local exclude: a non-UTF-8 exclude file does not keep its bytes'
+fi
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_BYTES_FILE" '/.specify/')" 1 'local exclude: a non-UTF-8 exclude file gains /.specify/'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_BYTES_REPO" .specify/)" 0 'local exclude: .specify/ is ignored after a non-UTF-8 exclude file'
+if local_exclude_starts_with "$LOCAL_EXCLUDE_CRLF_FILE" "$LOCAL_EXCLUDE_ROOT/crlf-exclude.before"; then
+    pass 'local exclude: CRLF lines are kept'
+else
+    fail 'local exclude: CRLF lines are not kept'
+fi
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_CRLF_FILE" '/.specify/')" 1 'local exclude: a CRLF exclude file gains /.specify/ on its own line'
+assert_mode "$LOCAL_EXCLUDE_CRLF_FILE" 640 'local exclude: the exclude file keeps its mode'
+if local_exclude_starts_with "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE" "$LOCAL_EXCLUDE_ROOT/crlf-comment-exclude.before"; then
+    pass 'local exclude: a CRLF exclude file with the comment line is kept'
+else
+    fail 'local exclude: a CRLF exclude file with the comment line is not kept'
+fi
+assert_equal "$(grep -c '^# setup-openspeckit' "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE" || true)" 1 'local exclude: a CRLF exclude file that holds the comment line gets no second one'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_CRLF_COMMENT_FILE" '/.specify/')" 1 'local exclude: a CRLF exclude file that holds the comment line gains /.specify/'
+
+printf '%s\n' 'Given: a repository whose config git cannot read'
+LOCAL_EXCLUDE_BAD_CONFIG_REPO="$LOCAL_EXCLUDE_ROOT/bad-config-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_BAD_CONFIG_REPO"
+cp "$LOCAL_EXCLUDE_BAD_CONFIG_REPO/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/bad-config-exclude.before"
+printf '%s\n' '[[[' >> "$LOCAL_EXCLUDE_BAD_CONFIG_REPO/.git/config"
+
+printf '%s\n' 'When: bootstrap runs there'
+if LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_BAD_CONFIG_REPO" "$LOCAL_EXCLUDE_ROOT/bad-config.log"; then
+    pass 'local exclude: a failed git rev-parse keeps the exit status 0'
+else
+    fail 'local exclude: a failed git rev-parse keeps the exit status 0'
+    cat "$LOCAL_EXCLUDE_ROOT/bad-config.log"
+fi
+
+printf '%s\n' "Then: the skip gives git's own message, not the top-of-work-tree skip"
+assert_contains "$LOCAL_EXCLUDE_ROOT/bad-config.log" "skipped local git excludes: git rev-parse failed in $LOCAL_EXCLUDE_BAD_CONFIG_REPO: fatal: bad config line" 'local exclude: a failed git rev-parse logs git stderr'
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/bad-config.log" 'is not the top of a git work tree' 'local exclude: a failed git rev-parse is not called a folder outside the top'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/bad-config-exclude.before" "$LOCAL_EXCLUDE_BAD_CONFIG_REPO/.git/info/exclude"; then
+    pass 'local exclude: a failed git rev-parse writes nothing'
+else
+    fail 'local exclude: a failed git rev-parse changed the exclude file'
+fi
+
+printf '%s\n' 'Given: repositories whose exclude file is a directory, or whose index git cannot read'
+LOCAL_EXCLUDE_DIR_EXCLUDE_REPO="$LOCAL_EXCLUDE_ROOT/directory-exclude-repo"
+LOCAL_EXCLUDE_BAD_INDEX_REPO="$LOCAL_EXCLUDE_ROOT/bad-index-repo"
+make_local_exclude_repo "$LOCAL_EXCLUDE_DIR_EXCLUDE_REPO" --template="$LOCAL_EXCLUDE_EMPTY_TEMPLATE"
+mkdir -p "$LOCAL_EXCLUDE_DIR_EXCLUDE_REPO/.git/info/exclude"
+make_local_exclude_repo "$LOCAL_EXCLUDE_BAD_INDEX_REPO"
+printf '%s' 'not an index' > "$LOCAL_EXCLUDE_BAD_INDEX_REPO/.git/index"
+
+printf '%s\n' 'When: bootstrap runs in each'
+if LC_ALL=C run_local_exclude_bootstrap "$LOCAL_EXCLUDE_DIR_EXCLUDE_REPO" "$LOCAL_EXCLUDE_ROOT/directory-exclude.log"; then
+    fail 'local exclude: a failed git check-ignore fails the run'
+else
+    pass 'local exclude: a failed git check-ignore fails the run'
+fi
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_BAD_INDEX_REPO" "$LOCAL_EXCLUDE_ROOT/bad-index.log"; then
+    fail 'local exclude: a failed git ls-files fails the run'
+else
+    pass 'local exclude: a failed git ls-files fails the run'
+fi
+
+printf '%s\n' 'Then: each error is the failed git call, with git message'
+assert_contains "$LOCAL_EXCLUDE_ROOT/directory-exclude.log" "Could not check whether $LOCAL_EXCLUDE_DIR_EXCLUDE_REPO/.specify is ignored: fatal:" 'local exclude: a failed git check-ignore is named with git message'
+assert_contains "$LOCAL_EXCLUDE_ROOT/bad-index.log" "Could not list the tracked files under $LOCAL_EXCLUDE_BAD_INDEX_REPO/.specify: " 'local exclude: a failed git ls-files is named with git message'
+
+printf '%s\n' "Given: core.excludesFile ignoring /.codex/ and negating /.claude/"
+LOCAL_EXCLUDE_GLOBAL_REPO="$LOCAL_EXCLUDE_ROOT/excludes-file-repo"
+LOCAL_EXCLUDE_GLOBAL_FILE="$LOCAL_EXCLUDE_ROOT/user-excludes"
+make_local_exclude_repo "$LOCAL_EXCLUDE_GLOBAL_REPO"
+printf '%s\n' '/.codex/' '!/.claude/' > "$LOCAL_EXCLUDE_GLOBAL_FILE"
+git -C "$LOCAL_EXCLUDE_GLOBAL_REPO" config core.excludesFile "$LOCAL_EXCLUDE_GLOBAL_FILE"
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_GLOBAL_REPO" "$LOCAL_EXCLUDE_ROOT/excludes-file.log"; then
+    pass 'local exclude: the bootstrap with core.excludesFile succeeds'
+else
+    fail 'local exclude: the bootstrap with core.excludesFile succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/excludes-file.log"
+fi
+
+printf '%s\n' 'Then: core.excludesFile decides both folders, and .specify/ still gets its line'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_GLOBAL_REPO/.git/info/exclude" '/.codex/')" 0 'local exclude: a folder core.excludesFile ignores gets no line'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_GLOBAL_REPO" .codex/)" 0 'local exclude: .codex/ stays ignored through core.excludesFile'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_GLOBAL_REPO/.git/info/exclude" '/.claude/')" 0 'local exclude: a folder core.excludesFile negates gets no line'
+assert_contains "$LOCAL_EXCLUDE_ROOT/excludes-file.log" "left .claude/ visible: the negation !/.claude/ at $LOCAL_EXCLUDE_GLOBAL_FILE:2 decides it" 'local exclude: the log names the negation in core.excludesFile'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_GLOBAL_REPO/.git/info/exclude" '/.specify/')" 1 'local exclude: .specify/ still gets its line beside core.excludesFile'
+
+printf '%s\n' 'Given: the fresh repository after two runs, with a .kiro/ folder made since'
+mkdir -p "$LOCAL_EXCLUDE_REPO/.kiro/steering"
+printf '%s\n' 'steering note' > "$LOCAL_EXCLUDE_REPO/.kiro/steering/note.md"
+
+printf '%s\n' 'When: bootstrap runs a third time'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_REPO" "$LOCAL_EXCLUDE_ROOT/fresh-third.log"; then
+    pass 'local exclude: the third bootstrap succeeds'
+else
+    fail 'local exclude: the third bootstrap succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/fresh-third.log"
+fi
+
+printf '%s\n' 'Then: .kiro/, a folder that was there before this run, gets its line, and the comment and the earlier lines stay once'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_FILE" '/.kiro/')" 1 'local exclude: a pre-existing, wholly untracked .kiro/ gets its line once'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_REPO" .kiro/)" 0 'local exclude: .kiro/ is ignored after the third run'
+assert_equal "$(grep -c '^# setup-openspeckit' "$LOCAL_EXCLUDE_FILE" || true)" 1 'local exclude: a later run with a new line adds no second comment'
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_FILE" '/.specify/')" 1 'local exclude: after a third run /.specify/ is still there once'
+
+printf '%s\n' 'Given: a three-leg root whose spec leg is the --repo, with .specify/ there'
+LOCAL_EXCLUDE_LEG_ROOT="$LOCAL_EXCLUDE_ROOT/leg-root"
+make_three_leg_root "$LOCAL_EXCLUDE_LEG_ROOT"
+seed_speckit_state "$LOCAL_EXCLUDE_LEG_ROOT/spec"
+cp "$LOCAL_EXCLUDE_LEG_ROOT/.git/info/exclude" "$LOCAL_EXCLUDE_ROOT/leg-root-exclude.before"
+
+printf '%s\n' 'When: bootstrap runs with the leg as --repo'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_LEG_ROOT/spec" "$LOCAL_EXCLUDE_ROOT/leg.log" --skip-init --no-skill-links; then
+    pass 'local exclude: the bootstrap with a leg as --repo succeeds'
+else
+    fail 'local exclude: the bootstrap with a leg as --repo succeeds'
+    cat "$LOCAL_EXCLUDE_ROOT/leg.log"
+fi
+
+printf '%s\n' "Then: the leg's own exclude file gets the line, and the root's is byte-identical"
+LOCAL_EXCLUDE_LEG_FILE="$(git -C "$LOCAL_EXCLUDE_LEG_ROOT/spec" rev-parse --git-path info/exclude)"
+if [[ "$LOCAL_EXCLUDE_LEG_FILE" != /* ]]; then
+    LOCAL_EXCLUDE_LEG_FILE="$LOCAL_EXCLUDE_LEG_ROOT/spec/$LOCAL_EXCLUDE_LEG_FILE"
+fi
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/leg.log" "added /.specify/ to $LOCAL_EXCLUDE_LEG_ROOT/.git/info/exclude" "local exclude: a leg run never names the root's exclude file"
+assert_equal "$(local_exclude_line_count "$LOCAL_EXCLUDE_LEG_FILE" '/.specify/')" 1 'local exclude: the leg exclude file carries /.specify/ once'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_LEG_ROOT/spec" .specify/)" 0 'local exclude: .specify/ is ignored in the leg'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/leg-root-exclude.before" "$LOCAL_EXCLUDE_LEG_ROOT/.git/info/exclude"; then
+    pass "local exclude: a leg run leaves the root's exclude file byte-identical"
+else
+    fail "local exclude: a leg run changed the root's exclude file"
+fi
+
+printf '%s\n' 'Given: the linked worktree run above, and a new untracked file under .specify/ in the main worktree'
+mkdir -p "$LOCAL_EXCLUDE_MAIN_REPO/.specify"
+printf '%s\n' 'main worktree note' > "$LOCAL_EXCLUDE_MAIN_REPO/.specify/note.md"
+
+printf '%s\n' 'Then: the line the linked worktree run added hides it there too, as every worktree shares the exclude file'
+assert_equal "$(local_exclude_ignore_exit "$LOCAL_EXCLUDE_MAIN_REPO" .specify/)" 0 'local exclude: the common exclude line holds in the main worktree too'
+git -C "$LOCAL_EXCLUDE_MAIN_REPO" status --porcelain > "$LOCAL_EXCLUDE_ROOT/main-worktree-status.after"
+assert_not_contains "$LOCAL_EXCLUDE_ROOT/main-worktree-status.after" '.specify/' 'local exclude: git status in the main worktree does not list .specify/'
+
+printf '%s\n' 'Given: a repository whose .git is a symlink to its git directory elsewhere'
+LOCAL_EXCLUDE_LINKED_GIT_REPO="$LOCAL_EXCLUDE_ROOT/linked-git-repo"
+LOCAL_EXCLUDE_LINKED_GIT_DIR="$LOCAL_EXCLUDE_ROOT/linked-git-dir"
+make_local_exclude_repo "$LOCAL_EXCLUDE_LINKED_GIT_REPO"
+mv "$LOCAL_EXCLUDE_LINKED_GIT_REPO/.git" "$LOCAL_EXCLUDE_LINKED_GIT_DIR"
+ln -s "$LOCAL_EXCLUDE_LINKED_GIT_DIR" "$LOCAL_EXCLUDE_LINKED_GIT_REPO/.git"
+cp "$LOCAL_EXCLUDE_LINKED_GIT_DIR/info/exclude" "$LOCAL_EXCLUDE_ROOT/linked-git-exclude.before"
+
+printf '%s\n' 'When: bootstrap runs there'
+if run_local_exclude_bootstrap "$LOCAL_EXCLUDE_LINKED_GIT_REPO" "$LOCAL_EXCLUDE_ROOT/linked-git.log"; then
+    fail 'local exclude: a symlinked .git is refused'
+else
+    pass 'local exclude: a symlinked .git is refused'
+fi
+
+printf '%s\n' 'Then: the refusal names the symlinked .git, and the exclude file behind it is unchanged'
+assert_contains "$LOCAL_EXCLUDE_ROOT/linked-git.log" "Refusing unsafe destination path $LOCAL_EXCLUDE_LINKED_GIT_REPO/.git/info/exclude: symlink parent at $LOCAL_EXCLUDE_LINKED_GIT_REPO/.git" 'local exclude: the symlinked .git refusal names the parent'
+if cmp -s "$LOCAL_EXCLUDE_ROOT/linked-git-exclude.before" "$LOCAL_EXCLUDE_LINKED_GIT_DIR/info/exclude"; then
+    pass 'local exclude: the exclude file behind a symlinked .git is unchanged'
+else
+    fail 'local exclude: the exclude file behind a symlinked .git changed'
+fi
 
 printf '%s\n' 'Given: a three-leg root with its spec and code legs'
 LOCAL_EXCLUDE_THREE_LEG_ROOT="$LOCAL_EXCLUDE_ROOT/three-leg-root"

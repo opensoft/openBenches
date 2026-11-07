@@ -1,6 +1,6 @@
 [submodule "sysBenches/cloudBench"]
 	path = sysBenches/cloudBench
-	url = https://github.com/opensoft/cloudBench-public.git
+	url = https://github.com/opensoft/cloudBench.git
 [submodule "devBenches/pyBench"]
 	path = devBenches/pyBench
 	url = https://github.com/opensoft/pyBench.git

@@ -54,7 +54,7 @@ if args[:1] == ["clone"]:
     sys.exit(0)
 if "--get-regexp" in args:
     print("submodule.devBenches.pyBench.url https://github.com/opensoft/pyBench.git")
-    print("submodule.sysBenches.cloudBench.url https://github.com/opensoft/cloudBench-public.git")
+    print("submodule.sysBenches.cloudBench.url https://github.com/opensoft/cloudBench.git")
     sys.exit(0)
 if "submodule" in args:
     if os.environ.get("TEST_SUBMODULE_ALWAYS_FAIL"): sys.exit(128)
@@ -146,7 +146,7 @@ printf 'username=fixture-account\\npassword=fixture-private-token\\n'
     def test_private_https_clone_uses_path_resolved_gh_fallback(self):
         self.fake_gh()
         self.env.update(TEST_PROBE_STATUS='128', TEST_REQUIRE_GH_HELPER='1')
-        result = self.clone('https://github.com/opensoft/cloudBench-public.git', '--no-checkout')
+        result = self.clone('https://github.com/opensoft/cloudBench.git', '--no-checkout')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--no-checkout', self.clones[0]['args'])
         self.assertIn('credential.https://github.com.helper=!gh auth git-credential', self.clones[0]['config'])

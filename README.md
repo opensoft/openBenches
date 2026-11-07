@@ -361,7 +361,7 @@ openBenches/
 │   └── pyBench/                ← Python bench (opensoft/pyBench)
 ├── sysBenches/
 │   ├── base-image/             ← Layer 1b: sys-bench-base Dockerfile
-│   ├── cloudBench/             ← Cloud admin bench (opensoft/cloudBench-public)
+│   ├── cloudBench/             ← Cloud admin bench (opensoft/cloudBench)
 │   └── opsBench/               ← Ops bench (deployment, CI/CD, security)
 ├── bioBenches/
 │   ├── base-image/             ← Layer 1c: bio-bench-base Dockerfile
@@ -496,7 +496,7 @@ sysBenches/cloudBench/docs/amnezia-server-runbook.md
 | Bench | Repository |
 |-------|----------|
 | openBenches (this repo) | [opensoft/openBenches](https://github.com/opensoft/openBenches) |
-| cloudBench | [opensoft/cloudBench-public](https://github.com/opensoft/cloudBench-public) |
+| cloudBench | [opensoft/cloudBench](https://github.com/opensoft/cloudBench) |
 | cppBench | [opensoft/cppBench](https://github.com/opensoft/cppBench) |
 | dotNetBench | [opensoft/dotNetBench](https://github.com/opensoft/dotNetBench) |
 | flutterBench | [opensoft/flutterBench](https://github.com/opensoft/flutterBench) |
@@ -507,6 +507,9 @@ sysBenches/cloudBench/docs/amnezia-server-runbook.md
 | pyBench | [opensoft/pyBench](https://github.com/opensoft/pyBench) |
 | gentecBench | [opensoft/gentecBench](https://github.com/opensoft/gentecBench) |
 | simBench | [opensoft/simBench](https://github.com/opensoft/simBench) |
+
+For existing cloudBench checkouts and historical release pins, see the
+[cloudBench source transition](docs/cloudbench-source-transition.md).
 
 ### Faster workstation setup
 

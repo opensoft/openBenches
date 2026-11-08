@@ -34,8 +34,10 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     python3-pip \
     python3-dev \
     python3-venv \
-    # Add nodejs repository
-    && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    # Add the Node.js 24 repository, the major base-image/Dockerfile pins.
+    # NodeSource's floating setup_lts.x moved to Node 26, which ships no
+    # Corepack, and the `corepack prepare` step below needs it.
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

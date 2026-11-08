@@ -17,6 +17,7 @@ on:
       - 'scripts/setup-bench-runtime.py'
       - 'base-image/**'
       - 'devBenches/base-image/**'
+      - 'bioBenches/base-image/**'
       - 'devcontainer.test/test-install-friction.py'
   workflow_dispatch:
   workflow_call:

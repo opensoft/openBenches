@@ -35,7 +35,7 @@
     {
       "path": "devBenches/goBench",
       "url": "https://github.com/opensoft/goBench.git",
-      "commit": "ef553d72eac023dbc9157a775cf4039763b09cab"
+      "commit": "93bd92351c3c55d71af04ec70a59b99fd6b84757"
     },
     {
       "path": "devBenches/javaBench",
@@ -45,7 +45,7 @@
     {
       "path": "devBenches/pyBench",
       "url": "https://github.com/opensoft/pyBench.git",
-      "commit": "cf62c02f18b5a5003b2927c3f2edd83fa05c08d0"
+      "commit": "b105c4a0d2c2f3b8a5502347dc5fc5251d48db21"
     },
     {
       "path": "devBenches/rustBench",
@@ -60,7 +60,7 @@
     {
       "path": "sysBenches/cloudBench",
       "url": "https://github.com/opensoft/cloudBench.git",
-      "commit": "1d4623d9772e3d2fbe48e84ef4136d8108eda66d"
+      "commit": "a45f6180b0a22fa5aebc0b691d7b5728fc2f0497"
     }
   ]
 }

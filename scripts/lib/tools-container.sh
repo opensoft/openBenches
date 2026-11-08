@@ -146,10 +146,32 @@ workbenches_tools_image_fingerprint() {
     cksum "$WORKBENCHES_TOOLS_ROOT/tools-container/"{Dockerfile,workbenches_host.py,host-command} | cksum | { read -r checksum rest; printf '%s\n' "$checksum"; }
 }
 
+workbenches_ssh_agent_identity() {
+    local identity
+    if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+        printf 'unset\n'
+    elif [[ ! -S "$SSH_AUTH_SOCK" ]]; then
+        printf 'unavailable\n'
+    else
+        identity="$(stat -Lc '%d:%i:%z' "$SSH_AUTH_SOCK" 2>/dev/null ||
+            stat -Lf '%d:%i:%c' "$SSH_AUTH_SOCK" 2>/dev/null)" || return 1
+        printf 'socket:%s\n' "$identity"
+    fi
+}
+
 workbenches_tools_fingerprint() {
     local checksum rest
-    IFS=' ' read -r checksum rest < <({ cksum "$WORKBENCHES_TOOLS_ROOT/tools-container/"{Dockerfile,workbenches_host.py,host-command}; printf '%s\n' 'runtime-v4' "$HOME" "$WORKBENCHES_TOOLS_ROOT" "${TMPDIR:-/tmp}" "${SSH_AUTH_SOCK:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_DATA_HOME:-}"; } | cksum)
+    local agent_identity
+    agent_identity="$(workbenches_ssh_agent_identity)" || return 1
+    IFS=' ' read -r checksum rest < <({ cksum "$WORKBENCHES_TOOLS_ROOT/tools-container/"{Dockerfile,workbenches_host.py,host-command}; printf '%s\n' 'runtime-v5' "$HOME" "$WORKBENCHES_TOOLS_ROOT" "${TMPDIR:-/tmp}" "${SSH_AUTH_SOCK:-}" "$agent_identity" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_DATA_HOME:-}"; } | cksum)
     printf '%s\n' "$checksum"
+}
+
+workbenches_tools_configuration_matches() {
+    local expected actual
+    expected="$(workbenches_tools_fingerprint)" || return 1
+    actual="$(workbenches_runtime_docker container inspect "$WORKBENCHES_TOOLS_CONTAINER" --format '{{index .Config.Labels "dev.opensoft.workbenches.fingerprint"}}' 2>/dev/null)" || return 1
+    [[ "$actual" == "$expected" ]]
 }
 
 workbenches_services_network() {

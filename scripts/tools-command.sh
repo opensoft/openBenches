@@ -9,7 +9,9 @@ source "$root/scripts/lib/tools-container.sh"
 tool="${0##*/}"
 if [[ "$tool" == tools-command.sh ]]; then tool=$1; shift; fi
 case "$tool" in python3|jq|git|curl) ;; *) echo 'Unsupported setup tool.' >&2; exit 2 ;; esac
-[[ "$(workbenches_tools_state)" == up ]] || workbenches_tools_start || exit "$?"
+if [[ "$(workbenches_tools_state)" != up ]] || ! workbenches_tools_configuration_matches; then
+    workbenches_tools_start || exit "$?"
+fi
 session_root="${XDG_CACHE_HOME:-$HOME/.cache}/workbenches/tools/sessions"
 umask 077
 mkdir -p "$session_root" || exit 1

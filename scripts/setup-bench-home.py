@@ -26,31 +26,39 @@ DIRECTORIES = (
 SETTINGS = {'.zshrc': b'', '.p10k.zsh': b'', '.bashrc': b'', '.gitconfig': b'', '.claude.json': b'{}\n'}
 
 
+def host_linked(path):
+    return (host is not None and host.active()
+            and any(candidate.is_symlink() for candidate in (path, *path.parents)))
+
+
 def valid_type(path, directory):
-    if path.is_symlink() and host is not None and host.active():
+    if host_linked(path):
         flag = '-d' if directory else '-f'
         return host.run(['test', flag, path], capture_output=True).returncode == 0
     return path.is_dir() if directory else path.is_file()
+
+
+def existing_source(path, directory):
+    if not (path.is_symlink() or path.exists() or host_linked(path)):
+        return False
+    if not valid_type(path, directory):
+        expected = 'directory' if directory else 'settings file'
+        raise ValueError(f'Expected a {expected} at {path}; restore the bind source before installing a bench.')
+    return True
 
 
 def prepare(home):
     os.umask(0o077)
     # Validate everything before creating anything. Links into host-only mounts
     # must be checked on the workstation and must never be written through.
-    existing = set()
     for names, directory in ((DIRECTORIES, True), (SETTINGS, False)):
         for name in names:
-            path = home / name
-            if path.is_symlink() or path.exists():
-                if not valid_type(path, directory):
-                    expected = 'directory' if directory else 'settings file'
-                    raise ValueError(f'Expected a {expected} at {path}; restore the bind source before installing a bench.')
-                existing.add(name)
+            existing_source(home / name, directory)
     for name in DIRECTORIES:
-        if name not in existing:
+        if not existing_source(home / name, True):
             (home / name).mkdir(mode=0o700, parents=True, exist_ok=True)
     for name, initial in SETTINGS.items():
-        if name in existing:
+        if existing_source(home / name, False):
             continue
         path = home / name
         try:
@@ -59,6 +67,10 @@ def prepare(home):
             continue
         with os.fdopen(descriptor, 'wb') as stream:
             stream.write(initial)
+    for names, directory in ((DIRECTORIES, True), (SETTINGS, False)):
+        for name in names:
+            if not existing_source(home / name, directory):
+                raise ValueError(f'Required bind source disappeared during preparation: {home / name}')
     print('Bench folders and settings are ready.')
 
 

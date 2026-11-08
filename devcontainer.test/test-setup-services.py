@@ -2,6 +2,8 @@
 """Service readiness and ownership checks without touching a Docker engine."""
 import os
 import socket
+import json
+import re
 import importlib.util
 import sys
 from pathlib import Path
@@ -9,12 +11,181 @@ import subprocess
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / 'scripts/lib/tools-container.sh'
 
 
 class ServiceTests(unittest.TestCase):
+    def test_agent_freshness_is_checked_by_healthy_command_shims(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            repo = home / 'repo'
+            (repo / 'scripts/lib').mkdir(parents=True)
+            shutil.copy(ROOT / 'scripts/tools-command.sh', repo / 'scripts/tools-command.sh')
+            shutil.copytree(ROOT / 'tools-container', repo / 'tools-container')
+            library = LIB.read_text() + r"""
+workbenches_tools_state() { echo up; }
+workbenches_tools_start() {
+    echo refresh >> "$HOME/refreshes"
+    workbenches_tools_fingerprint > "$HOME/mounted"
+}
+workbenches_runtime_docker() {
+    if [[ "$1 $2" == 'container inspect' ]]; then cat "$HOME/mounted"; return; fi
+    [[ "$1" == exec ]] || return 90
+    for argument in "$@"; do
+        [[ "$argument" != SSH_AUTH_SOCK && "$argument" != SSH_AUTH_SOCK=* ]] || return 91
+    done
+    echo exec
+}
+"""
+            (repo / 'scripts/lib/tools-container.sh').write_text(library)
+            (repo / 'scripts/lib/tools-host-broker.sh').write_text(
+                'touch "$1/alive"\ntrap "exit 0" TERM\nwhile test -f "$1/alive"; do sleep .02; done\n')
+            env = dict(os.environ, HOME=str(home), XDG_CACHE_HOME=str(home / '.cache'),
+                       WORKBENCHES_TOOLS_ROOT=str(repo), WORKBENCHES_TOOLS_CONTAINER='fixture')
+
+            def fingerprint(current):
+                return subprocess.check_output(
+                    ['bash', '-c', 'source "$1"; workbenches_tools_fingerprint',
+                     'fixture', str(repo / 'scripts/lib/tools-container.sh')],
+                    env=current, text=True).strip()
+
+            def invoke(before, after, changed):
+                (home / 'mounted').write_text(before + '\n')
+                (home / 'refreshes').unlink(missing_ok=True)
+                for _ in range(2):
+                    result = subprocess.run(
+                        ['bash', str(repo / 'scripts/tools-command.sh'), 'git', '--version'],
+                        env=after, text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), 'exec')
+                refreshes = home / 'refreshes'
+                self.assertEqual(refreshes.read_text().splitlines() if refreshes.exists() else [],
+                                 ['refresh'] if changed else [])
+
+            first_path, second_path = home / 'first.sock', home / 'second.sock'
+            with socket.socket(socket.AF_UNIX) as first, socket.socket(socket.AF_UNIX) as second:
+                first.bind(str(first_path)); second.bind(str(second_path))
+                first_env = dict(env, SSH_AUTH_SOCK=str(first_path))
+                second_env = dict(env, SSH_AUTH_SOCK=str(second_path))
+                invoke(fingerprint(first_env), first_env, False)
+                invoke(fingerprint(first_env), second_env, True)
+                absent_env = dict(env); absent_env.pop('SSH_AUTH_SOCK', None)
+                invoke(fingerprint(second_env), absent_env, True)
+                missing_env = dict(env, SSH_AUTH_SOCK=str(home / 'late.sock'))
+                before = fingerprint(missing_env)
+                with socket.socket(socket.AF_UNIX) as late:
+                    late.bind(missing_env['SSH_AUTH_SOCK'])
+                    invoke(before, missing_env, True)
+                before = fingerprint(first_env)
+                first_path.unlink()
+                with socket.socket(socket.AF_UNIX) as replacement:
+                    replacement.bind(str(first_path))
+                    invoke(before, first_env, True)
+                fallback = self.shell(f'''SSH_AUTH_SOCK={str(first_path)!r}
+stat() {{ [[ "$1" == -Lf ]] || return 1; echo bsd-identity; }}
+workbenches_ssh_agent_identity''')
+                self.assertEqual(fallback, 'socket:bsd-identity')
+
+    def test_home_sources_removed_after_preflight_are_recreated(self):
+        spec = importlib.util.spec_from_file_location('bench_home', ROOT / 'scripts/setup-bench-home.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        for name, directory in (('.azure', True), ('.claude.json', False)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary); target = home / name
+                target.mkdir() if directory else target.write_text('fixture')
+                original = module.valid_type
+                removed = False
+
+                def remove_after_validation(path, kind):
+                    nonlocal removed
+                    result = original(path, kind)
+                    if path == target and not removed:
+                        path.rmdir() if directory else path.unlink()
+                        removed = True
+                    return result
+
+                with mock.patch.object(module, 'valid_type', side_effect=remove_after_validation):
+                    module.prepare(home)
+                self.assertTrue(removed)
+                self.assertTrue(target.is_dir() if directory else target.is_file())
+
+    def test_host_only_ancestor_links_are_validated_without_writes(self):
+        spec = importlib.util.spec_from_file_location('bench_home', ROOT / 'scripts/setup-bench-home.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / 'home'; home.mkdir()
+            module.prepare(home)
+            target = Path(temporary) / 'host-config'
+            (home / '.config').rename(target)
+            (home / '.config').symlink_to(target, target_is_directory=True)
+            existing = Path.exists
+            mkdir = Path.mkdir
+            calls = []
+
+            def tools_exists(path):
+                if str(path).startswith(str(home / '.config') + os.sep):
+                    return False
+                return existing(path)
+
+            def no_link_writes(path, *args, **kwargs):
+                self.assertFalse(str(path).startswith(str(home / '.config')))
+                return mkdir(path, *args, **kwargs)
+
+            def host_test(argv, **kwargs):
+                calls.append(argv)
+                return subprocess.run([str(value) for value in argv], **kwargs)
+
+            bridge = mock.Mock()
+            bridge.active.return_value = True
+            bridge.run.side_effect = host_test
+            with (mock.patch.object(module, 'host', bridge),
+                  mock.patch.object(Path, 'exists', tools_exists),
+                  mock.patch.object(Path, 'mkdir', no_link_writes)):
+                module.prepare(home)
+            self.assertTrue((home / '.config').is_symlink())
+            for child in ('gh', 'workbenches', 'sonarqube'):
+                self.assertIn(['test', '-d', home / '.config' / child], calls)
+
+    def test_numeric_leading_bench_keys_work_in_legacy_entrypoints(self):
+        def function(file, name):
+            match = re.search(r'^' + re.escape(name) + r'\(\) \{\n.*?^\}', file.read_text(),
+                              re.MULTILINE | re.DOTALL)
+            self.assertIsNotNone(match, name)
+            return match.group(0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); (root / 'scripts').mkdir()
+            path = root / 'sysBenches/365Bench'; path.mkdir(parents=True)
+            config = root / 'catalog.json'
+            config.write_text(json.dumps({'benches': {'365Bench': {
+                'path': 'sysBenches/365Bench', 'url': 'https://example.test/365.git',
+                'description': 'M365 fixture'}}, 'infrastructure': {}}))
+            setup = ROOT / 'scripts/setup-workbenches.sh'
+            update = ROOT / 'scripts/update-project.sh'
+            body = '\n'.join((function(setup, 'is_installed'),
+                              function(setup, 'install_all_benches'),
+                              function(update, 'is_bench_installed'),
+                              function(update, 'get_available_benches_for_ai')))
+            body += r"""
+is_installed 365Bench || exit 41
+is_bench_installed 365Bench || exit 42
+get_available_benches_for_ai
+is_installed() { return 1; }
+clone_repo() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4"; }
+install_all_benches 365Bench
+"""
+            result = subprocess.run(['bash', '-c', body],
+                                    env=dict(os.environ, CONFIG_FILE=str(config),
+                                             SCRIPT_DIR=str(root / 'scripts')),
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('365Bench: M365 fixture', result.stdout)
+            self.assertIn('365Bench|https://example.test/365.git|sysBenches/365Bench|M365 fixture',
+                          result.stdout)
+
     def test_acceptance_opens_ai_accounts_in_profiles_and_cancels_without_vault(self):
         # Use the production renderer/input/profile action; isolate discovery and
         # the external credential helper so this regression needs no Docker/login.
@@ -29,6 +200,7 @@ class ServiceTests(unittest.TestCase):
 init_components --loading
 for key in "${!component_description[@]}"; do component_status[$key]=installed; done
 component_status[docker]=up; component_status[setup_tools]=up
+component_status[wsl]=up
 setup_os_label=Linux
 refresh_component_statuses() { :; }
 activate_requirement() { echo UNEXPECTED_VAULT_ACTION; exit 99; }
@@ -172,6 +344,7 @@ workbenches_tools_start 2>&1
             (scripts / 'lib').mkdir(parents=True)
             shutil.copy(ROOT / 'scripts/tools-command.sh', scripts / 'tools-command.sh')
             (scripts / 'lib/tools-container.sh').write_text('''workbenches_tools_state() { echo up; }
+workbenches_tools_configuration_matches() { return 0; }
 workbenches_runtime_docker() { :; }
 ''')
             (scripts / 'lib/tools-host-broker.sh').write_text('''trap '' TERM

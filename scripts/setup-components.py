@@ -227,7 +227,9 @@ def uninstall_tool(component):
 
 def bench_identity(name):
     benches = json.loads((ROOT / 'config/bench-config.json').read_text())['benches']
-    relative = Path(benches[name]['path'])
+    # Rust is still supported by the Wave launcher but is outside the setup catalog.
+    relative = Path('devBenches/rustBench' if name == 'rustBench' and name not in benches
+                    else benches[name]['path'])
     if relative.is_absolute() or '..' in relative.parts or len(relative.parts) != 2 or relative.parts[0] not in ('devBenches', 'sysBenches', 'bioBenches'):
         raise ValueError('Invalid bench checkout path')
     repo = {'dotNetBench': 'dotnet-bench', '365Bench': 'm365-bench'}.get(name)
@@ -295,8 +297,10 @@ def bench_resources(name, inventory):
     return images & refs, selected
 
 
-def bench_statuses():
-    names = json.loads((ROOT / 'config/bench-config.json').read_text())['benches']
+def bench_statuses(include_legacy_rust=False):
+    names = list(json.loads((ROOT / 'config/bench-config.json').read_text())['benches'])
+    if include_legacy_rust and 'rustBench' not in names:
+        names.append('rustBench')
     try:
         inventory = docker_inventory()
     except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -362,13 +366,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('tool-status', 'tool-statuses', 'bench-statuses', 'uninstall'))
     parser.add_argument('component', nargs='?')
+    parser.add_argument('--include-legacy-rust', action='store_true')
     args = parser.parse_args()
     if args.action not in ('bench-statuses', 'tool-statuses') and not args.component:
         parser.error('this action requires a component')
     if args.action == 'tool-statuses':
         tool_statuses()
     elif args.action == 'bench-statuses':
-        bench_statuses()
+        bench_statuses(args.include_legacy_rust)
     elif args.action == 'tool-status':
         print('installed' if tool_installed(args.component) else 'not installed')
     elif args.component.startswith('bench_'):

@@ -56,7 +56,9 @@ while [[ -f "$session/alive" ]]; do
             for ((index=0; index<count; index++)); do
                 IFS= read -r -d '' key <&6; IFS= read -r -d '' value <&6
                 [[ "$key" =~ ^[a-zA-Z_][a-zA-Z_0-9]*$ ]] || exit 2
-                case "$key" in PATH|PYTHONPATH|LD_LIBRARY_PATH) continue ;; esac
+                # These paths belong to the native invocation, not Tools.
+                # In particular, its mounted SSH socket is not a host path.
+                case "$key" in PATH|PYTHONPATH|LD_LIBRARY_PATH|SSH_AUTH_SOCK) continue ;; esac
                 export "$key=$value"
             done
             cd "$cwd" || exit 2

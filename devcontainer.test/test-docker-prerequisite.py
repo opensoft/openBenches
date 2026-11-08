@@ -216,6 +216,7 @@ if ensure_docker "${TEST_SELECTED_ACTION:-}"; then exit 0; else exit $?; fi
         for name in ("docker-prerequisite.sh", "setup-prerequisites.sh", "setup-prompts.sh", "tools-container.sh", "setup-status-loader.sh", "setup-terminal.sh"):
             shutil.copy(ROOT / "scripts/lib" / name, fixture / "scripts/lib")
         shutil.copy(ROOT / "scripts/setup_selection.py", fixture / "scripts")
+        shutil.copy(ROOT / "scripts/sync-wave-widgets.sh", fixture / "scripts")
         (fixture / "config/bench-config.json").write_text('{"benches":{"dev":{"path":"devBenches/testBench"}}}')
         for name, action in (
             ("setup-shell.sh", "shell"), ("setup-estate-commands.sh", "estate"),

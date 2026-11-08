@@ -7,6 +7,12 @@
     }
   },
   "benches": {
+    "365Bench": {
+      "url": "https://github.com/opensoft/365Bench.git",
+      "path": "sysBenches/365Bench",
+      "description": "Microsoft 365, Dynamics 365 and Power Platform administration tools",
+      "ai_keywords": ["microsoft 365", "m365", "entra id", "exchange online", "sharepoint", "power platform", "dynamics 365", "business central"]
+    },
     "cloudBench": {
       "url": "https://github.com/opensoft/cloudBench.git",
       "path": "sysBenches/cloudBench",

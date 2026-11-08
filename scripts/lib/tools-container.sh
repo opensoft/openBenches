@@ -146,10 +146,32 @@ workbenches_tools_image_fingerprint() {
     cksum "$WORKBENCHES_TOOLS_ROOT/tools-container/"{Dockerfile,workbenches_host.py,host-command} | cksum | { read -r checksum rest; printf '%s\n' "$checksum"; }
 }
 
+workbenches_ssh_agent_identity() {
+    local identity
+    if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+        printf 'unset\n'
+    elif [[ ! -S "$SSH_AUTH_SOCK" ]]; then
+        printf 'unavailable\n'
+    else
+        identity="$(stat -Lc '%d:%i:%z' "$SSH_AUTH_SOCK" 2>/dev/null ||
+            stat -Lf '%d:%i:%c' "$SSH_AUTH_SOCK" 2>/dev/null)" || return 1
+        printf 'socket:%s\n' "$identity"
+    fi
+}
+
 workbenches_tools_fingerprint() {
     local checksum rest
-    IFS=' ' read -r checksum rest < <({ cksum "$WORKBENCHES_TOOLS_ROOT/tools-container/"{Dockerfile,workbenches_host.py,host-command}; printf '%s\n' 'runtime-v3' "$HOME" "$WORKBENCHES_TOOLS_ROOT" "${TMPDIR:-/tmp}" "${SSH_AUTH_SOCK:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_DATA_HOME:-}"; } | cksum)
+    local agent_identity
+    agent_identity="$(workbenches_ssh_agent_identity)" || return 1
+    IFS=' ' read -r checksum rest < <({ cksum "$WORKBENCHES_TOOLS_ROOT/tools-container/"{Dockerfile,workbenches_host.py,host-command}; printf '%s\n' 'runtime-v5' "$HOME" "$WORKBENCHES_TOOLS_ROOT" "${TMPDIR:-/tmp}" "${SSH_AUTH_SOCK:-}" "$agent_identity" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_DATA_HOME:-}"; } | cksum)
     printf '%s\n' "$checksum"
+}
+
+workbenches_tools_configuration_matches() {
+    local expected actual
+    expected="$(workbenches_tools_fingerprint)" || return 1
+    actual="$(workbenches_runtime_docker container inspect "$WORKBENCHES_TOOLS_CONTAINER" --format '{{index .Config.Labels "dev.opensoft.workbenches.fingerprint"}}' 2>/dev/null)" || return 1
+    [[ "$actual" == "$expected" ]]
 }
 
 workbenches_services_network() {
@@ -225,10 +247,16 @@ workbenches_tools_start() {
             case "$extra/" in "$HOME/"*|"$temporary_root/"*|"$WORKBENCHES_TOOLS_ROOT/"*) continue ;; esac
             mounts+=(--mount "type=bind,src=$extra,dst=$extra")
         done
+        local -a agent_env=()
         if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
             local agent_source="$SSH_AUTH_SOCK"
-            [[ "$system" != *'Docker Desktop'* ]] || agent_source=/run/host-services/ssh-auth.sock
-            mounts+=(--mount "type=bind,src=$agent_source,dst=$SSH_AUTH_SOCK")
+            local agent_target=/run/workbenches-ssh-agent.sock
+            # Docker Desktop on WSL can mount the distro's socket directly.
+            if [[ "$system" == *'Docker Desktop'* && -z "${WSL_DISTRO_NAME:-}" && "$(uname -r)" != *microsoft* ]]; then
+                agent_source=/run/host-services/ssh-auth.sock
+            fi
+            mounts+=(--mount "type=bind,src=$agent_source,dst=$agent_target")
+            agent_env+=(--env "SSH_AUTH_SOCK=$agent_target")
         fi
         workbenches_runtime_docker create --name "$WORKBENCHES_TOOLS_CONTAINER" \
             --network "$WORKBENCHES_SERVICES_NETWORK" \
@@ -239,7 +267,7 @@ workbenches_tools_start() {
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --mount "type=bind,src=$socket,dst=$socket" "${mounts[@]}" \
             --env "HOME=$HOME" --env "USER=${USER:-$(id -un)}" \
-            --env "DOCKER_HOST=unix://$socket" \
+            --env "DOCKER_HOST=unix://$socket" "${agent_env[@]}" \
             "$WORKBENCHES_TOOLS_IMAGE" >/dev/null || return "$?"
     fi
     workbenches_runtime_docker container start "$WORKBENCHES_TOOLS_CONTAINER" >/dev/null || return "$?"

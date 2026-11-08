@@ -59,9 +59,18 @@ not byte-identical external package downloads.
 
 Use the [automated release procedure](release-automation.md). Ordinary CI and
 fixture success are not stable-publication authorization. The final main commit
-must pass all twelve hosted suites and the five required v1.6 native/live suites:
-Arch, Windows/WSL2, GitHub authentication, company authentication, and the approved
+must pass all twelve hosted suites and four required v1.6 native/live suites:
+Windows/WSL2, GitHub authentication, company authentication, and the approved
 provider/broker/Key Vault flows. Cleanup and source-bound evidence are required.
+
+**Native Arch qualification is waived-not-executed for exact stable version
+1.6.2.** The release maintainer approved this exception on 2026-11-08 because
+native Arch QA capacity is unavailable and replacement capacity is not qualified.
+This release therefore does not claim fresh native Arch acceptance. The reviewed
+manifest records the exception and the validation report discloses it separately
+from passed tests. Arch remains required for every other applicable version,
+including 1.6.2 prereleases and 1.6.3. Remove the waiver when native Arch QA capacity
+returns. No other suite, cleanup, freshness or publication control is waived.
 
 The publisher requires a successful full release-validation run for the exact
 current main commit, with matching version, source-lock and test-manifest digests,

@@ -962,6 +962,16 @@
       ]
     }
   },
+  "releaseWaivers": [
+    {
+      "suite": "arch-native",
+      "version": "1.6.2",
+      "reason": "Native Arch QA host unavailable; replacement capacity is not qualified.",
+      "approvedBy": "release maintainer",
+      "approvedOn": "2026-11-08",
+      "restoreWhen": "Remove when native Arch QA capacity returns. Every other applicable version requires Arch automatically."
+    }
+  ],
   "supportedReleaseLines": [
     "1.5",
     "1.6",

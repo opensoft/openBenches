@@ -317,6 +317,149 @@ class ReleaseAutomationTests(unittest.TestCase):
                      'fresh-install', 'arch-native', 'wsl-native', 'github-live', 'company-live', 'provider-live'):
             self.assertIn(name, suites)
 
+    def arch_waiver(self):
+        return dict(suite='arch-native', version='1.6.2', reason='Native Arch capacity unavailable.',
+                    approvedBy='release maintainer', approvedOn='2026-11-08',
+                    restoreWhen='Remove when native Arch QA capacity returns; other versions require Arch.')
+
+    def configure_arch_waiver(self):
+        self.config['suites']['arch-native'] = dict(self.config['suites']['native'])
+        self.config['releaseWaivers'] = [self.arch_waiver()]
+        rv.atomic(self.manifest_path, self.config)
+        (self.root / 'VERSION').write_text('1.6.2\n')
+        rv.atomic(self.root / 'config/release-lock.json', {'version': '1.6.2'})
+        self.commit(); self.identity = rv.source(self.root, self.manifest_path)
+
+    def test_reviewed_waiver_only_removes_arch_from_exact_stable_162(self):
+        manifest = rv.load_manifest()
+        self.assertEqual([(w['suite'], w['version']) for w in manifest['releaseWaivers']],
+                         [('arch-native', '1.6.2')])
+        baseline = set(rv.selected(manifest, '1.6.1', 'release'))
+        self.assertEqual(set(rv.selected(manifest, '1.6.2', 'release')), baseline - {'arch-native'})
+        self.assertEqual(len(rv.selected(manifest, '1.6.2', 'release')), 16)
+        for product in ('1.6.0', '1.6.1', '1.6.3', '1.6.20', '1.7.0', '1.6.2-rc.1', '1.6.2-dev.1'):
+            with self.subTest(product=product):
+                self.assertIn('arch-native', rv.selected(manifest, product, 'release'))
+                self.assertEqual(rv.release_waivers(manifest, product, 'release'), [])
+        for mode in ('ci', 'fixtures'):
+            self.assertEqual(rv.release_waivers(manifest, '1.6.2', mode), [])
+
+    def test_invalid_waivers_fail_closed(self):
+        self.configure_arch_waiver()
+        good = self.arch_waiver()
+        invalid = [None, {}, ['arch-native'], [good, good]]
+        for key, value in (('suite', 'unknown'), ('suite', 'source'), ('version', '1.6'),
+                           ('version', '1.6.*'), ('version', '1.6.2-rc.1'), ('version', '9.0.0'),
+                           ('version', '1.5.0'), ('reason', ''), ('approvedBy', False),
+                           ('approvedOn', '2026-02-30'), ('restoreWhen', 'line\nbreak')):
+            invalid.append([dict(good, **{key: value})])
+        invalid.extend([[{k: v for k, v in good.items() if k != 'reason'}], [dict(good, extra=True)]])
+        for waivers in invalid:
+            with self.subTest(waivers=waivers):
+                rv.atomic(self.manifest_path, dict(self.config, releaseWaivers=waivers))
+                with self.assertRaises(rv.ValidationError): rv.load_manifest(self.manifest_path)
+
+    def test_waiver_is_disclosed_and_cannot_substitute_for_other_evidence(self):
+        self.configure_arch_waiver(); self.evidence()
+        (self.reports / 'arch-native.json').unlink()
+        result = self.gate()
+        expected = [dict(self.arch_waiver(), status='waived-not-executed')]
+        self.assertTrue(result['publishable'])
+        self.assertEqual(result['waived'], expected)
+        self.assertEqual(result['required'], ['source', 'native'])
+        self.assertEqual(rv.plan(self.root, self.manifest_path, 'release')['waived'], expected)
+        (self.reports / 'native.json').unlink()
+        result = self.gate()
+        self.assertFalse(result['publishable'])
+        self.assertEqual(result['errors'], [dict(suite='native', reason='missing')])
+        self.assertEqual(result['waived'], expected)
+
+    def test_waived_suite_is_not_accepted_as_a_passed_report(self):
+        self.configure_arch_waiver(); self.evidence()
+        result = self.gate()
+        self.assertFalse(result['publishable'])
+        self.assertIn(dict(suite='arch-native', reason='unexpected_suite'), result['errors'])
+
+    def test_waiver_policy_changes_invalidate_existing_evidence(self):
+        self.configure_arch_waiver(); self.evidence()
+        (self.reports / 'arch-native.json').unlink()
+        self.config['releaseWaivers'][0]['reason'] = 'Changed reviewed policy.'
+        rv.atomic(self.manifest_path, self.config)
+        self.assertFalse(self.gate()['publishable'])
+
+    def test_waiver_notes_are_explicit_and_empty_without_exceptions(self):
+        self.assertEqual(rv.qualification_notes([]), '')
+        notes = rv.qualification_notes([dict(self.arch_waiver(), status='waived-not-executed')])
+        for text in ('arch-native', '1.6.2', 'waived-not-executed', 'Native Arch capacity unavailable.',
+                     'release maintainer', '2026-11-08', 'Remove when native Arch QA capacity returns'):
+            self.assertIn(text, notes)
+
+    def test_gate_cli_writes_waiver_to_actions_summary_even_when_blocked(self):
+        self.configure_arch_waiver()
+        summary = Path(self.temp.name) / 'actions-summary.md'
+        with patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': str(summary)}), \
+             patch.object(sys, 'argv', ['validate', 'gate', '--root', str(self.root),
+                 '--manifest', str(self.manifest_path), '--reports', str(self.reports), '--mode', 'release']):
+            self.assertEqual(rv.main(), 1)
+        self.assertIn('waived-not-executed', summary.read_text())
+        self.assertIn('arch-native', summary.read_text())
+        report = rv.read(self.reports / 'summary.report')
+        self.assertFalse(report['publishable'])
+        self.assertEqual(report['waived'][0]['suite'], 'arch-native')
+
+    def test_publisher_rechecks_waiver_and_appends_generated_exception_notes(self):
+        self.configure_arch_waiver()
+        notes = self.root / 'docs/release-1.6.2.md'; notes.parent.mkdir(); notes.write_text('Fixture release')
+        self.commit(); self.identity = rv.source(self.root, self.manifest_path)
+        commit = self.identity['commit']
+        metadata = dict(path='.github/workflows/release-validation.yml', head_branch='main',
+            event='workflow_dispatch', conclusion='success', status='completed', head_sha=commit,
+            head_repository={'full_name': 'o/r'}, id=17, run_attempt=1)
+        run = publisher.run_identity(metadata, 'o/r', commit)
+        self.evidence(); (self.reports / 'arch-native.json').unlink()
+        for path in self.reports.glob('*.json'):
+            value = rv.read(path); value['run'] = run; rv.atomic(path, value)
+        waived = [dict(self.arch_waiver(), status='waived-not-executed')]
+        for reported in (None, [], [dict(waived[0], reason='Changed reason')], waived):
+            with self.subTest(reported=reported):
+                writes, published = [], []
+                def fake_gh(*args, **kwargs):
+                    if args[0] == 'api' and '--method' in args:
+                        writes.append(args)
+                        return json.dumps({'sha': 'b' * 40})
+                    if args[0] == 'api':
+                        if kwargs.get('absent'): return None
+                        return json.dumps(metadata if 'actions/runs/' in args[1] else {'object': {'sha': commit}})
+                    if args[:2] == ('run', 'download'):
+                        directory = Path(args[args.index('--dir') + 1]); directory.mkdir(parents=True, exist_ok=True)
+                        if args[args.index('--pattern') + 1] == 'release-summary':
+                            summary = dict(publishable=True, mode='release', run=run, source=self.identity)
+                            if reported is not None: summary['waived'] = reported
+                            rv.atomic(directory / 'summary.report', summary)
+                        else:
+                            for path in self.reports.glob('*.json'):
+                                target = directory / path.stem / path.name; target.parent.mkdir(); target.write_bytes(path.read_bytes())
+                        return ''
+                    if args[:2] == ('release', 'create'):
+                        published.append(Path(args[args.index('--notes-file') + 1]).read_text())
+                        self.assertEqual(rv.read(Path(args[3]))['waived'], waived)
+                        return ''
+                    raise AssertionError(args)
+                with patch.object(publisher, 'DEFAULT_MANIFEST', self.manifest_path), \
+                     patch.object(publisher, 'gh', side_effect=fake_gh), \
+                     patch.dict(os.environ, {'GITHUB_REPOSITORY': 'o/r'}), \
+                     patch.object(sys, 'argv', ['publish', '--root', str(self.root), '--run-id', '17',
+                                               '--version', '1.6.2', '--publish']):
+                    if reported == waived:
+                        publisher.main()
+                        self.assertEqual(len(writes), 2)
+                        self.assertEqual(len(published), 1)
+                        self.assertIn(rv.qualification_notes(waived), published[0])
+                    else:
+                        with self.assertRaisesRegex(rv.ValidationError, 'invalid_release_evidence'): publisher.main()
+                        self.assertEqual(writes, [])
+                        self.assertEqual(published, [])
+
     def test_hosted_runner_records_only_actual_passed_commands(self):
         value = rv.run_suite(self.root, self.manifest_path, 'source', self.reports)
         self.assertEqual(value['status'], 'passed'); self.assertEqual(value['cases'], [dict(id='unit', status='passed')])

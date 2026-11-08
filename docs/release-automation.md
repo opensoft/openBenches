@@ -75,6 +75,28 @@ denial, and approved live provider/broker/Key Vault/CPC tests. v1.7 adds isolate
 SSH and live device trust. v1.7-only cases are not required to publish v1.6.
 MFA is not bypassed; an existing PAT is not a browser-login acceptance test.
 
+### Temporary Arch exception for v1.6.2
+
+The release maintainer approved an Arch-only waiver on 2026-11-08 because native
+Arch QA capacity is unavailable and replacement capacity is not qualified.
+Exact stable VERSION `1.6.2` requires twelve hosted suites and four external
+suites: WSL2, GitHub authentication, company authentication and provider/broker/
+Key Vault acceptance. Native Arch is **waived-not-executed**, not passed.
+
+The reviewed manifest's optional `releaseWaivers` entries identify an external
+suite, exact stable version, reason, approver, approval date and restoration
+condition. No environment switch grants a waiver; planning, evidence and
+publication use trusted automation policy with the existing manifest digest.
+Malformed, duplicate, unknown-suite and hosted-suite exceptions are rejected.
+Plans, Actions summaries and published notes/reports disclose applicable waivers.
+Publication rechecks that the summary's exceptions match the recomputed gate.
+
+The Arch suite and its `minVersion: 1.6` are unchanged. Every other applicable
+version, including `1.6.2` prereleases, `1.6.3` and `1.7.0`, still requires it.
+Remove the waiver entry when native Arch QA capacity returns; removing it restores
+the requirement for 1.6.2 too. Existing evidence becomes invalid when policy
+changes. All other gates, cleanup, freshness and publication protections remain.
+
 Each hosted/native adapter must actually execute every required case. Live
 adapters need deployment-specific users, tenant grants and a selected approved
 provider mode. Until these are supplied, their evidence is explicitly **blocked**.

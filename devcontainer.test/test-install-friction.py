@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -369,5 +370,30 @@ sys.exit(0)
         self.assertEqual(code,42);self.assertEqual(log,'build-layer2\n')
         code,log=self.exercise(builder=True,existing=True)
         self.assertEqual(code,1);self.assertEqual(log,'')
+
+class NodeChannelTests(unittest.TestCase):
+    """A layer must use the NodeSource channel the base image pins, and that channel must ship Corepack."""
+    CHANNEL = re.compile(r'deb\.nodesource\.com/(?:setup_|node_)([^/\s|]+)\.x')
+
+    def channels(self, name):
+        return self.CHANNEL.findall((ROOT / name).read_text(encoding='utf-8'))
+
+    def test_layers_use_the_node_channel_the_base_image_pins(self):
+        base = self.channels('base-image/Dockerfile')
+        self.assertEqual(len(base), 1, f'base-image/Dockerfile must name exactly one NodeSource channel, found {base}')
+        self.assertTrue(re.fullmatch(r'[0-9]+', base[0]),
+                        f'base-image/Dockerfile must pin a numeric Node.js major, found channel {base[0]}')
+        self.assertLessEqual(int(base[0]), 24,
+            f'base-image/Dockerfile uses NodeSource channel {base[0]}, but Node.js 25 and later ship no Corepack, '
+            "which the developer layer's `corepack prepare` and Layer 3's Corepack step (user-layer/Dockerfile) "
+            'need. Install Corepack in base-image/Dockerfile (for example with `npm install -g corepack`) '
+            'before moving the base past 24, then change this check.')
+        for name in ('devBenches/base-image/Dockerfile', 'bioBenches/base-image/Dockerfile'):
+            for channel in self.channels(name):
+                with self.subTest(file=name, channel=channel):
+                    self.assertEqual(channel, base[0],
+                        f'{name} uses NodeSource channel {channel}, but base-image/Dockerfile uses {base[0]}. '
+                        "A layer must use the base image's channel: a higher major replaces the base image's "
+                        'Node.js, and Node.js 25 and later ship no Corepack.')
 
 if __name__=='__main__': unittest.main()

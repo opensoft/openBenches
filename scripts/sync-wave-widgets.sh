@@ -29,8 +29,10 @@ if [[ -z "$config_dir" ]]; then
         wsl_profile="$(wslpath -u "$windows_profile")" || exit 1
         config_dir="$wsl_profile/.config/waveterm"
     else
-        wave_status="$(python3 "$root/scripts/setup-components.py" tool-status wave)" || exit 1
-        [[ "$wave_status" == installed ]] || exit 0
+        if [[ ! -d /Applications/Wave.app && ! -d "$HOME/Applications/Wave.app" ]]; then
+            wave_status="$(python3 "$root/scripts/setup-components.py" tool-status wave)" || exit 1
+            [[ "$wave_status" == installed ]] || exit 0
+        fi
         config_dir="$HOME/.config/waveterm"
     fi
 fi

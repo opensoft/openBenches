@@ -159,6 +159,14 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
             self.assertEqual(widgets[key]['blockdef']['meta']['connection'], '')
         self.assertEqual(self.connections.read_text(), '{"ssh://custom": {"keep": true}}')
 
+    def test_native_gui_bundle_without_path_launcher_is_discovered(self):
+        (self.home / 'Applications/Wave.app').mkdir(parents=True)
+        result = self.sync(WAVETERM_CONFIG_DIR='', WAVE_WSL_CONNECTION='',
+                           WSL_DISTRO_NAME='', TEST_NATIVE='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        widgets = json.loads((self.home / '.config/waveterm/widgets.json').read_text())
+        self.assertEqual(widgets['defwidget@terminal']['blockdef']['meta']['connection'], '')
+
     def test_widget_write_failure_preserves_old_widgets_and_can_retry(self):
         self.widgets.write_text('{"custom": true}')
         result = self.sync(TEST_FAIL_WIDGET_WRITE='1')

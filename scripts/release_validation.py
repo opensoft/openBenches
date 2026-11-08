@@ -70,6 +70,29 @@ def load_manifest(path=DEFAULT_MANIFEST):
         else:
             if not suite.get('cases') or len(set(suite['cases'])) != len(suite['cases']): raise ValidationError('invalid_external_cases')
             if not isinstance(suite.get('labels'), list) or 'self-hosted' not in suite['labels']: raise ValidationError('invalid_runner_labels')
+    waivers = data.get('releaseWaivers', [])
+    if not isinstance(waivers, list): raise ValidationError('invalid_release_waivers')
+    seen = set()
+    for waiver in waivers:
+        fields = {'suite', 'version', 'reason', 'approvedBy', 'approvedOn', 'restoreWhen'}
+        if not isinstance(waiver, dict) or set(waiver) != fields or any(
+                not isinstance(v, str) or not v.strip() or len(v) > 500 or '\n' in v or '\r' in v
+                for v in waiver.values()):
+            raise ValidationError('invalid_release_waiver')
+        suite = data['suites'].get(waiver['suite'], {})
+        if suite.get('kind') != 'external' or not re.fullmatch(
+                r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', waiver['version']):
+            raise ValidationError('invalid_waiver_scope')
+        current = version(waiver['version'])
+        if current < version(suite['minVersion']) or '.'.join(map(str, current[:2])) not in data.get('supportedReleaseLines', []):
+            raise ValidationError('inapplicable_release_waiver')
+        try:
+            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', waiver['approvedOn']): raise ValueError()
+            time.strptime(waiver['approvedOn'], '%Y-%m-%d')
+        except ValueError: raise ValidationError('invalid_waiver_approval_date') from None
+        key = (waiver['suite'], waiver['version'])
+        if key in seen: raise ValidationError('duplicate_release_waiver')
+        seen.add(key)
     return data
 
 
@@ -78,13 +101,30 @@ def validate_argv(argv):
         raise ValidationError('invalid_argv')
 
 
+def release_waivers(manifest, product_version, mode):
+    return [dict(w, status='waived-not-executed') for w in manifest.get('releaseWaivers', [])
+            if mode == 'release' and w['version'] == product_version]
+
+
+def qualification_notes(waivers):
+    if not waivers: return ''
+    lines = ['## Qualification exceptions', '']
+    for waiver in waivers:
+        lines.extend([f"- **{waiver['suite']}: {waiver['status']}** for exact version {waiver['version']}.",
+                      f"  Reason: {waiver['reason']}",
+                      f"  Approved by {waiver['approvedBy']} on {waiver['approvedOn']}.",
+                      f"  Restoration: {waiver['restoreWhen']}"])
+    return '\n'.join(lines) + '\n'
+
+
 def selected(manifest, product_version, mode):
     if mode not in ('ci', 'fixtures', 'release'): raise ValidationError('invalid_mode')
     current = version(product_version)
     if '.'.join(map(str, current[:2])) not in manifest.get('supportedReleaseLines', []):
         raise ValidationError('unsupported_release_line')
+    waived = {w['suite'] for w in release_waivers(manifest, product_version, mode)}
     result = {name: suite for name, suite in manifest['suites'].items()
-            if current >= version(suite['minVersion']) and
+            if name not in waived and current >= version(suite['minVersion']) and
             (mode == 'release' or suite['kind'] == 'hosted' and (mode != 'ci' or name in CI_SUITES))}
     if 'source' not in result: raise ValidationError('source_suite_required')
     return result
@@ -519,13 +559,15 @@ def gate(root, manifest_path, reports_path, mode, expected=None, ref=None, run=N
         elif value['cases'] != [dict(id=k, status='passed') for k in cases(suite, identity['version'])]: problem = 'incomplete_cases'
         if problem: errors.append({'suite': name, 'reason': problem})
     return dict(schemaVersion=1, source=identity, run=run, mode=mode, status='failed' if errors else 'passed',
-                publishable=mode == 'release' and not errors, errors=errors, required=list(needed), generatedAt=now)
+                publishable=mode == 'release' and not errors, errors=errors, required=list(needed),
+                waived=release_waivers(manifest, identity['version'], mode), generatedAt=now)
 
 
 def plan(root, manifest_path, mode, expected=None, ref=None):
     manifest = load_manifest(manifest_path); identity = source(root, manifest_path, expected, ref)
     suites = selected(manifest, identity['version'], mode)
-    return dict(source=identity, hosted=[name for name, s in suites.items() if s['kind'] == 'hosted'],
+    return dict(source=identity, waived=release_waivers(manifest, identity['version'], mode),
+                hosted=[name for name, s in suites.items() if s['kind'] == 'hosted'],
                 external=[dict(suite=name, labels=s['labels']) for name, s in suites.items() if s['kind'] == 'external'])
 
 
@@ -547,6 +589,9 @@ def main():
         else:
             value = gate(args.root, args.manifest, args.reports, args.mode, args.commit, args.ref)
             atomic(args.reports / 'summary.report', value)
+            if value['waived'] and os.environ.get('GITHUB_STEP_SUMMARY'):
+                with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+                    stream.write(qualification_notes(value['waived']))
         print(json.dumps(value if args.action != 'run' else {'suite': value['suite'], 'status': value['status'], 'reason': value['reason']}, indent=2))
         return 0 if value.get('status', 'passed') == 'passed' else 1
     except (ValueError, OSError, KeyError, TypeError):

@@ -5,12 +5,12 @@
     {
       "path": "bioBenches/gentecBench",
       "url": "https://github.com/opensoft/gentecBench.git",
-      "commit": "1c12961f2f2fd7f5226671aad4c9ee245bba961e"
+      "commit": "c8006dac9486fc47e76349ddd235c53d696e6472"
     },
     {
       "path": "bioBenches/simBench",
       "url": "https://github.com/opensoft/simBench.git",
-      "commit": "b3811768f342fe0dad0d6e0a91d42da74c3c8035"
+      "commit": "2bd8714705220e52760b6940a4ece77923452a6e"
     },
     {
       "path": "devBenches/cppBench",
@@ -25,12 +25,12 @@
     {
       "path": "devBenches/flutterBench",
       "url": "https://github.com/opensoft/flutterBench.git",
-      "commit": "e016cdb1baaf11d27ee4b17b3ce264bcd51a6a7b"
+      "commit": "6df93c965e7551c0da79a32262cea57651041c56"
     },
     {
       "path": "devBenches/frappeBench",
       "url": "https://github.com/opensoft/frappeBench.git",
-      "commit": "be545fc1a124951d455969be45b117a128ed8dd6"
+      "commit": "4af1cad8bc60ab8b06aef91f4c1cee2d60d6a0b8"
     },
     {
       "path": "devBenches/goBench",

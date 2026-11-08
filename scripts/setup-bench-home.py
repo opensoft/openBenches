@@ -39,7 +39,12 @@ def valid_type(path, directory):
 
 
 def existing_source(path, directory):
-    if not (path.is_symlink() or path.exists() or host_linked(path)):
+    if host_linked(path):
+        present = (host.run(['test', '-e', path], capture_output=True).returncode == 0
+                   or host.run(['test', '-L', path], capture_output=True).returncode == 0)
+    else:
+        present = path.is_symlink() or path.exists()
+    if not present:
         return False
     if not valid_type(path, directory):
         expected = 'directory' if directory else 'settings file'
@@ -56,7 +61,16 @@ def prepare(home):
             existing_source(home / name, directory)
     for name in DIRECTORIES:
         if not existing_source(home / name, True):
-            (home / name).mkdir(mode=0o700, parents=True, exist_ok=True)
+            path = home / name
+            if host_linked(path):
+                # Missing children of user-selected host links are created by
+                # the host; no existing settings file or link is replaced.
+                result = host.run(['bash', '-c', 'umask 077; mkdir -p -- "$1"',
+                                   'bench-home', path], capture_output=True)
+                if result.returncode:
+                    raise ValueError(f'Could not create directory on the host: {path}')
+            else:
+                path.mkdir(mode=0o700, parents=True, exist_ok=True)
     for name, initial in SETTINGS.items():
         if existing_source(home / name, False):
             continue

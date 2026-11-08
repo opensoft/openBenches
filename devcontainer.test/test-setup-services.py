@@ -121,6 +121,9 @@ workbenches_ssh_agent_identity''')
             target = Path(temporary) / 'host-config'
             (home / '.config').rename(target)
             (home / '.config').symlink_to(target, target_is_directory=True)
+            # One genuinely missing host child must be created on the host,
+            # not mistaken for an invalid existing target.
+            (target / 'sonarqube').rmdir()
             existing = Path.exists
             mkdir = Path.mkdir
             calls = []
@@ -146,6 +149,7 @@ workbenches_ssh_agent_identity''')
                   mock.patch.object(Path, 'mkdir', no_link_writes)):
                 module.prepare(home)
             self.assertTrue((home / '.config').is_symlink())
+            self.assertEqual((target / 'sonarqube').stat().st_mode & 0o777, 0o700)
             for child in ('gh', 'workbenches', 'sonarqube'):
                 self.assertIn(['test', '-d', home / '.config' / child], calls)
 

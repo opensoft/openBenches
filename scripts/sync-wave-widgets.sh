@@ -44,7 +44,10 @@ for bench in pyBench flutterBench cppBench rustBench cloudBench; do
 done
 
 projects_root="${WAVE_PROJECTS_ROOT:-${PROJECTS_ROOT:-$HOME/projects}}"
-connection="${WAVE_WSL_CONNECTION:-wsl://${distro:-Ubuntu-24.04}}"
+connection="${WAVE_WSL_CONNECTION:-}"
+if [[ -z "$connection" ]] && { [[ -n "$distro" ]] || grep -qi microsoft /proc/version 2>/dev/null; }; then
+    connection="wsl://${distro:-Ubuntu-24.04}"
+fi
 umask 077
 staged="$(mktemp -d)" || exit 1
 snapshot="$staged/snapshot"
@@ -53,7 +56,17 @@ templates="$staged/templates"
 lock=''
 connection_temp=''
 widget_temp=''
+recovery=''
 cleanup() {
+    # A signal or failed publication must not leave a claimed setting absent.
+    if [[ -n "$recovery" ]]; then
+        for file in connections.json widgets.json; do
+            if [[ -e "$recovery/$file" && ! -e "$config_dir/$file" && ! -L "$config_dir/$file" ]]; then
+                link_without_replacing "$recovery/$file" "$config_dir/$file" || :
+            fi
+        done
+        printf 'Original Wave settings retained in %s.\n' "$recovery" >&2
+    fi
     [[ -z "$connection_temp" ]] || rm -f -- "$connection_temp"
     [[ -z "$widget_temp" ]] || rm -f -- "$widget_temp"
     [[ -z "$lock" ]] || rmdir -- "$lock"
@@ -137,19 +150,34 @@ stage_for_replace() {
     cat -- "$updated/$file" > "$temp"
 }
 
+link_without_replacing() {
+    if [[ "$(uname -s)" == Darwin ]]; then
+        ln -h -- "$1" "$2"
+    else
+        ln -T -- "$1" "$2"
+    fi
+}
+
 publish() {
     local file="$1" temp="$2" live="$config_dir/$1"
     if [[ -f "$snapshot/$file" ]]; then
-        if [[ "$(uname -s)" == Darwin ]]; then
-            mv -fh -- "$temp" "$live"
-        else
-            mv -fT -- "$temp" "$live"
+        if [[ -z "$recovery" ]]; then
+            recovery="$(mktemp -d "$config_dir/.openbenches-settings-backup.XXXXXX")" || return 1
         fi
-    elif [[ "$(uname -s)" == Darwin ]]; then
-        ln -h -- "$temp" "$live"
-    else
-        ln -T -- "$temp" "$live"
+        # Capture the actual displaced version, not just the earlier snapshot.
+        # Wave does not share our lock: never overwrite a save it makes here.
+        if [[ "$(uname -s)" == Darwin ]]; then
+            mv -fh -- "$live" "$recovery/$file" || return 1
+        else
+            mv -fT -- "$live" "$recovery/$file" || return 1
+        fi
+        if [[ -L "$recovery/$file" || ! -f "$recovery/$file" ]] ||
+            ! cmp -s -- "$snapshot/$file" "$recovery/$file"; then
+            echo 'Wave settings changed during publication; the displaced version was preserved. Rerun setup.' >&2
+            return 1
+        fi
     fi
+    link_without_replacing "$temp" "$live" || return 1
 }
 
 if [[ -f "$updated/connections.json" ]]; then

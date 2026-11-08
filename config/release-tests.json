@@ -77,6 +77,13 @@
           ]
         },
         {
+          "id": "wave-widget-sync",
+          "argv": [
+            "python3",
+            "devcontainer.test/test-wave-widget-sync.py"
+          ]
+        },
+        {
           "id": "vibe-annotations-readiness",
           "argv": [
             "python3",

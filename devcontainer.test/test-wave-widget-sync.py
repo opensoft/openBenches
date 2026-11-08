@@ -54,8 +54,23 @@ fi
 printf '%s\\n' "$TEST_TEMPLATES" > "$2/widgets.json"
 ''')
         self.wrapper(binaries / 'mv', f'''
-if [[ -n "$TEST_FAIL_WIDGET_WRITE" && "$*" == *'/widgets.json' ]]; then exit 1; fi
+if [[ "$*" == *'/widgets.json' ]]; then
+    if [[ -n "$TEST_FAIL_WIDGET_WRITE" ]]; then exit 1; fi
+    if [[ -n "$TEST_PUBLICATION_WRITE" ]]; then
+        printf '%s\\n' '{{"saved-by-wave": true}}' > "$WAVETERM_CONFIG_DIR/widgets.json"
+    fi
+fi
 exec {shlex.quote(shutil.which('mv'))} "$@"
+''')
+        self.wrapper(binaries / 'ln', f'''
+if [[ -n "$TEST_RECREATE_WIDGET" && "$*" == *'/widgets.json' ]]; then
+    printf '%s\\n' '{{"saved-by-wave": "after-claim"}}' > "$WAVETERM_CONFIG_DIR/widgets.json"
+fi
+exec {shlex.quote(shutil.which('ln'))} "$@"
+''')
+        self.wrapper(binaries / 'grep', f'''
+if [[ -n "$TEST_NATIVE" && "$*" == '-qi microsoft /proc/version' ]]; then exit 1; fi
+exec {shlex.quote(shutil.which('grep'))} "$@"
 ''')
         self.env = dict(os.environ, PATH=f'{binaries}:{os.environ["PATH"]}',
                         HOME=str(self.home), WAVETERM_CONFIG_DIR=str(self.config),
@@ -63,6 +78,8 @@ exec {shlex.quote(shutil.which('mv'))} "$@"
                         WAVE_TERMINAL_INSTALLER_DIR=str(installer.parents[1]),
                         WORKBENCHES_SKIP_WAVE_WIDGETS='0', TEST_INVENTORY=INVENTORY,
                         TEST_CONCURRENT_WRITE='', TEST_FAIL_WIDGET_WRITE='',
+                        TEST_PUBLICATION_WRITE='', TEST_RECREATE_WIDGET='',
+                        TEST_NATIVE='',
                         TEST_TEMPLATES=json.dumps({
                             'defwidget@terminal': widget({'term:fontsize': 16}),
                             'projects': widget({}, description='Open the WSL projects directory'),
@@ -118,6 +135,30 @@ exec {shlex.quote(shutil.which('mv'))} "$@"
         self.assertEqual(json.loads(self.widgets.read_text()), {'saved-by-wave': True})
         self.assertEqual(self.connections.read_text(), '{}')
 
+    def test_legacy_installer_commands_are_updated_or_removed(self):
+        self.widgets.write_text(json.dumps({
+            'pyBench': widget({'cmd:initscript':
+                               'exec /old/scripts/wave-container-shell.sh --title pyBench py-bench'}),
+            'cloudBench': widget({'cmd:initscript':
+                                  'exec /old/scripts/wave-container-shell.sh --title cloudBench cloudBench'}),
+        }))
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        widgets = json.loads(self.widgets.read_text())
+        self.assertNotIn('cloudBench', widgets)
+        args = shlex.split(widgets['pyBench']['blockdef']['meta']['cmd:initscript'])
+        self.assertEqual(args[1:4], [str(ROOT / 'scripts/wave-container-shell.sh'),
+                                    '--workbenches-root', str(ROOT)])
+
+    def test_native_default_uses_local_connection(self):
+        self.connections.write_text('{"ssh://custom": {"keep": true}}')
+        result = self.sync(WAVE_WSL_CONNECTION='', WSL_DISTRO_NAME='', TEST_NATIVE='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        widgets = json.loads(self.widgets.read_text())
+        for key in ('defwidget@terminal', 'projects', 'pyBench'):
+            self.assertEqual(widgets[key]['blockdef']['meta']['connection'], '')
+        self.assertEqual(self.connections.read_text(), '{"ssh://custom": {"keep": true}}')
+
     def test_widget_write_failure_preserves_old_widgets_and_can_retry(self):
         self.widgets.write_text('{"custom": true}')
         result = self.sync(TEST_FAIL_WIDGET_WRITE='1')
@@ -126,6 +167,26 @@ exec {shlex.quote(shutil.which('mv'))} "$@"
         self.assertIs(json.loads(self.connections.read_text())[CONNECTION]['conn:wshenabled'], True)
         self.assertEqual(self.sync().returncode, 0)
         self.assertIn('pyBench', json.loads(self.widgets.read_text()))
+
+    def test_save_between_comparison_and_claim_is_restored_and_reported(self):
+        self.widgets.write_text('{"custom": true}')
+        result = self.sync(TEST_PUBLICATION_WRITE='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('changed during publication', result.stderr)
+        self.assertEqual(json.loads(self.widgets.read_text()), {'saved-by-wave': True})
+        backup = list(self.config.glob('.openbenches-settings-backup.*/widgets.json'))
+        self.assertEqual(len(backup), 1)
+        self.assertEqual(backup[0].read_bytes(), self.widgets.read_bytes())
+
+    def test_save_after_claim_is_not_overwritten(self):
+        original = '{"custom": true}'
+        self.widgets.write_text(original)
+        result = self.sync(TEST_RECREATE_WIDGET='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(self.widgets.read_text()), {'saved-by-wave': 'after-claim'})
+        backup = list(self.config.glob('.openbenches-settings-backup.*/widgets.json'))
+        self.assertEqual(len(backup), 1)
+        self.assertEqual(backup[0].read_text(), original)
 
     def test_unknown_inventory_and_held_lock_leave_settings_alone(self):
         self.widgets.write_text('{}')

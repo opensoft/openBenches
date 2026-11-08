@@ -59,6 +59,11 @@ def metadata(widget):
 def managed_bench(widget, key):
     try:
         args = shlex.split(metadata(widget)['cmd:initscript'])
+        if len(args) == 5:
+            launcher = Path(args[1])
+            root = str(launcher.parent.parent)
+            expected = command(root, key)
+            return launcher.is_absolute() and args == expected[:2] + expected[4:]
         return len(args) == 7 and args == command(args[3], key) and Path(args[3]).is_absolute()
     except (AttributeError, KeyError, TypeError, ValueError):
         return False
@@ -70,10 +75,11 @@ def reconcile(snapshot, output, templates, checkout, projects, connection, inven
     original_connections = read_object(snapshot / 'connections.json')
     widgets = deepcopy(original_widgets)
     connections = deepcopy(original_connections)
-    settings = connections.setdefault(connection, {})
-    if not isinstance(settings, dict):
-        raise ValueError(f'Wave connection {connection} must contain a JSON object')
-    settings['conn:wshenabled'] = True
+    if connection:
+        settings = connections.setdefault(connection, {})
+        if not isinstance(settings, dict):
+            raise ValueError(f'Wave connection {connection} must contain a JSON object')
+        settings['conn:wshenabled'] = True
 
     def update_widget(key, fields):
         if key not in widgets:

@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import shutil
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -18,6 +19,55 @@ LIB = ROOT / 'scripts/lib/tools-container.sh'
 
 
 class ServiceTests(unittest.TestCase):
+    def test_native_bench_callback_preserves_the_host_agent_fingerprint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            agent_path = home / 'host-agent.sock'
+            with socket.socket(socket.AF_UNIX) as agent:
+                agent.bind(str(agent_path))
+                for host_socket in (str(agent_path), None):
+                    with self.subTest(host_socket=host_socket):
+                        session = home / ('with-agent' if host_socket else 'without-agent')
+                        session.mkdir(mode=0o700)
+                        env = dict(os.environ, HOME=str(home), WORKBENCHES_TOOLS_ROOT=str(ROOT),
+                                   WORKBENCHES_NATIVE_PATH=os.environ['PATH'],
+                                   WORKBENCHES_HOST_RPC=str(session))
+                        env.pop('SSH_AUTH_SOCK', None)
+                        if host_socket:
+                            env['SSH_AUTH_SOCK'] = host_socket
+                        command = ['bash', '-c', 'source "$1"; workbenches_tools_fingerprint',
+                                   'fixture', str(LIB)]
+                        expected = subprocess.check_output(command, env=env, text=True).strip()
+                        broker = subprocess.Popen(
+                            ['bash', str(ROOT / 'scripts/lib/tools-host-broker.sh'), str(session)],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        try:
+                            for _ in range(100):
+                                if (session / 'alive').is_file():
+                                    break
+                                time.sleep(.01)
+                            self.assertTrue((session / 'alive').is_file())
+                            # Exercise the actual native-bench callback with the
+                            # stable container socket in its copied environment.
+                            guest_env = dict(env, SSH_AUTH_SOCK='/run/workbenches-ssh-agent.sock',
+                                             PYTHONPATH=str(ROOT / 'tools-container'))
+                            probe = '''import runpy, sys
+runtime = runpy.run_path(sys.argv[1])
+result = runtime['run'](sys.argv[2:], capture_output=True, text=True)
+sys.stdout.write(result.stdout)
+sys.stderr.write(result.stderr)
+sys.exit(result.returncode)
+'''
+                            result = subprocess.run(
+                                [sys.executable, '-c', probe,
+                                 str(ROOT / 'scripts/setup-bench-runtime.py'), *command],
+                                env=guest_env, capture_output=True, text=True, timeout=10)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            self.assertEqual(result.stdout.strip(), expected)
+                        finally:
+                            broker.terminate()
+                            broker.communicate(timeout=5)
+
     def test_agent_freshness_is_checked_by_healthy_command_shims(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)

@@ -729,8 +729,8 @@ check_component_status() {
             local config_file="$script_dir/../config/bench-config.json"
 
             # Get the path and URL from config
-            local bench_path=$(jq -r ".benches.${bench_name}.path // \"\"" "$config_file" 2>/dev/null)
-            local bench_url=$(jq -r ".benches.${bench_name}.url // \"\"" "$config_file" 2>/dev/null)
+            local bench_path=$(jq -r --arg name "$bench_name" '.benches[$name].path // ""' "$config_file" 2>/dev/null)
+            local bench_url=$(jq -r --arg name "$bench_name" '.benches[$name].url // ""' "$config_file" 2>/dev/null)
 
             if [ -z "$bench_path" ] || [ "$bench_path" = "null" ]; then
                 # Fallback: check root directory
@@ -1805,7 +1805,7 @@ process_selections() {
 
             # Installed benches with no pending action: check Layer 2/3 images, skip if current
             if [[ "$status" == "installed" && -z "$action" ]]; then
-                local bench_path=$(jq -r ".benches.${bench}.path // \"$bench\"" "$config_file" 2>/dev/null)
+                local bench_path=$(jq -r --arg name "$bench" '.benches[$name].path // $name' "$config_file" 2>/dev/null)
                 local full_bench_path="$script_dir/../$bench_path"
                 local image_repo
                 image_repo=$(bench_dir_to_image_repo "$bench")
@@ -1855,7 +1855,7 @@ process_selections() {
             if [[ "$action" == "uninstall" ]]; then
                 log "Uninstalling bench: $bench"
                 echo -e "${BOLD}${CYAN}▶ Uninstalling: $bench${NC}"
-                local bench_path=$(jq -r ".benches.${bench}.path // \"$bench\"" "$config_file" 2>/dev/null)
+                local bench_path=$(jq -r --arg name "$bench" '.benches[$name].path // $name' "$config_file" 2>/dev/null)
                 if uninstall_component "$key"; then
                     ((success_count++))
                 else
@@ -1870,13 +1870,13 @@ process_selections() {
                     # Bench is installed but not set up
                     log "Setting up bench: $bench"
                     echo -e "${BOLD}${CYAN}▶ Setting up: $bench${NC}"
-                    local bench_path=$(jq -r ".benches.${bench}.path // \"$bench\"" "$config_file" 2>/dev/null)
+                    local bench_path=$(jq -r --arg name "$bench" '.benches[$name].path // $name' "$config_file" 2>/dev/null)
                     local full_bench_path="$script_dir/../$bench_path"
                     local setup_script="$full_bench_path/setup.sh"
 
                     # If it's a git repo, fetch latest updates first
                     if [[ "${WORKBENCHES_FROZEN:-}" != 1 ]] && { [ -d "$full_bench_path/.git" ] || [ -f "$full_bench_path/.git" ]; }; then
-                        local bench_url=$(jq -r ".benches.${bench}.url // \"\"" "$config_file" 2>/dev/null)
+                        local bench_url=$(jq -r --arg name "$bench" '.benches[$name].url // ""' "$config_file" 2>/dev/null)
                         if [ -n "$bench_url" ] && [ "$bench_url" != "null" ]; then
                             echo -e "  ${YELLOW}Fetching latest updates from: $bench_url${NC}"
                             log "Fetching updates for $bench before setup"
@@ -1975,8 +1975,8 @@ process_selections() {
 
                     # Get bench info from config
                     if [ -f "$config_file" ]; then
-                        local bench_url=$(jq -r ".benches.${bench}.url // \"\"" "$config_file")
-                        local bench_path=$(jq -r ".benches.${bench}.path // \"$bench\"" "$config_file")
+                        local bench_url=$(jq -r --arg name "$bench" '.benches[$name].url // ""' "$config_file")
+                        local bench_path=$(jq -r --arg name "$bench" '.benches[$name].path // $name' "$config_file")
                         local full_bench_path="$script_dir/../$bench_path"
 
                         if [ -n "$bench_url" ] && [ "$bench_url" != "null" ]; then

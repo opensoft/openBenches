@@ -235,7 +235,7 @@ log_header "LAYER 0 BUILD"
 if [[ -z "$selected_bench_paths" ]]; then
     echo "No bench images selected; skipping Layer 0."
 else
-    python3 "${SCRIPT_DIR}/scripts/setup-bench-home.py" || exit "$?"
+    run_logged "BENCH HOME PREPARATION" python3 "${SCRIPT_DIR}/scripts/setup-bench-home.py" || exit "$?"
     if python3 "${SCRIPT_DIR}/scripts/shared-images.py" ensure base; then
         echo "Layer 0 is ready."
     else

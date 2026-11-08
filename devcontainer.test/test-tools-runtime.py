@@ -189,6 +189,29 @@ NATIVE
             output = run(['/bin/bash', '-c', driver, 'runtime', str(ROOT)], env=env, cwd=ROOT)
             for expected in ('Python 3.', '"agent"', 'true', 'git version', 'curl ', 'Native command boundary passed', 'Native long/short deadlines passed'):
                 assert expected in output, output
+            # /tmp and HOME are mounted into Tools. Put the target elsewhere to
+            # reproduce a WSL credential link whose Windows drive is host-only.
+            with tempfile.TemporaryDirectory(prefix='workbenches-host-credentials-', dir='/var/tmp') as external:
+                target = Path(external) / 'azure'
+                target.mkdir()
+                sentinel = target / 'fixture'
+                sentinel.write_text('preserve existing credential directory')
+                link = home / '.azure'
+                link.symlink_to(target, target_is_directory=True)
+                assert link.is_dir()
+                command = '''set -e
+source "$1/scripts/lib/setup-prerequisites.sh"
+ensure_workstation_requirements
+[[ -d "$HOME/.azure" ]]
+python3 -c 'from pathlib import Path; link = Path.home() / ".azure"; assert link.is_symlink() and not link.exists()'
+python3 "$1/scripts/setup-bench-home.py"
+'''
+                run(['/bin/bash', '-c', command, 'bench-home-host-link', str(ROOT)], env=env, cwd=ROOT)
+                assert link.is_symlink() and link.readlink() == target
+                assert sentinel.read_text() == 'preserve existing credential directory'
+                assert (home / '.claude.json').is_file()
+                link.unlink()
+                print('PASS: bench home preparation preserves credential links to host-only paths')
             command = '''set -e
 source "$1/scripts/lib/setup-prerequisites.sh"
 ensure_workstation_requirements

@@ -8,7 +8,7 @@ import re
 import subprocess
 import tempfile
 
-from release_validation import DEFAULT_MANIFEST, ValidationError, atomic, gate, git, read, source
+from release_validation import DEFAULT_MANIFEST, ValidationError, atomic, gate, git, qualification_notes, read, source
 
 
 def gh(*args, payload=None, absent=False):
@@ -75,7 +75,9 @@ def main():
             if target.exists(): raise ValidationError('duplicate_evidence_artifact')
             target.write_bytes(path.read_bytes())
         value = gate(args.root, DEFAULT_MANIFEST, flattened, 'release', commit, summary['source']['ref'], expected_run)
-        if not value['publishable'] or summary['source'] != value['source']: raise ValidationError('invalid_release_evidence')
+        if (not value['publishable'] or summary['source'] != value['source']
+                or summary.get('waived', []) != value['waived']):
+            raise ValidationError('invalid_release_evidence')
         tag = 'v' + args.version
         already_tagged = existing_tag(repository, tag, commit, args.run_id)
         print('Verified full release evidence for ' + tag + ' at ' + commit)
@@ -91,7 +93,7 @@ def main():
                 payload={'ref': 'refs/tags/' + tag, 'sha': annotation['sha']})
         # A failure never deletes/moves a tag. An administrator inspects and
         # resumes publication of that validated source instead of retagging.
-        content = notes.read_text() + '\n\n' + message + '\n'
+        content = notes.read_text() + '\n\n' + qualification_notes(value['waived']) + '\n' + message + '\n'
         note_file = directory / 'release-notes.md'; note_file.write_text(content)
         evidence = directory / 'validation-report.json'; atomic(evidence, value)
         previous = gh('api', f'repos/{repository}/releases/tags/{tag}', absent=True)

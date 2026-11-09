@@ -1,0 +1,28 @@
+name: Stack PR fast CI
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    name: openbenches-pr-fast
+    if: ${{ !startsWith(github.head_ref, 'mergify/merge-queue/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the PR against its immediate base
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 scripts/stack-ci.py fast
+          python3 devcontainer.test/test-stack-ci.py

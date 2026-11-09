@@ -1,0 +1,10 @@
+# Plan: OpenBenches stack CI bootstrap
+
+Use two GitHub-hosted workflows with different event sources and check names.
+Gate the heavy checkout on the Mergify actor and temporary branch; verify the
+candidate SHA, current-main ancestry and path allowlist. Reuse the existing
+non-release Spec Kit integration suites. Limit the prepared queue to manually
+admitted canary stacks and leave current protections intact.
+
+The rollout issue tracks live Graphite authentication, app authorization,
+candidate membership, and positive and negative queue tests separately.

@@ -1,0 +1,34 @@
+name: Stack candidate integration
+
+on:
+  push:
+    branches: ['mergify/merge-queue/**']
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: openbenches-stack-heavy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Reject unexpected queue events before checkout
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = opensoft/openBenches
+          test "$GITHUB_ACTOR" = 'mergify[bot]'
+          [[ "$GITHUB_REF" =~ ^refs/heads/mergify/merge-queue/[0-9a-f]{10}$ ]]
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the combined candidate
+        run: python3 scripts/stack-ci.py heavy
+      - name: Run combined non-release integration
+        run: |
+          set -euo pipefail
+          bash devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
+          bash devBenches/devcontainer.test/test-speckit-git-feature.sh
+          bash devBenches/devcontainer.test/test-speckit-git-compat.sh

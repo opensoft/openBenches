@@ -1,0 +1,23 @@
+# Dormant until app access and a canary are separately approved.
+merge_queue:
+  mode: serial
+  max_parallel_checks: 1
+
+queue_rules:
+  - name: openbenches-stack-canary
+    batch_size: 3
+    batch_max_wait_time: 60 seconds
+    batch_max_failure_resolution_attempts: 0
+    max_checks_retries: 0
+    checks_timeout: 25 minutes
+    merge_method: merge
+    queue_conditions:
+      - -draft
+      - -from-fork
+      - label=stack-ci-reviewed
+      - head~=^ci/stack-canary/
+      - base~=^(main|ci/stack-canary/.+)$
+      - '-files~=^(?!(docs/task-set-delivery[.]md|[.]specify/templates/[^/]+[.]md)$)'
+      - check-success=@github-actions/openbenches-pr-fast
+    merge_conditions:
+      - check-success=@github-actions/openbenches-stack-heavy

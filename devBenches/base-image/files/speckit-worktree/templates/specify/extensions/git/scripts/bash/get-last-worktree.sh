@@ -135,11 +135,7 @@ resolve_config_value() {
 }
 
 mtime_for_path() {
-    if stat -c %Y "$1" >/dev/null 2>&1; then
-        stat -c %Y "$1"
-    else
-        stat -f %m "$1"
-    fi
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
 }
 
 REGISTERED_WORKTREE_PATHS=()

@@ -2941,6 +2941,9 @@ scenario
 # in the handoff" — it is the whole of how A8(a) step 4's "never left unwritten"
 # is preserved. Write (a), the object-log line, is refused there because that log
 # is append-only; write (b) is not.
+# SINCE v1.1.0 THIS HEAD IS NOT WHAT THE SUITE ASSERTS FOR (b): v1.1.0 skips
+# (b) with (a) where there is no uuid. Check 2 below holds that, as lane
+# openRepoTools-3 decided, and names the departure.
 #
 # FIXED UPSTREAM, SO THE CHECKS ARE BACK (opensoft/openRepoTools#98, vendored
 # at v1.1.0, code 2a057a6d). The KNOWN-gap skip that stood here waived the
@@ -2986,6 +2989,15 @@ grep -Fq 'LANES_SESSION="$uuid" "$L" log PAUSED' <<<"$s4_code" \
 # left unwritten" is write (c), the row's state cell, which is checked below to
 # be outside the guard, and the handoff. This checks that (b) is skipped only
 # where (a) is, and never silently.
+# A DEPARTURE FROM SPEC §7 AS THIS SECTION'S HEAD QUOTES IT, ACCEPTED BY LANE
+# openRepoTools-3 (its decision, 2026-11-09, on opensoft/openBenches#257; not a
+# ruling of Brett's). SPEC §7 and clause (e) say a lane with no uuid recorded
+# still gets "the register's file-level PAUSED line and the row's state cell";
+# v1.1.0 writes the row's state cell and the handoff, but not the file-level
+# line. Lane 3 accepted the retarget because it holds what v1.1.0 ships, and a
+# line reading `session @<ws>` is the placeholder clause (e) and `R-A11-14`
+# forbid. Should SPEC §7 be held as written, this check and the skill must
+# change together, upstream first.
 grep -Fq 'append-line' <<<"$s4_code" \
     || fail "RV-W1: the file-level PAUSED line is not under step 4's uuid guard, so with no uuid it is written as 'session @<ws>'"; assertion
 grep -Fq 'register-line writes are therefore NOT made' <<<"$s2_code" \

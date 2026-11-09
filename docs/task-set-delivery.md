@@ -83,9 +83,8 @@ Never bypass the ruleset or rewrite an enqueued stack.
 
 ## OpenBenches rollout canary
 
-The repository configuration is dormant until app access and a live canary
-are separately approved. Keep the current merge path and existing checks in
-place. Do not queue release work.
+Keep the current merge path and existing checks in place. Admit only a
+separately approved canary; do not queue release work.
 
 - Use the gh-stack authoring and ordinary PR steps above to publish one
   same-repository stack of two or three PRs from
@@ -108,3 +107,32 @@ place. Do not queue release work.
   canary fails; never manually merge past a failed heavy check.
 
 Existing release validation and publishing are independent of these checks.
+
+## Shared-helper pilot
+
+Use the same authoring and queue procedure for an approved code pilot, with
+`ci/stack-helpers/` branches. Only these paths are eligible:
+
+- `devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/bash/get-last-worktree.sh`
+- `devBenches/devcontainer.test/test-speckit-git-feature.sh`
+
+Fast CI also runs the Bash feature behavior suite for these paths. Before
+queueing, a maintainer records the exact heads and immediate bases, fast CI and
+applicable review in the rollout issue. For each PR in the same ordered stack,
+the maintainer applies `stack-ci-reviewed` and posts a GitHub commit status on
+that PR's reviewed head. Use the full immediate-base SHA, the same ordered PR
+numbers (bottom first, comma-separated) for every member, and the evidence link:
+
+```bash
+gh api "repos/$repo/statuses/$head" \
+  -f state=success -f context=openbenches-helper-reviewed \
+  -f "description=base=$immediate_base stack=$ordered_pr_numbers" \
+  -f "target_url=$evidence_url"
+```
+
+The label alone does not authorize a helper candidate. Heavy CI verifies the
+ordered merge parents, current GitHub PR heads and bases, and those receipts
+before testing the combined tree. If an input changes, dequeue the stack and
+remove its admission labels. Recheck the new inputs and post fresh receipts
+before queueing again. For a partial landing, stop and verify the target before
+retrying. Do not manually merge past a failed heavy run.

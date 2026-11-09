@@ -9,9 +9,27 @@ description: "Task list template for feature implementation"
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: Include focused tests for changed behavior in its task set. For
+documentation-only or no-runtime changes, record an appropriate verification
+command instead of inventing a test task.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
+
+## Task Sets and Pull Requests
+
+Assign every implementation task to exactly one task set. Each set maps to one
+PR, delivers one outcome, and has a focused verification command. Keep the task
+IDs and story phases below; use this table to group those IDs rather than
+duplicating the checklist. Split a set that needs more than one review decision.
+
+| Set | Outcome | Task IDs | Parent set(s) | Fast verification | Safe intermediate state |
+| --- | --- | --- | --- | --- | --- |
+| SET-01 | [One reviewable outcome] | [Tnnn, Tnnn] | None | [Command] | [Why this may land safely] |
+| SET-02 | [Next reviewable outcome] | [Tnnn] | SET-01 | [Command against SET-01] | [Compatibility or disabled behavior] |
+
+Carry the set ID and task IDs into the PR body. Put tests with the behavior they
+prove. Separate per-PR verification from the integration suite that must pass
+on the combined candidate before landing.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -80,7 +98,7 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 1 (OPTIONAL - only if tests requested) ⚠️
+### Focused tests for changed behavior in User Story 1
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
@@ -106,7 +124,7 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 2 (OPTIONAL - only if tests requested) ⚠️
+### Focused tests for changed behavior in User Story 2
 
 - [ ] T018 [P] [US2] Contract test for [endpoint] in tests/contract/test_[name].py
 - [ ] T019 [P] [US2] Integration test for [user journey] in tests/integration/test_[name].py
@@ -128,7 +146,7 @@ Examples of foundational tasks (adjust based on your project):
 
 **Independent Test**: [How to verify this story works on its own]
 
-### Tests for User Story 3 (OPTIONAL - only if tests requested) ⚠️
+### Focused tests for changed behavior in User Story 3
 
 - [ ] T024 [P] [US3] Contract test for [endpoint] in tests/contract/test_[name].py
 - [ ] T025 [P] [US3] Integration test for [user journey] in tests/integration/test_[name].py
@@ -154,7 +172,7 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] TXXX [P] Documentation updates in docs/
 - [ ] TXXX Code cleanup and refactoring
 - [ ] TXXX Performance optimization across all stories
-- [ ] TXXX [P] Additional unit tests (if requested) in tests/unit/
+- [ ] TXXX [P] Additional unit tests for remaining coverage gaps in tests/unit/
 - [ ] TXXX Security hardening
 - [ ] TXXX Run quickstart.md validation
 
@@ -199,7 +217,7 @@ Examples of foundational tasks (adjust based on your project):
 ## Parallel Example: User Story 1
 
 ```bash
-# Launch all tests for User Story 1 together (if tests requested):
+# Launch the independent focused tests for User Story 1 together:
 Task: "Contract test for [endpoint] in tests/contract/test_[name].py"
 Task: "Integration test for [user journey] in tests/integration/test_[name].py"
 

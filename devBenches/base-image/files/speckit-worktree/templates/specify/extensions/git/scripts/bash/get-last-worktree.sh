@@ -219,7 +219,8 @@ read_state_worktree_path() {
     if command -v jq >/dev/null 2>&1; then
         if ! jq -jrs 'if length == 1 and (.[0] | type) == "object"
             and ((.[0].WORKTREE_PATH // "") | type) == "string"
-            then (.[0].WORKTREE_PATH // "") else error("invalid state") end' \
+            then (.[0].WORKTREE_PATH // "") else error("invalid state") end
+            | if index("\u0000") == null then . else error("invalid state path") end' \
             "$state_file" > "$output_file" 2>/dev/null; then
             _git_worktree_remove_temp_file "$output_file" || true
             return 1
@@ -232,7 +233,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as stream:
     payload = json.load(stream)
 path = payload.get("WORKTREE_PATH", "") if isinstance(payload, dict) else None
-if not isinstance(path, str):
+if not isinstance(path, str) or "\0" in path:
     raise ValueError("invalid state")
 sys.stdout.buffer.write(path.encode("utf-8"))
 PY

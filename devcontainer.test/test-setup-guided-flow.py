@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import shutil
@@ -44,7 +45,9 @@ def terminal_run(argv, env, replies):
                 if not chunk:
                     break
                 output += chunk
-                if pending and pending[0][0].encode() in output[last:]:
+                pattern = pending[0][0] if pending else None
+                matched = pattern.search(output[last:].decode(errors='replace')) if isinstance(pattern, re.Pattern) else pattern is not None and pattern.encode() in output[last:]
+                if matched:
                     _, reply = pending.pop(0)
                     os.write(master, reply.encode())
                     last = len(output)
@@ -68,8 +71,9 @@ class GuidedFlowTests(unittest.TestCase):
         self.config.mkdir(parents=True)
         self.env = dict(os.environ, HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / '.config'))
         for key in list(self.env):
-            if key.startswith(('WORKBENCHES_', 'CLAUDE_PROFILES_', 'CODEX_', 'CHATGPT_PROFILES_', 'PI_PROFILES_', 'AI_CREDENTIAL_', 'DOCKER_')):
+            if key.startswith(('WORKBENCHES_', 'CLAUDE_PROFILES_', 'CODEX_', 'CHATGPT_PROFILES_', 'PI_PROFILES_', 'AI_CREDENTIAL_', 'DOCKER_', 'OPENAI_', 'ANTHROPIC_')):
                 self.env.pop(key)
+        self.env["WORKBENCHES_TEST_NATIVE_TOOLS"] = "1"
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, self.env, clear=True).start()
         self.target = self.home / '.chatgpt-profiles/profiles/personal/personal-1/auth.json'
@@ -78,12 +82,92 @@ class GuidedFlowTests(unittest.TestCase):
                         'guided': True, 'authMode': 'signin', 'entries': [self.entry]}
         self.payload = b'{"OPENAI_API_KEY":"fake-only-key"}'
 
+    def test_install_display_keeps_prompts_and_restores_terminal(self):
+        command = r'''source "$1"
+stty rows 24 cols 80
+trap 'finish_setup_install_screen "$?"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+start_setup_install_screen 1.6.1
+for ((line = 0; line < 30; line++)); do echo "Build line $line"; done
+read -r -p 'Continue installing? ' choice
+[[ "$choice" == yes ]] || exit 8
+case "$2" in
+    resize) stty rows 10 cols 40; kill -WINCH "$$"; echo 'Output after resize' ;;
+    INT|TERM) kill -s "$2" "$$" ;;
+    failure) exit 9 ;;
+esac
+'''
+        for action, expected_code, footer in (
+            ('success', 0, 'Setup complete'),
+            ('failure', 9, 'Setup stopped (exit 9)'),
+            ('INT', 130, 'Setup cancelled'),
+            ('TERM', 143, 'Setup cancelled'),
+            ('resize', 0, 'Setup complete'),
+        ):
+            with self.subTest(action=action):
+                args = ['bash', '-c', command, 'screen', str(ROOT / 'scripts/lib/setup-terminal.sh'), action]
+                status, output = terminal_run(args, dict(self.env, TERM='xterm'), [('Continue installing?', 'yes\n')])
+                self.assertEqual(status, expected_code, output)
+                self.assertIn('\x1b[10;23r', output)
+                self.assertIn('Ctrl+C to cancel', output)
+                self.assertIn('Build line 29', output)
+                self.assertEqual(output.count('\x1b[r'), 1, output)
+                self.assertTrue(output.rstrip().endswith(footer), output)
+                if action == 'resize':
+                    self.assertLess(output.index('\x1b[r'), output.index('Output after resize'))
+
     def manifest(self, names=('personal-1',)):
         data = {'version': 1, 'families': ['personal'], 'profiles': [
             {'name': name, 'email': name + '@example.com', 'family': 'personal', 'profilePath': 'personal/' + name, 'aliases': []}
             for name in names]}
         (self.config / 'openai-profiles.json').write_text(json.dumps(data))
         return data
+
+    def test_compact_vault_choice_is_one_response_and_remembers_service(self):
+        route = self.home / 'route'
+        route.touch(mode=0o600)
+        status, output = terminal_run([sys.executable, str(ROOT / 'scripts/setup-credential-recovery.py'), '--choose-route', str(route)], self.env, [('Authentication route', '2V\n')])
+        self.assertEqual(status, 0, output)
+        self.assertEqual(route.read_text(), 'vault:vaultwarden')
+        self.assertNotIn('Services (numbers', output)
+
+    def test_compact_recovery_infers_key_and_keeps_explicit_destination_confirmation(self):
+        mapping = dict(self.mapping, compact=True)
+        item = {'id': '00000000-0000-0000-0000-000000000001', 'name': 'Codex test', 'type': 1, 'login': {'password': 'NEVER-PRINT'}}
+        answers = []
+        def answer(label):
+            answers.append(label)
+            return 'y'
+        def command(argv, env, limit=24576):
+            return json.dumps([item]).encode() if argv[1] == 'list' else b'sk-test-invalid-integration-key'
+        with patch.object(runtime, 'vault_command', side_effect=command), patch.object(runtime, 'prompt', side_effect=answer):
+            picked = runtime.pick_item(mapping, self.entry, {})
+        self.assertEqual(picked['credentialFormat'], 'api-key')
+        self.assertEqual(answers, ['Confirm [y/N]: '])
+
+
+    def test_compact_picker_does_not_infer_an_opaque_password_as_an_api_key(self):
+        item = {'id': '00000000-0000-0000-0000-000000000001', 'name': 'Codex test', 'type': 1, 'login': {'password': 'NEVER-PRINT'}}
+        def command(argv, env, limit=24576):
+            return json.dumps([item]).encode() if argv[1] == 'list' else b'an-opaque-login-password'
+        with patch.object(runtime, 'vault_command', side_effect=command), patch.object(runtime, 'prompt', side_effect=['y','2']) as prompt:
+            runtime.pick_item(dict(self.mapping, compact=True), self.entry, {})
+        self.assertEqual(prompt.call_count, 2)
+        self.assertIn('Stored value', prompt.call_args.args[0])
+
+    def test_compact_picker_requires_selection_when_items_are_ambiguous_and_cancels(self):
+        item = {'id': '00000000-0000-0000-0000-000000000001', 'name': 'Codex test', 'type': 2, 'notes': 'NEVER-PRINT'}
+        with patch.object(runtime, 'vault_command', return_value=json.dumps([item, dict(item, id='00000000-0000-0000-0000-000000000002')]).encode()), patch.object(runtime, 'prompt', return_value='s') as prompt:
+            self.assertIsNone(runtime.pick_item(dict(self.mapping,compact=True), self.entry, {}))
+        self.assertIn('Item number', prompt.call_args.args[0])
+
+    def test_profile_email_default_is_selected_metadata_and_ambiguous_accounts_have_no_default(self):
+        self.manifest()
+        self.assertEqual(profiles.login_email([self.entry]), 'personal-1@example.com')
+        self.manifest(('personal-1','personal-2'))
+        other = dict(self.entry,profile='personal-2')
+        self.assertEqual(profiles.login_email([self.entry,other]), '')
 
     def test_onboarding_q_and_eof_cancel_without_traceback_or_manifests(self):
         for reply in ('Q\n', '\x04'):
@@ -225,8 +309,8 @@ class GuidedFlowTests(unittest.TestCase):
         self.assertEqual(json.loads((output / '0.json').read_text()), {'OPENAI_API_KEY': 'fake-only-key'})
 
     def fake_docker(self, argv, **kwargs):
-        if argv[1] == 'run':
-            output = Path(next(arg.split('src=', 1)[1].split(',', 1)[0] for arg in argv if 'dst=/recovery/output' in arg))
+        if argv[1] == 'exec':
+            output = Path(argv[argv.index('--output') + 1])
             self.output = output
             returned = dict(self.mapping, entries=[dict(self.entry, itemId='00000000-0000-0000-0000-000000000001')])
             returned.pop('guided')
@@ -293,6 +377,9 @@ print('FAKE_SESSION_TOKEN_01234567890123456789')
         plan = self.home / 'selection.json'
         result = self.shell(f'''init_components
 check_component_status() {{ echo installed; }}
+refresh_host_tool_inventory() {{ :; }}
+refresh_bench_inventory() {{ :; }}
+load_requirements() {{ :; }}
 load_statuses
 component_checked[codex_cli]=true  # A checkbox without an action still means keep.
 selection_file="{plan}"
@@ -378,6 +465,7 @@ printf 'PREFIX:%s\\nPATH:%s\\n' "$npm_config_prefix" "$PATH"''', PATH=path, NPM_
 component_checked[{item}]=true
 component_status[{item}]=installed
 component_action[{item}]=update
+refresh_component_statuses() {{ :; }}
 process_selections''', input='\n', PATH=self.fake_npm(self.home, failure=13), WORKBENCHES_AUTH_ROUTE='later')
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn('update failed (exit 13)', result.stdout)
@@ -453,7 +541,7 @@ process_selections''', input='\n', PATH=self.fake_npm(self.home, failure=13), WO
             with self.assertRaises(runtime.RecoveryError):
                 runtime.validate_mapping(dict(self.mapping, entries=[row]), 'bitwarden')
 
-    def test_root_decline_happens_before_authentication_or_profile_writes(self):
+    def test_enter_applies_selected_cli_without_host_or_account_setup(self):
         repo = self.home / 'workBenches'
         repo.mkdir()
         for directory in ('scripts', 'config', 'credential-container'):
@@ -463,14 +551,24 @@ process_selections''', input='\n', PATH=self.fake_npm(self.home, failure=13), WO
         binary = self.home / 'bin'
         binary.mkdir()
         docker = binary / 'docker'
-        docker.write_text('#!/bin/bash\nif [[ "$1" == info ]]; then exit 0; fi\nexit 1\n')
+        docker.write_text('#!/bin/bash\nif [[ "$1" == info ]]; then echo linux; exit 0; fi\nexit 1\n')
         docker.chmod(0o755)
         shell = repo / 'scripts/setup-shell.sh'
         shell.write_text('#!/bin/bash\necho unexpected > "$HOME/host-changed"\n')
+        for name, body in {
+            'npm': '#!/bin/bash\nif [[ "$*" == "config get prefix" ]]; then echo "$HOME/.local"; elif [[ "$1" == install || "$1" == update ]]; then touch "$HOME/cli-installed"; fi\n',
+            'codex': '#!/bin/bash\necho "codex-cli 1.0.0"\n',
+            'node': '#!/bin/bash\necho v24.0.0\n',
+        }.items():
+            path = binary / name; path.write_text(body); path.chmod(0o755)
         status, output = terminal_run(['bash', str(repo / 'setup.sh')],
             dict(self.env, PATH=str(binary) + ':' + self.env['PATH']),
-            [('Changes selected: 0', '\x1b[C\x1b[B\x1b[B \n'), ('Apply these changes?', 'n\n')])
-        self.assertEqual(status, 130, output)
+            [(re.compile(r'REQUIREMENTS · (\d+)/\1 ready'), '\x1b[C\x1b[B\x1b[B \n')])
+        self.assertEqual(status, 0, output)
+        self.assertTrue((self.home / 'cli-installed').exists())
+        self.assertNotIn('Apply these changes?', output)
+        self.assertNotIn('Authentication requirements', output)
+        self.assertIn('Authentication pending', output)
         self.assertNotIn('Authentication route [1]', output)
         self.assertNotIn('Profile ownership', output)
         self.assertFalse((self.home / 'host-changed').exists())
@@ -490,7 +588,8 @@ process_selections''', input='\n', PATH=self.fake_npm(self.home, failure=13), WO
                 binary = home / 'bin'
                 binary.mkdir()
                 docker = binary / 'docker'
-                docker.write_text('#!/bin/bash\nexit 0\n')
+                (repo / 'scripts/shared-images.py').write_text('import sys; sys.exit(0)\n')
+                docker.write_text('#!/bin/bash\nif [[ "$1" == info ]]; then echo linux; fi\nexit 0\n')
                 docker.chmod(0o755)
                 shell = repo / 'scripts/setup-shell.sh'
                 shell.write_text('#!/bin/bash\nexit 0\n')
@@ -514,7 +613,7 @@ esac
                                       + (f'touch "$HOME/family-built"\nexit {code}\n' if category == 'devBenches' else 'exit 24\n'))
                     script.chmod(0o755)
                 env = dict(self.env, HOME=str(home), PATH=str(binary) + ':' + self.env['PATH'],
-                           WORKBENCHES_SKIP_ESTATE_COMMANDS='1', WORKBENCHES_SKIP_WORKSPACE_REPO='1',
+                           WORKBENCHES_TEST_NATIVE_TOOLS='1', WORKBENCHES_SKIP_ESTATE_COMMANDS='1', WORKBENCHES_SKIP_WORKSPACE_REPO='1',
                            WORKBENCHES_SKIP_PROJECT_COMMAND='1')
                 result = subprocess.run(['bash', str(repo / 'setup.sh')], env=env,
                                         capture_output=True, text=True, timeout=15)
@@ -535,6 +634,7 @@ init_components
 component_checked[bench_pyBench]=true
 component_status[bench_pyBench]=not_installed
 component_action[bench_pyBench]=install
+refresh_component_statuses() {{ :; }}
 workbenches_clone() {{ mkdir -p "$2"; printf '#!/bin/bash\\nexit 13\\n' > "$2/setup.sh"; }}
 process_selections'''
         result = subprocess.run(['bash', '-c', command], input='\n', env=self.env,

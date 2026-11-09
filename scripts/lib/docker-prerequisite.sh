@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 
 # Host prerequisites only. No credentials are read or stored by this helper.
+workbenches_is_wsl() {
+    [[ -n "${WSL_DISTRO_NAME:-}" ]] || [[ "$(uname -r)" == *[Mm]icrosoft* ]]
+}
+
+workbenches_docker_info() {
+    # No Python dependency: Docker is the bootstrap prerequisite.
+    docker info >/dev/null 2>&1 &
+    local probe=$! timer status
+    (sleep 8; kill -TERM "$probe" 2>/dev/null) </dev/null >/dev/null 2>&1 &
+    timer=$!
+    wait "$probe"; status=$?
+    kill "$timer" 2>/dev/null || true
+    wait "$timer" 2>/dev/null || true
+    return "$status"
+}
+
 workbenches_docker_os() {
     if [[ -f /etc/os-release ]]; then
         (. /etc/os-release; printf '%s\n' "${ID:-unknown}")
@@ -10,6 +26,18 @@ workbenches_docker_os() {
 }
 
 workbenches_install_docker() {
+    if workbenches_is_wsl; then
+        echo 'Use Docker Desktop with its WSL 2 backend and Linux containers.'
+        echo 'After installation: start Docker Desktop, then enable this distribution in Settings > Resources > WSL Integration.'
+        if command -v powershell.exe >/dev/null 2>&1; then
+            powershell.exe -NoProfile -Command 'if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Write-Host "Install Docker Desktop from https://docs.docker.com/desktop/setup/install/windows-install/"; exit 1 }; winget install --exact --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements; exit $LASTEXITCODE' || return "$?"
+        else
+            echo 'Install Docker Desktop for Windows, then press R to recheck:'
+            echo '  https://docs.docker.com/desktop/setup/install/windows-install/'
+            return 1
+        fi
+        return 0
+    fi
     case "$(workbenches_docker_os)" in
         ubuntu|debian|pop)
             echo "Installing Docker with sudo apt."
@@ -41,20 +69,22 @@ workbenches_install_docker() {
 }
 
 ensure_docker() {
-    local choice status endpoint
+    local choice status endpoint selected_action="${1:-}"
     if ! command -v docker >/dev/null 2>&1; then
         echo "Docker is not installed. It is required for workBenches images and container credential recovery."
         if [[ ! -t 0 ]]; then
             echo "Install Docker in an interactive terminal, then rerun ./setup.sh."
             return 1
         fi
-        if ! read -r -p "Attempt to install Docker now? [y/N] (Q to cancel): " choice; then
-            return 130
+        if [[ "$selected_action" != --install ]]; then
+            if ! read -r -p "Attempt to install Docker now? [y/N] (Q to cancel): " choice; then
+                return 130
+            fi
+            case "$choice" in
+                y|Y|yes|YES|Yes) ;;
+                *) echo "Docker installation declined; setup stopped."; return 130 ;;
+            esac
         fi
-        case "$choice" in
-            y|Y|yes|YES|Yes) ;;
-            *) echo "Docker installation declined; setup stopped."; return 130 ;;
-        esac
         # Leave local password entry to sudo; never capture it in setup.
         if workbenches_install_docker; then
             :
@@ -69,7 +99,7 @@ ensure_docker() {
         fi
     fi
 
-    if docker info >/dev/null 2>&1; then
+    if workbenches_docker_info; then
         echo "Docker is available and its daemon is accessible."
         return 0
     else
@@ -90,13 +120,15 @@ ensure_docker() {
        command -v systemctl >/dev/null 2>&1 &&
        [[ "$(systemctl show -p LoadState --value docker.service 2>/dev/null)" == loaded ]] &&
        ! systemctl is-active --quiet docker.service && [[ -t 0 ]]; then
-        if ! read -r -p "Start the local Docker service now? [y/N] (Q to cancel): " choice; then
+        if [[ "$selected_action" == --start ]]; then
+            choice=y
+        elif ! read -r -p "Start the local Docker service now? [y/N] (Q to cancel): " choice; then
             return 130
         fi
         case "$choice" in
             y|Y|yes|YES|Yes)
                 if sudo systemctl start docker.service; then
-                    if docker info >/dev/null 2>&1; then
+                    if workbenches_docker_info; then
                         echo "Docker is available and its daemon is accessible."
                         return 0
                     else
@@ -114,6 +146,21 @@ ensure_docker() {
     fi
 
     echo "Docker is installed but its daemon is not accessible to this user. Setup stopped."
+    if workbenches_is_wsl; then
+        echo 'Start Docker Desktop, select Linux containers, and enable this distribution under Settings > Resources > WSL Integration.'
+    elif [[ "$endpoint" == unix:///var/run/docker.sock || "$endpoint" == unix:///run/docker.sock ]] && [[ -t 0 ]] &&
+         command -v usermod >/dev/null 2>&1 && getent group docker >/dev/null 2>&1 &&
+         ! id -nG | tr ' ' '\n' | grep -qx docker; then
+        echo 'The docker group grants administrator-equivalent access to this machine.'
+        if ! read -r -p 'Add your user to the docker group? [y/N] (Q to cancel): ' choice; then return 130; fi
+        case "$choice" in
+            y|Y|yes|YES|Yes)
+                sudo usermod -aG docker "$(id -un)" || return "$?"
+                echo 'Sign out and back in to activate group access, then rerun ./setup.sh.'
+                return 1 ;;
+            q|Q) return 130 ;;
+        esac
+    fi
     echo "Check your Docker context, daemon and local Docker access permissions."
     echo "  https://docs.docker.com/engine/install/linux-postinstall/"
     return 1

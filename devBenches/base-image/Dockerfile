@@ -5,7 +5,8 @@
 # Used by ALL developer benches (Frappe, Flutter, .NET, etc.)
 # USER-AGNOSTIC: No user creation — Layer 3 handles user setup
 
-FROM workbench-base:latest
+ARG BASE_IMAGE=workbench-base:latest
+FROM ${BASE_IMAGE}
 
 # Container version labels
 LABEL layer="1"
@@ -33,8 +34,10 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     python3-pip \
     python3-dev \
     python3-venv \
-    # Add nodejs repository
-    && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    # Add the Node.js 24 repository, the major base-image/Dockerfile pins.
+    # NodeSource's floating setup_lts.x moved to Node 26, which ships no
+    # Corepack, and the `corepack prepare` step below needs it.
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -42,14 +45,18 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 # Enable Corepack shims (requires root for /usr/bin)
 RUN corepack enable || true
 
-# Install Python development tools
+# Install Python development tools, and git-filter-repo: openRepoShape's
+# adopt-project.py refuses with `filter-repo-missing` when it is not on PATH,
+# and does not vendor it, on purpose. 2.47.0 is the version openRepoShape's CI
+# and its one-line installer (install.sh) pin (opensoft/workBenches#153).
 RUN pip install --break-system-packages \
     black \
     flake8 \
     isort \
     pylint \
     pytest \
-    ipython
+    ipython \
+    git-filter-repo==2.47.0
 
 # Install Node.js development tools and cross-repo workflow CLIs.
 RUN npm install -g \
@@ -205,21 +212,26 @@ RUN chmod 0755 /usr/local/bin/speckit-worktree-enable && \
 # container shell SHADOWS these pinned copies with whatever the upstream main
 # holds. A non-interactive `docker exec` uses this image's own ENV PATH, where
 # these win. Accepted, not fixed: fetching at build time is what the network
-# constraint above forbids.
+# constraint above forbids. One exception: an `openRepoShape --install` run
+# FROM this copy places these same bytes and writes the same record beside
+# them (THE RECORD, below), so that shadowing copy stays on the release too.
 #
 # `openRepoShape --version` prints `openRepoShape (opensoft/openRepoShape @
-# main)` and `openRepoTools --version` prints `openRepoTools
-# (opensoft/openRepoTools @ main)` — neither the pinned commit: each shim's
-# own `_REF` defaults to `main` upstream and this image sets neither override.
-# The identity of these bytes is ../upstream-pin.yaml, not what either command
-# says about itself.
+# 8cda13970f2cb03fb3e2d4d4d6f79bd895ef40d4)`: the ref its record names, which
+# is the commit ../upstream-pin.yaml pins, unless `$OPENREPOSHAPE_REF` is set
+# for the run, which wins; `$OPENREPOSHAPE_REPO`, when set, also replaces the
+# `opensoft/openRepoShape` it prints. `openRepoTools --version` still prints
+# `openRepoTools (opensoft/openRepoTools @ main)`, not its pinned commit: that
+# shim's own `_REF` defaults to `main` upstream and this image sets no
+# override. The identity of these bytes is ../upstream-pin.yaml, not what
+# either command says about itself.
 COPY files/openreposhape/openRepoShape /usr/local/bin/openRepoShape
 COPY files/openrepotools/openRepoTools /usr/local/bin/openRepoTools
 COPY files/openrepotools/park /usr/local/bin/park
 COPY files/openrepotools/resume /usr/local/bin/resume
 COPY files/openrepotools/status /usr/local/bin/status
-COPY files/openrepotools/lane /usr/local/bin/lane
-COPY files/openrepotools/lanes /usr/local/bin/lanes
+COPY files/openrepotools/lane files/openrepotools/lane-worktrees /usr/local/bin/
+COPY files/openrepotools/lanes files/openrepotools/lanes-index /usr/local/bin/
 COPY files/openrepotools/lane-handoff /usr/local/bin/lane-handoff
 COPY files/openrepotools/lane-rename /usr/local/bin/lane-rename
 COPY files/openrepotools/lanes-edit.sh /usr/local/bin/lanes-edit.sh
@@ -235,7 +247,23 @@ RUN chmod 0755 /usr/local/bin/openRepoShape /usr/local/bin/openRepoTools \
     /usr/local/bin/lanes-edit.sh \
     /usr/local/bin/lane-start /usr/local/bin/lane-end /usr/local/bin/link-estates \
     /usr/local/bin/repos.tsv \
-    /usr/local/bin/claude-current /usr/local/bin/claude-restart-check
+    /usr/local/bin/claude-current /usr/local/bin/claude-restart-check \
+    /usr/local/bin/lanes-index /usr/local/bin/lane-worktrees
+
+# THE RECORD (opensoft/workBenches#153). From v1.0.1 the openRepoShape launcher
+# reads the ref it runs at from `<command>.ref` beside itself and stays on it:
+# it fetches setup.sh at that ref, setup.sh clones the standard at it
+# (`--shape-ref`), and `--doctor` checks its clone out at it. With no record it
+# follows main, so the v1.0.1 bytes above would scaffold from whatever main
+# holds. The record is written HERE, not vendored: every file under
+# files/openreposhape/ is a pinned copy with a row in ../upstream-pin.yaml,
+# and this one is not upstream's. It names the 40-hex commit the pin's
+# `openreposhape` block names, the v1.0.1 release commit that tag v1.0.1
+# points to on release/v1.0, rather than the tag, because a tag can be moved
+# and a commit cannot; the launcher's own ref check accepts either.
+# devcontainer.test/test-base-image-dockerfile.sh fails when this commit and
+# the pin's differ, so a re-pin that forgets this line is caught.
+RUN printf '%s\n' 8cda13970f2cb03fb3e2d4d4d6f79bd895ef40d4 > /usr/local/bin/openRepoShape.ref
 
 # THE WHOLE VENDORED TREE, A SECOND TIME, UNDER /usr/local/share — and the two
 # are not redundant (opensoft/workBenches#90). The fifteen copies above are
@@ -330,9 +358,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # usable without libsecret.
 COPY files/sonarqube/sonarqube-cli-env.sh /usr/local/share/sonarqube/sonarqube-cli-env.sh
 COPY files/sonarqube/sonar-env /usr/local/bin/sonar-env
-RUN chmod 0644 /usr/local/share/sonarqube/sonarqube-cli-env.sh \
-    && chmod 0755 /usr/local/bin/sonar-env \
-    && ln -sfn /usr/local/share/sonarqube/sonarqube-cli-env.sh /etc/profile.d/sonarqube-cli.sh
+# Keep these small configuration operations in one filesystem layer. Separate
+# RUN instructions exhausted overlay2's depth budget after bench personalization.
+RUN <<'DEVELOPER_SETUP'
+set -eu
+chmod 0644 /usr/local/share/sonarqube/sonarqube-cli-env.sh
+chmod 0755 /usr/local/bin/sonar-env
+ln -sfn /usr/local/share/sonarqube/sonarqube-cli-env.sh /etc/profile.d/sonarqube-cli.sh
 
 # ========================================
 # ZSH PLUGINS (into /etc/skel)
@@ -343,21 +375,22 @@ RUN chmod 0644 /usr/local/share/sonarqube/sonarqube-cli-env.sh \
 # route github.com through a VPN tunnel whose MTU breaks TLS during the clone,
 # while the apt mirror is direct and reliable. Symlink the packaged scripts
 # into the layout Oh My Zsh expects (<plugin>/<plugin>.plugin.zsh).
-RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
-    && apt-get -y install --no-install-recommends \
+apt-get update
+export DEBIAN_FRONTEND=noninteractive
+apt-get -y install --no-install-recommends \
     zsh-autosuggestions \
-    zsh-syntax-highlighting \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /etc/skel/.oh-my-zsh/plugins/zsh-autosuggestions \
-               /etc/skel/.oh-my-zsh/plugins/zsh-syntax-highlighting \
-    && ln -sf /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
-              /etc/skel/.oh-my-zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh \
-    && ln -sf /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
-              /etc/skel/.oh-my-zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh
+    zsh-syntax-highlighting
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+mkdir -p /etc/skel/.oh-my-zsh/plugins/zsh-autosuggestions \
+         /etc/skel/.oh-my-zsh/plugins/zsh-syntax-highlighting
+ln -sf /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+       /etc/skel/.oh-my-zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh
+ln -sf /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+       /etc/skel/.oh-my-zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh
 
 # Ensure .zshrc exists (Layer 0 should provide it, but handle missing/stale cache)
-RUN if [ ! -f /etc/skel/.zshrc ]; then \
+if [ ! -f /etc/skel/.zshrc ]; then \
         echo 'export ZSH="$HOME/.oh-my-zsh"' > /etc/skel/.zshrc && \
         echo 'ZSH_THEME="powerlevel10k/powerlevel10k"' >> /etc/skel/.zshrc && \
         echo 'plugins=(git)' >> /etc/skel/.zshrc && \
@@ -365,19 +398,19 @@ RUN if [ ! -f /etc/skel/.zshrc ]; then \
     fi
 
 # Update /etc/skel/.zshrc to include plugins
-RUN sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' /etc/skel/.zshrc
+sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' /etc/skel/.zshrc
 
 # Source Speckit worktree helpers from global shell startup so they remain
 # available even when benches mount a host ~/.zshrc over the generated one.
-RUN printf '\n# DevBench Speckit worktree helpers\n[[ -f /usr/local/share/ct/ct-functions.zsh ]] && source /usr/local/share/ct/ct-functions.zsh\n' >> /etc/zsh/zshrc && \
+printf '\n# DevBench Speckit worktree helpers\n[[ -f /usr/local/share/ct/ct-functions.zsh ]] && source /usr/local/share/ct/ct-functions.zsh\n' >> /etc/zsh/zshrc && \
     printf '\n# DevBench Speckit worktree helpers\n[ -f /usr/local/share/ct/ct-functions.zsh ] && . /usr/local/share/ct/ct-functions.zsh\n' >> /etc/bash.bashrc
 
 # Source SonarQube CLI env defaults from global interactive shell startup.
-RUN printf '\n# DevBench SonarQube CLI environment\n[ -f /usr/local/share/sonarqube/sonarqube-cli-env.sh ] && . /usr/local/share/sonarqube/sonarqube-cli-env.sh\n' >> /etc/zsh/zshrc && \
+printf '\n# DevBench SonarQube CLI environment\n[ -f /usr/local/share/sonarqube/sonarqube-cli-env.sh ] && . /usr/local/share/sonarqube/sonarqube-cli-env.sh\n' >> /etc/zsh/zshrc && \
     printf '\n# DevBench SonarQube CLI environment\n[ -f /usr/local/share/sonarqube/sonarqube-cli-env.sh ] && . /usr/local/share/sonarqube/sonarqube-cli-env.sh\n' >> /etc/bash.bashrc
 
 # Make Grok available in zsh and bash shells created from /etc/skel.
-RUN if ! grep -q '/opt/grok/bin' /etc/skel/.zshrc; then \
+if ! grep -q '/opt/grok/bin' /etc/skel/.zshrc; then \
         echo '' >> /etc/skel/.zshrc && \
         echo '# Grok CLI' >> /etc/skel/.zshrc && \
         echo 'export PATH="/opt/grok/bin:$HOME/.grok/bin:$PATH"' >> /etc/skel/.zshrc && \
@@ -392,7 +425,7 @@ RUN if ! grep -q '/opt/grok/bin' /etc/skel/.zshrc; then \
     fi
 
 # Add bash_profile to /etc/skel (force zsh when bash is requested)
-RUN echo '# Force zsh when bash is requested' > /etc/skel/.bash_profile && \
+echo '# Force zsh when bash is requested' > /etc/skel/.bash_profile && \
     echo 'if [ -n "$PS1" ] && [ -z "$ZSH_VERSION" ]; then' >> /etc/skel/.bash_profile && \
     echo '    exec /bin/zsh -l' >> /etc/skel/.bash_profile && \
     echo 'fi' >> /etc/skel/.bash_profile && \
@@ -401,7 +434,8 @@ RUN echo '# Force zsh when bash is requested' > /etc/skel/.bash_profile && \
     echo '[ -f ~/.bashrc ] && source ~/.bashrc' >> /etc/skel/.bash_profile
 
 # Add git credential helper to /etc/skel/.gitconfig
-RUN git config --system credential.helper gh
+git config --system credential.helper gh
+DEVELOPER_SETUP
 
 # Default command. It is the ARGUMENT LIST of the ENTRYPOINT wired in the
 # ESTATE COMMANDS section above, which runs the start-up step and then execs

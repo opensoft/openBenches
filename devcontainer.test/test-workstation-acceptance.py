@@ -16,10 +16,12 @@ import re
 import secrets
 import select
 import signal
+import shutil
 import ssl
 import subprocess
 import time
 import urllib.request
+from terminal_screen import terminal_screen
 
 HOME = Path.home()
 REPO = HOME / 'projects/workBenches'
@@ -33,6 +35,9 @@ ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null',
            WORKBENCHES_SKIP_ESTATE_COMMANDS='1', WORKBENCHES_SKIP_WORKSPACE_REPO='1',
            WORKBENCHES_SKIP_PROJECT_COMMAND='1', NPM_CONFIG_USERCONFIG=str(HOME / '.npmrc'))
 ENV['BUILDKIT_PROGRESS'] = 'plain'
+ENV['TERM'] = 'xterm-256color'
+if os.environ.get('WORKBENCHES_ACCEPTANCE_FROZEN') == '1':
+    ENV['WORKBENCHES_FROZEN'] = '1'
 MARKERS = []
 RESULTS = []
 
@@ -46,7 +51,9 @@ def terminal(name, replies, expected=0, env=None, timeout=1800):
     process = subprocess.Popen(['bash', 'setup.sh'], cwd=REPO, env=env or ENV,
                                stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
     os.close(slave)
-    output, last, answered = b'', 0, 0
+    started = time.monotonic()
+    next_report = started
+    output, answered = b'', 0
     deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
@@ -58,26 +65,44 @@ def terminal(name, replies, expected=0, env=None, timeout=1800):
                 if not chunk:
                     break
                 output += chunk
-                clean = ANSI.sub('', output.decode(errors='replace')).replace('\r', '')
-                safe = clean
-                for marker in MARKERS:
-                    safe = safe.replace(marker, '[redacted test value]')
-                (REPORT / (name + '.txt')).write_text(safe)
+                # BuildKit's terminal progress can emit many frames per second.
+                # Rewriting the entire growing transcript on every frame turns
+                # megabytes of evidence into gigabytes of disk writes on WSL.
+                # Input matching still happens on every chunk; the final report
+                # below always includes the complete redacted transcript.
+                if time.monotonic() >= next_report:
+                    clean = ANSI.sub('', output.decode(errors='replace')).replace('\r', '')
+                    safe = clean
+                    for marker in MARKERS:
+                        safe = safe.replace(marker, '[redacted test value]')
+                    (REPORT / (name + '.txt')).write_text(safe)
+                    next_report = time.monotonic() + 5
                 if answered < len(replies):
                     pattern, reply = replies[answered]
-                    match = re.search(pattern, clean[last:])
+                    match = re.search(pattern, terminal_screen(output))
                     if match:
-                        last += match.end()
                         os.write(master, reply.encode())
                         answered += 1
             if process.poll() is not None:
+                # A child's final error can still be buffered in the PTY after
+                # its parent exits. Drain that tail before writing the private
+                # transcript; otherwise hosted build failures lose their cause.
+                drain_until = time.monotonic() + 2
+                while time.monotonic() < drain_until and select.select([master], [], [], .1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output += chunk
                 break
         process.wait(timeout=5)
         assert process.returncode == expected, (name, process.returncode)
         assert answered == len(replies), (name, 'unanswered prompts', answered)
         clean = ANSI.sub('', output.decode(errors='replace')).replace('\r', '')
         assert all(marker not in clean for marker in MARKERS), 'test value leaked to terminal'
-        RESULTS.append({'case': name, 'exitCode': process.returncode, 'prompts': answered})
+        RESULTS.append({'case': name, 'exitCode': process.returncode, 'prompts': answered, 'durationSeconds': round(time.monotonic() - started, 2)})
         print(f'PASS {name}', flush=True)
         return clean
     finally:
@@ -166,17 +191,28 @@ def seed_vault():
     request = urllib.request.Request(server + '/identity/accounts/register/finish', data=json.dumps(payload).encode(),
                                      headers={'Content-Type': 'application/json'})
     urllib.request.urlopen(request, context=context, timeout=10).close()
-    # Keep certificate verification enabled. This is the only disposable clone
-    # modification: trust this test CA in Node, never disable TLS verification.
-    container = REPO / 'credential-container'
+    # Keep the frozen checkout pristine. Build isolated test images with a
+    # trusted test CA; Node still verifies the real Vaultwarden TLS connection.
+    container = Path('/acceptance/vault-image')
+    shutil.copytree(REPO / 'credential-container', container)
     (container / 'acceptance-ca.pem').write_bytes((tls / 'cert.pem').read_bytes())
     with (container / '.dockerignore').open('a') as stream:
         stream.write('\n!acceptance-ca.pem\n')
     with (container / 'Dockerfile').open('a') as stream:
-        stream.write('\nCOPY acceptance-ca.pem /opt/workbenches/acceptance-ca.pem\n'
-                     'ENV NODE_EXTRA_CA_CERTS=/opt/workbenches/acceptance-ca.pem\n')
+        for stage, parent in (('acceptance-bitwarden', 'bitwarden'), ('acceptance-vault', 'vault')):
+            stream.write(f'\nFROM {parent} AS {stage}\n'
+                         'COPY acceptance-ca.pem /opt/workbenches/acceptance-ca.pem\n'
+                         'ENV NODE_EXTRA_CA_CERTS=/opt/workbenches/acceptance-ca.pem\n')
     Path('/acceptance/seed').mkdir(mode=0o700)
+    ENV['WORKBENCHES_ACCEPTANCE_VAULT_CONTEXT'] = str(container)
+    ENV['WORKBENCHES_ACCEPTANCE_VAULT_TARGET'] = 'acceptance-bitwarden'
     run(COMPOSE + ['build', 'credential-tools'])
+    fingerprint = subprocess.check_output(['bash', '-c',
+        'cksum "$1/credential-container/"{Dockerfile,credential_recovery.py} | cksum',
+        'fingerprint', str(REPO)], text=True).split()[0]
+    ENV['WORKBENCHES_VAULT_IMAGE'] = 'workbenches/vault:acceptance-test'
+    run(['docker', 'build', '--target', 'acceptance-vault', '--tag', ENV['WORKBENCHES_VAULT_IMAGE'],
+         '--label', 'dev.opensoft.workbenches.fingerprint=' + fingerprint, str(container)])
     bw('config', 'server', server)
     session = bw('login', EMAIL, '--passwordenv', 'BW_PASSWORD', '--raw')
     MARKERS.append(session)
@@ -196,19 +232,37 @@ def snapshot():
     return [(str(path), path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
 
 
-TUI = 'Changes selected: 0'
+TUI = r'REQUIREMENTS · (\d+)/\1 ready[\s\S]*Navigation:'
 CODEX = (TUI, '\x1b[C\x1b[B\x1b[B \n')
-REVIEW = r'Apply these changes\?.*\(Q to cancel\): '
-DONE = r'Press Enter to continue.*\(Q to cancel\): '
-EMAIL = 'acceptance@example.test'
+PROFILES = r'PERSONAL & COMPANY IDENTITIES[\s\S]*AI accounts[\s\S]*G Back[^\n]*Q Quit'
+
+
+def account_setup_replies(authentication, *, cancel=False):
+    # Accounts moved out of Requirements in v1.6. Follow the visible Profiles
+    # screen instead of clamping an obsolete row index onto the Vault button.
+    assert len(authentication) <= 8, 'simple recovery flow grew beyond eight account responses'
+    return [
+        (TUI, '\x1b[C\x1b[B\x1b[B G'),
+        (PROFILES, '\x1b[B\x1b[B\n'),
+        (r'AI assistant .*\[codex\]', '\n'),
+        *authentication,
+        (r'Profile action cancelled; saved profiles kept\.[\s\S]*G Back[^\n]*Q Quit' if cancel
+         else r'Profile action completed\.[\s\S]*G Back[^\n]*Q Quit', 'Q' if cancel else 'G'),
+        *([] if cancel else [(TUI, '\n')]),
+    ]
+EMAIL = os.environ.get('WORKBENCHES_ACCEPTANCE_EMAIL', 'acceptance@example.test')
 MASTER = secrets.token_urlsafe(32)
-API_VALUE = 'acceptance-' + secrets.token_hex(24)  # Invalid, nonbillable AI test value.
+API_VALUE = 'sk-test-invalid-' + secrets.token_hex(24)  # Invalid, nonbillable AI test value.
 MARKERS.extend([MASTER, API_VALUE])
 
 
 def main():
     assert str(HOME) == '/home/node' and not REPO.exists(), 'requires fresh declared workstation volumes'
     assert not (HOME / '.ssh').exists(), 'anonymous clone must have no SSH identity'
+    require_public = os.environ.get('WORKBENCHES_ACCEPTANCE_REQUIRE_PUBLIC') == '1'
+    if require_public:
+        for image in ('workbench-base:latest', 'dev-bench-base:latest'):
+            assert subprocess.run(['docker', 'image', 'inspect', image], capture_output=True).returncode != 0, 'public benchmark requires an empty shared-image cache'
     REPORT.mkdir(exist_ok=True)
     ref = os.environ.get('WORKBENCHES_ACCEPTANCE_REF', 'main')
     bootstrap = Path('/acceptance/bootstrap.sh')
@@ -218,53 +272,88 @@ def main():
     sha = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
     expected = os.environ.get('WORKBENCHES_ACCEPTANCE_SHA')
     assert not expected or sha == expected, 'remote moved; retest the intended commit'
+    source_lock = (REPO / 'config/release-lock.json').read_bytes()
+    if ENV.get('WORKBENCHES_FROZEN') == '1':
+        run(['python3', str(REPO / 'scripts/release-workbenches.py'), 'check'])
     (REPORT / 'environment.json').write_text(json.dumps({'sha': sha, 'ref': ref, 'vault': 'Vaultwarden 1.37.4',
+        'frozenSourceMode': ENV.get('WORKBENCHES_FROZEN') == '1',
         'credentials': 'generated test account and invalid AI key', 'hostSocketMounted': False,
         'tls': 'verified private test CA; appended only to disposable credential Dockerfile'}, indent=2) + '\n')
     terminal('quit', [(TUI, 'Q')], 130)
     terminal('empty', [(TUI, '\n')])
-    terminal('decline', [CODEX, (REVIEW, 'n\n')], 130)
+    (HOME / '.zshrc').write_text('# custom shell settings\n')
+    (HOME / '.p10k.zsh').write_text('# custom prompt settings\n')
+    output = terminal('default-cli-install', [CODEX])
+    assert 'Authentication pending' in output and 'Apply these changes?' not in output
+    assert 'Authentication route' not in output and 'Profile ownership' not in output
+    assert 'Using ' + str(HOME / '.local') in output, 'global npm permission fallback missing'
+    assert '# custom shell settings' in (HOME / '.zshrc').read_text()
+    assert (HOME / '.p10k.zsh').read_text() == '# custom prompt settings\n'
+    ENV['PATH'] = str(HOME / '.local/bin') + ':' + ENV['PATH']
+    terminal('cancel-account-setup', account_setup_replies([(r'Authentication route \[1\]: ', 'Q\n')], cancel=True), 130)
     assert not (HOME / '.config/workbenches/openai-profiles.json').exists()
     server = seed_vault()
-    replies = [CODEX, (REVIEW, '\n'), (r'Authentication route \[1\]: ', '2\n'),
+    replies = account_setup_replies([(r'Authentication route \[1\]: ', '2V\n'),
                (r'Profile ownership:.*: ', '\n'), (r'AI account login email: ', EMAIL + '\n'),
-               (r'Services .*\[0\]: ', '3\n'), (r'Vault HTTPS server.*: ', server + '\n'),
-               (r'Bitwarden login email: ', EMAIL + '\n'), (r'Two-step method:.*\[0\]: ', '\n'),
-               (r'Vault master password: ', MASTER + '\n'), (r'Search bitwarden.*: ', 'WorkBenches acceptance\n'),
-               (r'Item number.*: ', '1\n'), (r'Confirm \[y/N\]: ', 'y\n'),
-               (r'Stored value:.*\[2\]: ', '\n'), (DONE, '\n')]
+               (r'Vault HTTPS server.*: ', server + '\n'),
+               (r'Bitwarden login email.*: ', '\n'),
+               (r'Vault master password: ', MASTER + '\n'), (r'Confirm \[y/N\]: ', 'y\n')])
     output = terminal('live-vault-cli-install', replies)
     credential = HOME / '.chatgpt-profiles/profiles/personal/personal-1/auth.json'
     assert json.loads(credential.read_text())['OPENAI_API_KEY'] == API_VALUE
     assert credential.stat().st_mode & 0o777 == 0o600
-    assert 'Using ' + str(HOME / '.local') in output, 'global npm permission fallback missing'
     run([str(HOME / '.local/bin/codex'), '--version'])
     ENV['PATH'] = str(HOME / '.local/bin') + ':' + ENV['PATH']
     before = snapshot()
     terminal('repeat-unchanged', [(TUI, '\n')])
     assert snapshot() == before, 'unchanged selection modified installed configuration'
-    output = terminal('repeat-update', [CODEX, (REVIEW, '\n'), (DONE, '\n')])
-    assert 'Reusing existing credentials' in output and 'Authentication route [1]' not in output
+    output = terminal('repeat-update', [CODEX])
+    assert 'Reusing configured AI profiles' in output and 'Authentication route [1]' not in output
     assert credential.read_bytes() == dict((row[0], row[1]) for row in before)[str(credential)]
     fault_env = dict(ENV, NPM_CONFIG_REGISTRY='http://127.0.0.1:9', NPM_CONFIG_FETCH_RETRIES='0')
-    output = terminal('failed-npm-update', [CODEX, (REVIEW, '\n'), (DONE, '\n')], 1, env=fault_env)
+    output = terminal('failed-npm-update', [CODEX], 1, env=fault_env)
     assert 'update failed' in output and 'Codex CLI updated' not in output
     benches = sorted(json.loads((REPO / 'config/bench-config.json').read_text())['benches'])
     selection = (TUI, '\x1b[B' * benches.index('pyBench') + ' \n')
-    terminal('bench-install', [selection, (REVIEW, '\n'), (DONE, '\n')], timeout=3600)
-    # Native bench setup has already started its container. Explicitly approve
-    # adding Wave mounts to this disposable container; normal launches preserve
-    # an existing live container and direct the user to --repair.
+    output = terminal('bench-install', [selection], timeout=3600)
+    if require_public:
+        logs = '\n'.join(path.read_text() for path in (REPO / 'logs').glob('*.log'))
+        for layer in ('base', 'dev'):
+            assert f'Pulling verified {layer} image for linux/amd64' in output + logs, 'public image download path was not exercised: ' + layer
+        assert 'Compatible public' not in output + logs, 'public benchmark fell back to a local build'
+        rows = json.loads(subprocess.check_output(['docker', 'image', 'inspect', 'workbench-base:latest', 'dev-bench-base:latest'], text=True))
+        (REPORT / 'public-images.json').write_text(json.dumps([
+            {'id': row['Id'], 'digests': row['RepoDigests'], 'labels': row['Config']['Labels']}
+            for row in rows], indent=2) + '\n')
+    # Native setup must now create Wave-ready containers on first installation.
     run(['bash', str(REPO / 'scripts/wave-container-shell.sh'), '--workbenches-root', str(REPO),
-         '--shell', 'bash', '--repair', '--check', 'pyBench'], cwd=REPO)
+         '--shell', 'bash', '--check', 'pyBench'], cwd=REPO)
     run(['docker', 'exec', '--user', 'node', 'py-bench', 'python3', '--version'])
     run(['docker', 'exec', '--user', 'node', 'py-bench', 'codex', '--version'])
     before = snapshot()
     terminal('repeat-installed-bench', [(TUI, '\n')])
     assert snapshot() == before
+    checkout = REPO / 'devBenches/pyBench'
+    local_note = checkout / 'acceptance-local-work.txt'
+    local_note.write_text('preserve this local work')
+    container_id = subprocess.check_output(['docker', 'inspect', '--format', '{{.Id}}', 'py-bench'], text=True)
+    removal = (TUI, '\x1b[B' * benches.index('pyBench') + 'D\n')
+    output = terminal('bench-uninstall-preserves-local-work', [removal])
+    assert 'pyBench uninstalled' in output and local_note.read_text() == 'preserve this local work'
+    assert subprocess.run(['docker', 'inspect', 'py-bench'], capture_output=True).returncode != 0
+    assert subprocess.run(['docker', 'image', 'inspect', 'py-bench:latest'], capture_output=True).returncode != 0
+    assert subprocess.run(['docker', 'image', 'inspect', 'py-bench:node'], capture_output=True).returncode != 0
+    assert subprocess.run(['docker', 'image', 'inspect', 'workbench-base:latest', 'dev-bench-base:latest'], capture_output=True).returncode == 0
     for path in (REPO / 'logs').glob('*.log'):
         assert all(value not in path.read_text() for value in MARKERS), 'test value leaked to setup logs'
-    assert not subprocess.check_output(['docker', 'ps', '-a', '--filter', 'ancestor=' + IMAGE, '-q']).strip(), 'credential worker left behind'
+    # The managed helper stays up; per-job manifests, sessions, and payloads do not.
+    jobs = HOME / '.cache/workbenches/vault/jobs'
+    assert not list(jobs.iterdir()), 'credential job files left behind'
+    assert subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip() == sha
+    assert not subprocess.check_output(['git', '-C', str(REPO), 'status', '--porcelain', '--ignore-submodules=all']).strip()
+    assert (REPO / 'config/release-lock.json').read_bytes() == source_lock
+    locked_bench = next(item['commit'] for item in json.loads(source_lock)['repositories'] if item['path'] == 'devBenches/pyBench')
+    assert subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip() == locked_bench
     print('PASS disposable workstation acceptance (AI service authorization intentionally untested)', flush=True)
 
 

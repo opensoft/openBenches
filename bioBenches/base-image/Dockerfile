@@ -29,7 +29,10 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 # NODE.JS (for husky/commitlint)
 # ========================================
 
-RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+# Node.js 24, the major base-image/Dockerfile pins. NodeSource's floating
+# setup_lts.x moved to Node 26, which ships no Corepack, and Layer 3's Corepack
+# step (user-layer/Dockerfile) needs `corepack` and the shims `corepack enable` makes.
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get update \
     && apt-get install -y nodejs \
     && apt-get clean \

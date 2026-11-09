@@ -7,6 +7,7 @@ import argparse
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass
+import errno
 import fnmatch
 import hashlib
 import json
@@ -18,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import Final
 
@@ -265,6 +267,26 @@ SPECIFY_INTEGRATION_TOOL_ROOTS: Final = {
     "vibe": ".vibe",
     "windsurf": ".windsurf",
 }
+
+# The repository folders `ensure_skills` links or copies global skills into,
+# each from the same-named folder under the home directory.
+SKILL_HOME_DIRS: Final = (".claude", ".codex", ".agents")
+
+# Local exclude: the Speckit and agent folders at the top of the repository are
+# kept out of `git status` through the repository's own exclude file, when no
+# file under them is tracked and no ignore rule decides them yet. That holds for
+# a folder that was there before the run, holding only untracked files, as well
+# as for one the run creates. In a linked worktree the exclude file is the
+# common git directory's, which every worktree of the repository shares. A
+# negation (`!...`) git finds for a folder is the user's choice and is left as
+# it is. Folders only: root files such as AGENTS.md or CLAUDE.md are tracked in
+# many repositories. `.github` is never excluded: it is a shared repository
+# folder, and excluding it would hide the workflow files someone adds there
+# later.
+LOCAL_EXCLUDE_NEVER: Final = frozenset({".github"})
+LOCAL_EXCLUDE_COMMENT: Final = (
+    "# setup-openspeckit: local Speckit and agent folders, untracked here"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -849,6 +871,39 @@ def assert_preserved_first_line(path: Path, before: str, after: str) -> None:
     )
 
 
+def raise_walk_error(exc: OSError) -> None:
+    """Stop a tree walk at the first folder it cannot read."""
+    raise exc
+
+
+def source_tree_paths(src: Path) -> list[Path]:
+    """List every path below ``src``, sorted, and stop at a folder it cannot read.
+
+    ``Path.rglob`` passes silently over a folder it cannot read (Python 3.12), so
+    a skill with an unreadable subfolder was listed without that folder's files
+    and copied as a partial skill, and the run exited 0. ``os.walk`` with an
+    ``onerror`` that re-raises raises the error instead, naming the folder. The
+    listing is otherwise the one ``sorted(src.rglob("*"))`` gave: every file,
+    folder and symlink below ``src``, in ``Path`` order, with a symlink listed
+    and never followed.
+
+    The walk raises on any ``OSError`` its listing meets, where ``rglob``
+    swallowed every one: a folder it cannot read, a name too long at depth, or
+    a path that went away (``src`` itself, or a folder below it, removed or
+    replaced by a file before it was listed). Each is a change in the safe
+    direction: ``rglob`` returned a short listing, or none, and the caller
+    went on with it, where the walk now stops the caller with the error.
+    """
+    paths: list[Path] = []
+    for directory, directory_names, file_names in os.walk(
+        src, onerror=raise_walk_error, followlinks=False
+    ):
+        paths.extend(
+            Path(directory, name) for name in (*directory_names, *file_names)
+        )
+    return sorted(paths)
+
+
 def safe_source_tree_entries(src: Path) -> list[SourceTreeEntry]:
     source_mode = mode_without_following(src)
     if source_mode is None:
@@ -862,7 +917,7 @@ def safe_source_tree_entries(src: Path) -> list[SourceTreeEntry]:
             f"Refusing to copy unsafe source tree {src}: source root is not a directory"
         )
     entries: list[SourceTreeEntry] = []
-    for entry in sorted(src.rglob("*")):
+    for entry in source_tree_paths(src):
         entry_stat = entry.lstat()
         entry_mode = entry_stat.st_mode
         if stat.S_ISLNK(entry_mode):
@@ -1021,56 +1076,169 @@ def ensure_relative_directory(
                 os.fchmod(descriptor, 0o755)
 
 
+class SourceChangedError(OSError):
+    """A listed source file is no longer the regular file that was listed."""
+
+
+# The errors a symlink or a change met while reading a source gives: a path
+# component that became a file or a symlink (ENOTDIR, ELOOP), or one that went
+# away (ENOENT). ENXIO is a listed file swapped for a Unix socket: opening a
+# socket fails with ENXIO, where a named pipe opens and is then refused as a
+# SourceChangedError. A socket is the same change, so it is skipped the same
+# way instead of stopping the run. A device node with no device behind it also
+# fails with ENXIO, and skipping that is just as safe: the skill is skipped as
+# a whole and nothing is written for it.
+SOURCE_LINK_OR_CHANGE_ERRNOS: Final = frozenset(
+    {errno.ENOTDIR, errno.ELOOP, errno.ENOENT, errno.ENXIO}
+)
+
+# When another process opens a file under a lease, the kernel gives the lease
+# holder a number of seconds to give the lease up. The kernel reads the number
+# from this file, and 45 is its default, used here if the file cannot be read.
+LEASE_BREAK_TIME_PATH: Final = Path("/proc/sys/fs/lease-break-time")
+DEFAULT_LEASE_BREAK_SECONDS: Final = 45.0
+SOURCE_OPEN_RETRY_SECONDS: Final = 0.05
+# The kernel breaks a lease only once its clock has passed the break time, and
+# it checks on the clock tick, so the break can come up to one tick (4 ms at
+# 250 Hz, 10 ms at 100 Hz) after the instant the break time names. A retry that
+# gave up at that instant could give up just before the lease broke. This margin
+# is added to the bound, and one second covers any tick the kernel runs at.
+LEASE_BREAK_MARGIN_SECONDS: Final = 1.0
+
+
+def is_link_or_change(exc: OSError) -> bool:
+    return (
+        isinstance(exc, SourceChangedError)
+        or exc.errno in SOURCE_LINK_OR_CHANGE_ERRNOS
+    )
+
+
+def lease_break_seconds() -> float:
+    """The longest a blocking open of a file under a lease waits, in seconds.
+
+    The kernel lets a lease holder this long to give its lease up, and after
+    that it breaks the lease itself. Read from the kernel; if it cannot be read,
+    the kernel's default.
+    """
+    try:
+        return float(max(int(LEASE_BREAK_TIME_PATH.read_text(encoding="ascii")), 0))
+    except (OSError, ValueError):
+        return DEFAULT_LEASE_BREAK_SECONDS
+
+
+def open_source_file(source: SourceTreeEntry) -> int:
+    """Open a listed source file without following a symlink anywhere on its path.
+
+    The walk starts at ``/`` and opens every component with O_NOFOLLOW, so a
+    symlink on the path raises (NotADirectoryError, or ELOOP at the leaf). The
+    opened file must still be the regular file that was listed. The file is
+    opened with O_NONBLOCK, so a named pipe swapped in after the listing cannot
+    hang the open; the checks below then refuse it.
+
+    O_NONBLOCK changes the open of a regular file in one way: a file under a
+    lease (a Samba oplock or an NFS delegation) fails at once with
+    BlockingIOError, where a blocking open waits for the lease holder to give
+    the lease up. The open is therefore retried, with a short sleep between
+    tries, for as long as a blocking open could have waited
+    (``lease_break_seconds``) plus ``LEASE_BREAK_MARGIN_SECONDS``, and the error
+    propagates after that. The margin is there because the kernel breaks a lease
+    only after the break time has passed, by up to one clock tick, so a retry
+    that gave up at exactly the break time could give up just before the lease
+    broke. Every caller of ``copy_regular_file_at`` opens through here, so each
+    gets the retry.
+    """
+    deadline: float | None = None
+    with directory_descriptor(source.path.parent) as source_parent_descriptor:
+        while True:
+            try:
+                source_descriptor = os.open(
+                    source.path.name,
+                    REGULAR_FILE_OPEN_FLAGS | os.O_NONBLOCK,
+                    dir_fd=source_parent_descriptor,
+                )
+            except BlockingIOError:
+                # The failed open is what started the lease break, so the wait
+                # is counted from it. The margin covers the kernel breaking the
+                # lease a tick after the break time (see the constant).
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = (
+                        now + lease_break_seconds() + LEASE_BREAK_MARGIN_SECONDS
+                    )
+                elif now >= deadline:
+                    raise
+                time.sleep(SOURCE_OPEN_RETRY_SECONDS)
+            else:
+                break
+    try:
+        source_stat = os.fstat(source_descriptor)
+        if (source_stat.st_dev, source_stat.st_ino) != (
+            source.device,
+            source.inode,
+        ):
+            raise SourceChangedError(f"Refusing substituted source file {source.path}")
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise SourceChangedError(
+                f"Refusing to copy non-regular source file {source.path}"
+            )
+    except BaseException:
+        os.close(source_descriptor)
+        raise
+    return source_descriptor
+
+
+def copy_open_source_file_at(
+    source: SourceTreeEntry,
+    source_descriptor: int,
+    parent_descriptor: int,
+    name: str,
+    destination_mode: int | None = None,
+) -> None:
+    source_mode = os.fstat(source_descriptor).st_mode
+    temporary_name, destination_descriptor = temporary_regular_file(
+        parent_descriptor,
+        name,
+    )
+    try:
+        with managed_descriptor(destination_descriptor):
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                write_all(destination_descriptor, chunk)
+            os.fchmod(
+                destination_descriptor,
+                destination_mode
+                if destination_mode is not None
+                else normalized_regular_file_mode(source.path, source_mode),
+            )
+        os.replace(
+            temporary_name,
+            name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+    finally:
+        try:
+            os.unlink(temporary_name, dir_fd=parent_descriptor)
+        except FileNotFoundError:
+            pass
+
+
 def copy_regular_file_at(
     source: SourceTreeEntry,
     parent_descriptor: int,
     name: str,
     destination_mode: int | None = None,
 ) -> None:
-    with directory_descriptor(source.path.parent) as source_parent_descriptor:
-        source_descriptor = os.open(
-            source.path.name,
-            REGULAR_FILE_OPEN_FLAGS,
-            dir_fd=source_parent_descriptor,
+    with managed_descriptor(open_source_file(source)) as source_descriptor:
+        copy_open_source_file_at(
+            source,
+            source_descriptor,
+            parent_descriptor,
+            name,
+            destination_mode,
         )
-        with managed_descriptor(source_descriptor):
-            source_stat = os.fstat(source_descriptor)
-            if (source_stat.st_dev, source_stat.st_ino) != (
-                source.device,
-                source.inode,
-            ):
-                raise OSError(f"Refusing substituted source file {source.path}")
-            source_mode = source_stat.st_mode
-            if not stat.S_ISREG(source_mode):
-                raise OSError(f"Refusing to copy non-regular source file {source.path}")
-            temporary_name, destination_descriptor = temporary_regular_file(
-                parent_descriptor,
-                name,
-            )
-            try:
-                with managed_descriptor(destination_descriptor):
-                    while True:
-                        chunk = os.read(source_descriptor, 1024 * 1024)
-                        if not chunk:
-                            break
-                        write_all(destination_descriptor, chunk)
-                    os.fchmod(
-                        destination_descriptor,
-                        destination_mode
-                        if destination_mode is not None
-                        else normalized_regular_file_mode(source.path, source_mode),
-                    )
-                os.replace(
-                    temporary_name,
-                    name,
-                    src_dir_fd=parent_descriptor,
-                    dst_dir_fd=parent_descriptor,
-                )
-            finally:
-                try:
-                    os.unlink(temporary_name, dir_fd=parent_descriptor)
-                except FileNotFoundError:
-                    pass
 
 
 def copy_tree_contents_with_descriptors(
@@ -1413,10 +1581,7 @@ def run_specify_commands(
             staging_repo = Path(temporary_root) / "repo"
             staging_repo.mkdir(mode=0o755)
             staging_repo.chmod(0o755)
-            subprocess.run(
-                ["git", "init", "-q", str(staging_repo)],
-                check=True,
-            )
+            init_staging_repository(staging_repo)
             specify_source = repo / ".specify"
             specify_source_mode = mode_without_following(specify_source)
             specify_entries = safe_source_tree_entries(specify_source)
@@ -1481,19 +1646,81 @@ def copy_missing_tree(src: Path, dst: Path, dry_run: bool, force: bool) -> None:
 
 
 def link_or_copy_skill(src: Path, dst: Path, dry_run: bool, force: bool) -> None:
-    # A user-global skills root is often reached through a symlink (~/.agents
-    # linked into a dotfiles checkout), and copy_regular_file_at opens every
-    # source path component without following one. So the skill is read
-    # through its parent's real path, resolved once here. Only the path ABOVE
-    # the skill directory is followed: the skill directory itself and
-    # everything in it are still listed and opened without following a
-    # symlink, with the same device/inode check. The destination is never
-    # resolved, and every destination check below is unchanged. Log lines keep
-    # the spelling the caller passed.
-    source = src.parent.resolve() / src.name
-    entries = safe_source_tree_entries(source)
+    # A user-global skills root is often reached through a symlink (a
+    # workstation whose ~/.agents is a symlink into a dotfiles checkout), and
+    # the source walk opens every path component without following one, so it
+    # failed at the link with NotADirectoryError (the source-read case of
+    # opensoft/openBenches#148). The skills root ABOVE the skill directory is
+    # resolved once here; the skill directory itself and everything in it are
+    # still listed and opened without following a symlink
+    # (safe_source_tree_entries refuses one, as before). Every source file is
+    # opened before the destination is touched, and the copy reads those
+    # descriptors. Only a symlink or a change met while reading the source (a
+    # SourceChangedError, ENOTDIR, ELOOP, ENOENT or ENXIO, or a symlink loop in
+    # the skills root's path) is a logged skip that writes nothing. Any other
+    # error from the listing or from opening a source file stops the run, with
+    # a "stopped" line naming the skill. That is how a permission error or an
+    # I/O error stopped it before the skip existed. It is new for too many open
+    # files (EMFILE, ENFILE): since opensoft/openBenches#234 every source file
+    # of a skill is opened before the copy, so a skill with more files than the
+    # soft open-file limit allows stops the run, where the copy used to open
+    # one file at a time and such a skill copied. The limit and the open-first
+    # design are unchanged. An error during the copy itself, once every source
+    # file is open, stops the run too, without a "stopped" line. The
+    # destination is never resolved and its checks below are unchanged; log
+    # lines keep the spelling the caller passed.
+    try:
+        try:
+            source_parent = src.parent.resolve()
+        except RuntimeError as exc:
+            # Python before 3.13 reports a symlink loop as RuntimeError.
+            raise OSError(
+                errno.ELOOP, os.strerror(errno.ELOOP), str(src.parent)
+            ) from exc
+        source = source_parent / src.name
+        entries = safe_source_tree_entries(source)
+    except OSError as exc:
+        if not is_link_or_change(exc):
+            log(f"stopped {src}: {exc}")
+            raise
+        log(f"skipped {src}: its source could not be read safely ({exc})")
+        return
     if not source.exists():
         return
+    with ExitStack() as source_descriptors:
+        try:
+            source_descriptors.enter_context(directory_descriptor(source))
+            opened_sources = [
+                (
+                    entry,
+                    source_descriptors.enter_context(
+                        managed_descriptor(open_source_file(entry))
+                    ),
+                )
+                for entry in entries
+                if not stat.S_ISDIR(entry.mode)
+            ]
+        except OSError as exc:
+            if not is_link_or_change(exc):
+                log(f"stopped {src}: {exc}")
+                raise
+            log(
+                f"skipped {src}: a symlink or a change was met while reading "
+                f"its source, so nothing was copied ({exc})"
+            )
+            return
+        copy_opened_skill(src, source, dst, entries, opened_sources, dry_run, force)
+
+
+def copy_opened_skill(
+    src: Path,
+    source: Path,
+    dst: Path,
+    entries: list[SourceTreeEntry],
+    opened_sources: list[tuple[SourceTreeEntry, int]],
+    dry_run: bool,
+    force: bool,
+) -> None:
     if dry_run:
         ensure_safe_destination_parent(dst, set())
         destination_mode = mode_without_following(dst)
@@ -1532,15 +1759,18 @@ def link_or_copy_skill(src: Path, dst: Path, dry_run: bool, force: bool) -> None
                     entry.path.relative_to(source).parts,
                     False,
                 )
-            for entry in (
-                entry for entry in entries if not stat.S_ISDIR(entry.mode)
-            ):
+            for entry, source_descriptor in opened_sources:
                 relative_parts = entry.path.relative_to(source).parts
                 with relative_directory_descriptor(
                     root_descriptor,
                     relative_parts[:-1],
                 ) as parent_descriptor:
-                    copy_regular_file_at(entry, parent_descriptor, relative_parts[-1])
+                    copy_open_source_file_at(
+                        entry,
+                        source_descriptor,
+                        parent_descriptor,
+                        relative_parts[-1],
+                    )
             if dst.name == "speckit-clarify":
                 skill_mode = mode_at(root_descriptor, "SKILL.md")
                 if skill_mode is not None and stat.S_ISREG(skill_mode):
@@ -3050,7 +3280,7 @@ Governed in every repository, declared or not: `openspec/` text, CI workflow def
   A task fails when its verify command fails, when its diff touches a file outside its `files:` list, or when the writer reports doubt or a block.
 - **Escalate.** Escalation is `[H]` → `[S]` → `[O]`, one attempt at each tier; when `[O]` fails, stop and send the task back to `/speckit-plan` or `/speckit-clarify` with a short failure record.
   A task that fails at every tier points to a gap in the spec, not a weak
-  model.
+  model. A writer's refusal is handled by "Refusals" below.
 - **Pin and verify.** Each agent definition names its exact model ID.
   Before accepting any task's work, the orchestrator reads the model from
   the subagent's transcript:
@@ -3062,34 +3292,146 @@ Governed in every repository, declared or not: `openspec/` text, CI workflow def
   Every line must name the definition's model. Commit trailers name the
   model that actually ran. On a mismatch, record it, then either re-verify
   the work at the intended tier, or accept it explicitly with the mismatch
-  disclosed.
+  disclosed. The check guards the switch paths that the fail-loud paragraphs
+  below name. The grep reads a transcript record Claude Code does not
+  document, so it stays the quick check; the documented record is what a
+  PostToolUse hook on the Agent tool receives in `tool_response`:
+  `resolvedModel` ("Model the subagent started on, which may differ from the
+  requested model") and `modelsUsed`, set only when the model was swapped
+  mid-run (Claude Code v2.1.212 or later). The `claude-agent-model-record`
+  hook, which `claude-profile` seeds into every profile's settings, appends
+  that record to `<config dir>/agent-models/<session id>.jsonl` (the profile
+  directory, or `~/.claude`) after every successful Agent call and puts one
+  `agent-model-record:` line in the orchestrator's context beside the
+  result; when the subagent stops, it appends the counts the grep prints for
+  the subagent's transcript. The orchestrator reads that line before
+  accepting the work, and for a background run, whose line names only the
+  model it started on, the stop record too; the grep remains the manual
+  check.
 - **Mark a task `[X]`** only after its scope check and its verify command
   pass.
 
-Pinning alone is not enough. Claude Code's model documentation says that in
-a subagent a safety-classifier flag re-runs the request on a fallback model
-without a prompt (for Opus 5.5, a cybersecurity flag re-runs on Opus 4.8),
-and that after a fallback the session continues on the fallback model;
-nothing there exempts a pinned model. A configured `fallbackModel` chain is
-a second documented way for a subagent to switch model: "When a subagent's
-request fails over, Claude Code tries your configured fallback models in
-order, and the subagent continues on the model that accepts the request."
-On 2026-10-12 two `opus` subagents
-switched from `claude-opus-5-5` to `claude-opus-4-8` without telling the
-orchestrator, and the cause is not established. `availableModels` is
-deliberately not used to block the fallback, because flagged work would
-then just fail. The transcript check is what catches a switch. A
-`CLAUDE_CODE_EFFORT_LEVEL` in the environment overrides every definition's
-`effort`, so it must be unset when tasks are dispatched.
+**Fail loud.** Claude Code's model documentation says that "Fable models,
+Opus 5.5, Sonnet 5.5, and Opus 5 run with safety classifiers, which most
+often flag cybersecurity and biology content"; that from Opus 5.5
+"cybersecurity-flagged requests re-run on Opus 4.8", and from Sonnet 5.5 on
+Sonnet 5; that "In a subagent, Claude Code doesn't show the prompt, and a
+flagged request that would switch models re-runs on the fallback model.";
+and that "After a fallback, the session continues on the fallback model."
+That switch is turned off by `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`,
+documented as: "Set to `1` to turn off the automatic model switch when a
+safety classifier flags a request". `claude-profile` seeds the variable into
+the `env` block of every profile's `settings.json`, and that block is
+documented to "Set environment variables for every session and for the
+subprocesses Claude Code starts from it." A flagged request then ends
+with a refusal naming the model's safeguards, in the main session and in
+every subagent, and no other model runs. The `switchModelsOnFlag` setting is
+not the lever: it pauses only where a dialog can show, and a subagent shows
+none. Brett Heap chose this on 2026-10-13, verbatim:
+"we do not want the fallback to 4.8, what if the main 5.5 agent never did any actual pompts itself and only did interaction with the user? then that main agent always spawns a subagent with the nec ctx and does the task. Then if that subagent is blocked and needs to fallback, is the main agent informed first?"
+The 2026-10-12 decision to leave the fallback open is superseded. Under it,
+`availableModels` was deliberately not used to block the fallback, because flagged work would
+then just fail; flagged work now fails, loudly, and goes to "Refusals".
+
+On 2026-10-12 two `opus` subagents ran on `claude-opus-4-8` after the main
+session had itself fallen back. The sub-agents documentation explains it: a
+family alias such as `opus` in a definition runs the subagent on the main
+conversation's exact model when that model belongs to the family. The
+full-ID pins in the tier definitions close that path. The transcript check
+guards the documented switch paths that remain: a family alias left in a
+definition; `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, under which every subagent
+ignores its definition's model; an `availableModels` allowlist, which
+substitutes another model for a blocked one; a mod's `agent.spawn` hook,
+whose model Claude Code uses in place of the per-invocation parameter, ahead
+of the definition's; and a configured `fallbackModel` chain: "When a
+subagent's request fails over, Claude Code tries your configured fallback
+models in order, and the subagent continues on the model that accepts the
+request." When tasks are dispatched,
+`echo "${{CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK-unset}}"` must print `1`;
+`CLAUDE_CODE_EFFORT_LEVEL` must be unset, because it overrides every
+definition's `effort`; and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` must be unset,
+because it makes every subagent ignore its definition's `model`.
+
+#### Refusals
+
+Two kinds of refusal reach an orchestrator, and the message tells them apart.
+
+- **A usage-policy refusal** reads `Claude Code is unable to respond to this
+  request, which appears to violate our Usage Policy` or `<model> can't help
+  with this. Start a new session to continue`. It is a judgment of the whole
+  conversation against the Usage Policy ("The check evaluates the full
+  conversation, not only your latest prompt"), so what the work is for, as
+  the conversation states it, is part of what is judged.
+- **A safeguards flag** reads `API Error: <model>'s safeguards flagged this
+  message. Our intentionally broad safeguards allow us to deliver more
+  capabilities faster, but can sometimes flag legitimate cybersecurity work.
+  Apply to the Cyber Verification Program to reduce these interruptions. Send
+  feedback with /feedback or learn more:
+  https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude`;
+  on Opus 5.5 and Sonnet 5.5 it opens with `<model>'s safeguards flagged this
+  session`. A server-side classifier scores the content of the whole
+  request, tool results included. It is not a reviewer: a justification
+  written into the prompt is not a lever, and it adds text the classifier
+  can flag. The sanctioned route for legitimate work that keeps being
+  flagged is the Cyber Verification Program, and `/feedback` reports a false
+  positive.
+
+**What happens.** The writer's turn ends with the refusal, and the Agent tool
+returns it to the orchestrator. The failure record carries the refusal text
+verbatim, the tier and the model. A refusal is never answered by rewording
+the task to slip past the classifier, and never retried at the same tier. A
+safeguards flag at `[S]` gets the ladder's one `[O]` attempt; a safeguards
+flag at `[O]` goes to triage. A usage-policy refusal stops the ladder at the
+tier where it happened and goes to triage; it is never escalated to a larger
+model to get around it.
+
+**Triage.** The orchestrator triages before it dispatches that task again.
+It first writes a goal statement: what the task is for, what it touches, and
+whether any part of it asks for an attack capability rather than defensive
+or engineering work. Then exactly one of three outcomes:
+
+1. **The task asks for something forbidden.** Drop it at `/speckit-plan`,
+   with the reason.
+2. **The goal is legitimate and the material trips the classifier.** Find
+   the trigger by bisection, with a probe writer that changes nothing and
+   runs on a classifier model: `sonnet-xhigh`, never `haiku-high`, because
+   Haiku 5.5 is not among the models the documentation lists with safety
+   classifiers, so a probe there proves nothing. Send the bare brief first,
+   then add the task's files one at a time. A flag on the bare brief points
+   at the workspace context the first request carries: "Fallback can trigger
+   on the first request of a session, before you send anything unusual,
+   because the first request carries workspace context such as your
+   CLAUDE.md content and git status." `claude --safe-mode`, which disables
+   customizations such as CLAUDE.md, skills, MCP servers and hooks, is the
+   main-session analogue. The bisection locates material; it never tunes
+   wording. Then re-scope the task at `/speckit-plan` so the material is not
+   loaded: synthetic fixtures instead of the exploit corpus, for example, or
+   a person handles the one sensitive file.
+3. **The work is inherently in a flagged domain.** Stop and tell Brett; the
+   Cyber Verification Program is the route.
+
+The goal statement and the outcome go into the failure record and to Brett,
+never into a retry prompt as persuasion.
+
+**Brief hygiene** prevents most flags: state the goal in engineering terms,
+name the files, have writers return summaries rather than raw security
+content, and forbid writers to generate attack content.
+
+**The main session.** A flagged main-session turn ends with the same refusal,
+not a switch. Recover with `/rewind` to the checkpoint before the triggering
+turn, and change the approach. A writer's report that carries security
+content can itself be the trigger, which is why writers return summaries.
+
+#### Without subagents
 
 Where no subagents are available, for example for an agent of another
 runtime, `/speckit-implement` keeps Spec Kit's stock path: one session runs
 the tasks in order, ignores the tier tags, and still runs each task's verify
-command before marking it `[X]`. A Claude main session bound by this section
-never takes that path for code: if the tier definitions are missing, it
-stops and tells Brett.
+command before marking it `[X]`. A Claude main session bound by "Claude
+Model Roles and Usage Budget" never takes that path for code: if the tier
+definitions are missing, it stops and tells Brett.
 
-This section is Claude-specific; other agents follow their own runtime's
+"Build Tiers" is Claude-specific; other agents follow their own runtime's
 equivalent and the rest of this protocol unchanged. An agent of another
 runtime may ignore the tier tags, but keeps them, and the `files:` and
 `verify:` fields, whenever it writes or edits `tasks.md`.
@@ -3148,6 +3490,11 @@ It updates or creates:
 - `.claude/commands/opsx/*` from global templates when missing
 - `.claude/skills`, `.codex/skills`, and `.agents/skills` links for available
   global OpenSpec/Speckit skills
+- the managed Model Routing block in the three Speckit build skills,
+  `speckit-tasks`, `speckit-implement` and `speckit-analyze`, in their
+  repo-local skill copies and user-global skill homes, read from the protocol
+  root's `templates/speckit/model-routing/<skill>.md` — see Managed Skill
+  Blocks
 - minimal `openspec/changes/archive`, `openspec/specs`, and `.specify/`
   scaffolding when those directories are absent (in a three-leg project the
   OpenSpec half of that lands in the spec leg — see Three-leg Projects)
@@ -3160,11 +3507,19 @@ It updates or creates:
 
 ## Idempotency Rules
 
-The script only edits generated sections between:
+The script only edits generated sections between its three marker pairs:
+`OPENSPEC-SPECKIT-GLOBAL` in the agent context and entrypoint files,
+`OPENSPEC-SPECKIT-SHAPE` in skill and command files, and
+`OPENSPEC-SPECKIT-MODEL-ROUTING` in the three Speckit build skills (see
+Managed Skill Blocks):
 
 ```md
 <!-- OPENSPEC-SPECKIT-GLOBAL:START -->
 <!-- OPENSPEC-SPECKIT-GLOBAL:END -->
+<!-- OPENSPEC-SPECKIT-SHAPE:START -->
+<!-- OPENSPEC-SPECKIT-SHAPE:END -->
+<!-- OPENSPEC-SPECKIT-MODEL-ROUTING:START -->
+<!-- OPENSPEC-SPECKIT-MODEL-ROUTING:END -->
 ```
 
 Existing hand-written content outside those markers is preserved.
@@ -3377,6 +3732,75 @@ push them in the spec repository, then move the gitlink, `commit:` in
 in one commit in the root. `--dry-run` prefixes every planned path with
 `[root]` or `[spec]`, so the split is visible before anything is written.
 
+## Managed Skill Blocks
+
+Besides the managed block in the agent context files, the bootstrap keeps two
+managed blocks in skill and command files, each between its own markers (see
+Idempotency Rules). In a three-leg project their repo-local targets are the
+root's, beside the skill links.
+
+### The Repository Shape Block
+
+Between the `OPENSPEC-SPECKIT-SHAPE` markers, the installer upserts a
+Repository Shape block into the Speckit skills and the `ct` and `ctp`
+helpers, the repository's `.claude/commands/opsx/` command files and, in the
+user-global skill homes, the OpenSpec skills as well. It has an agent
+running the skill resolve the project shape once, and says where `openspec/`,
+`specs/NNN-*`, the code and the feature worktrees live in each shape: the
+split that "The Managed Block Names the Split" states in a three-leg root's
+agent context files, carried to where the skill runs. It is replaced in place
+when present and otherwise placed after the file's frontmatter, or at the top
+of a file without one; `--no-skill-shape-blocks` opts out.
+
+### The Model Routing Block
+
+Between the `OPENSPEC-SPECKIT-MODEL-ROUTING` markers, the Model Routing block
+carries the shared protocol's "Build Tiers" (under "Claude Model Roles and
+Usage Budget") rendered for the skill that holds it: in `speckit-tasks` the
+tiers, the task line, the governed invariants and the rubric to tag by; in
+`speckit-analyze` the category G checks that hold `tasks.md` to those rules;
+in `speckit-implement` the preflight, dispatch, acceptance, escalation and
+refusal rules it builds the tasks by.
+
+The installer does not bake the block in. It reads it from the protocol
+root's `templates/speckit/model-routing/<skill>.md`, one file per skill, so
+the protocol and the block live in one repository and cannot drift into two
+copies. The protocol root is the agent root the run resolves:
+`$AGENT_PROTOCOL_ROOT`, or `~/.agents` when that is unset.
+
+The block goes into the `SKILL.md` of those three skills under
+`.claude/skills`, `.agents/skills` and `.codex/skills`: the repo-local copies,
+and the user-global homes under the home directory. Only a real skill
+directory holding a regular `SKILL.md` is a target; a skill reached through a
+link is not. A block already present is replaced in place; otherwise the
+block is placed after the Repository Shape block, or, without one, where that
+block would go.
+
+- A missing template is logged and skipped for its skill. The installer's own
+  fallback protocol files ship no templates, so a run against an agent root
+  that holds only those writes no block.
+- A malformed template is refused: it must be a regular file that holds
+  exactly one block and nothing else. The refusal names the template and ends
+  the run. Every template is read before any block is written, so the passes
+  before this one have written, no Model Routing block has, and the passes
+  after it (the user-global entrypoint pointers, and in a three-leg root the
+  two-commit listing) do not run.
+- A user-global target under a symlinked ancestor is skipped with a log line:
+  the installer does not write through a symlink. A user-global target it
+  cannot write is skipped with a log line as well.
+- `--no-skill-routing-blocks` opts out of the block.
+  `--no-global-agent-pointers` also switches off its user-global half.
+
+The `Full rules:` line at the end of the block names the protocol file. The
+repo-local copies keep the template's `${{AGENT_PROTOCOL_ROOT:-$HOME/.agents}}`
+form; in the user-global homes the installer renders it with the agent root
+the run resolved, as it does for the Repository Shape block.
+
+The installer pass came in opensoft/workBenches#147, the templates and "Build
+Tiers" in brettheap/new-workstation#54, the fail-loud amendment in
+new-workstation#55, and the re-synced installer fallback protocol in
+workBenches#151.
+
 ## Non-Triad Advisory
 
 When the detected shape is a single repository that is not exempt under the
@@ -3413,6 +3837,18 @@ bootstrap (`make bootstrap`) stays schema-neutral and gives no advisory.
    files as pointers plus repo-specific overrides.
 
 ## Script Status
+
+### Model Routing block (2026-10-15)
+
+The Model Routing block in "Managed Skill Blocks" is realized in the script
+under opensoft/workBenches#147 (merged `54a11a5`, 2026-10-12). Its templates
+and the "Build Tiers" section they render came from
+brettheap/new-workstation#54 (merged `be907f4`, 2026-10-12), and the
+fail-loud amendment to that section from new-workstation#55 (merged
+`ecfabed`, 2026-10-14). The script's fallback copy of the workflow protocol
+was re-synced to the amended section in workBenches#151 (merged `75445fa`,
+2026-10-14). This entry records the contract "Managed Skill Blocks"
+describes.
 
 ### Non-Triad advisory (2026-10-06)
 
@@ -3590,9 +4026,7 @@ def ensure_skills(
     overlay_owned_destinations: set[Path],
 ) -> None:
     homes = {
-        ".claude": Path.home() / ".claude" / "skills",
-        ".codex": Path.home() / ".codex" / "skills",
-        ".agents": Path.home() / ".agents" / "skills",
+        agent_dir: Path.home() / agent_dir / "skills" for agent_dir in SKILL_HOME_DIRS
     }
     for agent_dir, source_root in homes.items():
         for skill, action in OPEN_SPEC_SKILLS.items():
@@ -4186,6 +4620,349 @@ def ensure_worktrees_ignored(repo: Path, dry_run: bool) -> None:
     )
 
 
+def local_exclude_folders() -> tuple[str, ...]:
+    """The candidate folders at the top of the repository, `.specify` first.
+
+    These are the folders a run can create, whether or not it does, and the
+    exclude step looks at each one that exists. Derived from the skill folders,
+    the Spec Kit integration tool roots and the first folder of every agent
+    context file that lives in one, less LOCAL_EXCLUDE_NEVER, in a stable order.
+    """
+    folders = set(SKILL_HOME_DIRS) | set(SPECIFY_INTEGRATION_TOOL_ROOTS.values())
+    for _, relative_path in SUPPORTED_AGENT_CONTEXT_FILES:
+        parts = PurePosixPath(relative_path).parts
+        if len(parts) > 1:
+            folders.add(parts[0])
+    folders -= LOCAL_EXCLUDE_NEVER | {".specify"}
+    return (".specify", *sorted(folders))
+
+
+GIT_LOCAL_ENVIRONMENT_VARIABLES: frozenset[str] | None = None
+
+# Two of the names git lists as repository-local carry configuration, not a
+# repository: GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT (the GIT_CONFIG_KEY_<n>
+# and GIT_CONFIG_VALUE_<n> pairs that go with the second are not listed, so they
+# are never dropped). They are kept: configuration cannot steer a write, and a
+# caller may hand git its `safe.directory` this way. git keeps exactly these two
+# when it runs a command in a submodule, where it drops the rest of the list.
+GIT_CONFIG_ENVIRONMENT_VARIABLES: Final = frozenset(
+    {"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"}
+)
+
+
+class GitEnvironmentError(Exception):
+    """git did not give a usable list of its repository-local variables."""
+
+
+def git_environment() -> dict[str, str]:
+    """The caller's environment without git's repository-local variables.
+
+    git lists them itself (`rev-parse --local-env-vars`: GIT_DIR, GIT_COMMON_DIR,
+    GIT_INDEX_FILE, GIT_WORK_TREE and the rest) and the tool does not repeat the
+    list. Every listed name is dropped, as git drops them before it runs a
+    command in a submodule, except GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT,
+    which git keeps there too (see GIT_CONFIG_ENVIRONMENT_VARIABLES). A git
+    command run with this environment works on the repository it is pointed at,
+    never on one the caller's variables name.
+
+    Raises GitEnvironmentError, saying why, when git cannot start, cannot give
+    the list, or gives one that does not name GIT_DIR: a list that names
+    nothing must never mean there is nothing to drop.
+    """
+    global GIT_LOCAL_ENVIRONMENT_VARIABLES
+    if GIT_LOCAL_ENVIRONMENT_VARIABLES is None:
+        try:
+            listed = subprocess.run(
+                ["git", "rev-parse", "--local-env-vars"],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except (OSError, ValueError) as exc:
+            raise GitEnvironmentError(f"git could not run: {exc}") from exc
+        if listed.returncode != 0:
+            raise GitEnvironmentError(
+                f"git rev-parse --local-env-vars failed: {git_failure_detail(listed)}"
+            )
+        names = frozenset(listed.stdout.split())
+        if "GIT_DIR" not in names:
+            raise GitEnvironmentError(
+                f"git rev-parse --local-env-vars did not name GIT_DIR: {listed.stdout!r}"
+            )
+        GIT_LOCAL_ENVIRONMENT_VARIABLES = names - GIT_CONFIG_ENVIRONMENT_VARIABLES
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in GIT_LOCAL_ENVIRONMENT_VARIABLES
+    }
+
+
+def init_staging_repository(staging_repo: Path) -> None:
+    """`git init -q` the staging folder with `git_environment()`.
+
+    A caller's GIT_DIR would otherwise make it re-initialise the repository that
+    variable names. A failure ends the run with git's own message.
+    """
+    try:
+        created = subprocess.run(
+            ["git", "init", "-q", str(staging_repo)],
+            check=False,
+            text=True,
+            stderr=subprocess.PIPE,
+            env=git_environment(),
+        )
+    except GitEnvironmentError as exc:
+        raise SystemExit(f"Could not create the staging repository {staging_repo}: {exc}") from exc
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"Could not create the staging repository {staging_repo}: git could not run: {exc}"
+        ) from exc
+    if created.returncode != 0:
+        raise SystemExit(
+            f"Could not create the staging repository {staging_repo}: "
+            f"{git_failure_detail(created)}"
+        )
+    if created.stderr:
+        print(created.stderr, end="", file=sys.stderr)
+
+
+def run_git_query(
+    repo: Path, *arguments: str, stdin_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a read-only git command in ``repo``, with `git_environment()`.
+
+    A git that cannot start, or cannot list its local variables, comes back as
+    a failed result (status 127) whose stderr says why.
+    """
+    command = ["git", "-C", str(repo), *arguments]
+    try:
+        return subprocess.run(
+            command,
+            check=False,
+            text=True,
+            input=stdin_text,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=git_environment(),
+        )
+    except GitEnvironmentError as exc:
+        return subprocess.CompletedProcess(command, 127, "", str(exc))
+    except (OSError, ValueError) as exc:
+        return subprocess.CompletedProcess(command, 127, "", f"git could not run: {exc}")
+
+
+def git_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
+    return result.stderr.strip() or f"git exited with status {result.returncode}"
+
+
+def local_exclude_path(repo: Path) -> tuple[Path | None, str]:
+    """The repository's own exclude file, or None and why the step is skipped.
+
+    git names it (`rev-parse --git-path info/exclude`): in a linked worktree it is
+    the common git directory's, which every worktree of the repository shares. A
+    relative answer is relative to ``repo``. A directory inside some other
+    repository is never given that repository's file. A folder in no repository
+    at all (git exits 128 with "not a git repository") is the ordinary case of a
+    project with no git yet, and keeps its plain wording. Any other failure of
+    git here (missing, or refusing a repository it does not trust) is a skip
+    that gives git's own message.
+    """
+    toplevel = run_git_query(repo, "rev-parse", "--show-toplevel")
+    if toplevel.returncode != 0:
+        if toplevel.returncode == 128 and "not a git repository" in toplevel.stderr:
+            return None, f"{repo} is not the top of a git work tree"
+        return None, f"git rev-parse failed in {repo}: {git_failure_detail(toplevel)}"
+    try:
+        if Path(toplevel.stdout.rstrip("\n")).resolve() != repo.resolve():
+            return None, f"{repo} is not the top of a git work tree"
+    except (OSError, RuntimeError):
+        return None, f"{repo} is not the top of a git work tree"
+    answer = run_git_query(repo, "rev-parse", "--git-path", "info/exclude")
+    if answer.returncode != 0 or not answer.stdout.rstrip("\n"):
+        return None, f"git rev-parse failed in {repo}: {git_failure_detail(answer)}"
+    exclude_path = Path(answer.stdout.rstrip("\n"))
+    return (exclude_path if exclude_path.is_absolute() else repo / exclude_path), ""
+
+
+def git_ignore_rules(repo: Path, folder: str, *paths: str) -> list[tuple[str, str, str]]:
+    """git's deciding rule for each of ``paths``, as (source, line, pattern).
+
+    `git check-ignore --verbose --non-matching` gives the last rule that matches
+    each path, a negation (`!...`) included, and three empty fields when none
+    does. Any other answer stops the run as a failed git call.
+    """
+    answer = run_git_query(
+        repo,
+        "check-ignore",
+        "--verbose",
+        "--non-matching",
+        "--stdin",
+        "-z",
+        stdin_text="".join(f"{path}\0" for path in paths),
+    )
+    if answer.returncode not in (0, 1):
+        raise SystemExit(
+            f"Could not check whether {repo / folder} is ignored: {git_failure_detail(answer)}"
+        )
+    fields = answer.stdout.split("\0")
+    if len(fields) != 4 * len(paths) + 1 or fields[-1] or fields[3::4] != list(paths):
+        raise SystemExit(
+            f"Could not check whether {repo / folder} is ignored: "
+            f"unexpected answer {answer.stdout!r}"
+        )
+    return [
+        (fields[index], fields[index + 1], fields[index + 2])
+        for index in range(0, 4 * len(paths), 4)
+    ]
+
+
+def ignores(rule: tuple[str, str, str]) -> bool:
+    pattern = rule[2]
+    return bool(pattern) and not pattern.startswith("!")
+
+
+def describe_ignore_rule(rule: tuple[str, str, str]) -> str:
+    source, line, pattern = rule
+    return f"{pattern} at {source}:{line}" if pattern else "no ignore rule matches"
+
+
+def missing_local_excludes(repo: Path, dry_run: bool) -> tuple[list[str], bool]:
+    """The candidate folders that need a line, and whether a candidate is absent.
+
+    A folder F needs one when it is a real directory (a symlink is never
+    followed or excluded), no file under it is tracked, and git finds no rule
+    for it. A folder git already ignores needs nothing. A negation git finds for
+    F, in the exclude file itself, a `.gitignore` or `core.excludesFile`, is the
+    user's choice: F gets no line, and the log names git's source and line.
+    """
+    folders: list[str] = []
+    absent = False
+    for folder in local_exclude_folders():
+        mode = mode_without_following(repo / folder)
+        if mode is None:
+            absent = True
+            continue
+        if not stat.S_ISDIR(mode):
+            continue
+        tracked = run_git_query(repo, "ls-files", "-z", "--", folder)
+        if tracked.returncode != 0:
+            raise SystemExit(
+                f"Could not list the tracked files under {repo / folder}: "
+                f"{git_failure_detail(tracked)}"
+            )
+        if tracked.stdout:
+            continue
+        # `F/` is what `git check-ignore -q F/` checks. git leaves a negation
+        # out of its answer for `F/`, so `F` is asked as well.
+        rules = git_ignore_rules(repo, folder, f"{folder}/", folder)
+        if ignores(rules[0]):
+            continue
+        negation = next((rule for rule in rules if rule[2].startswith("!")), None)
+        if negation is not None:
+            verb = "would leave" if dry_run else "left"
+            log(
+                f"{verb} {folder}/ visible: the negation "
+                f"{describe_ignore_rule(negation)} decides it"
+            )
+            continue
+        folders.append(folder)
+    return folders, absent
+
+
+def write_local_exclude(path: Path, content: bytes) -> None:
+    """Replace the exclude file with ``content``, byte for byte, as `write_text` writes.
+
+    The folders on its path are opened without following links, the bytes go to
+    an O_EXCL|O_NOFOLLOW temporary file that is renamed into place, and an
+    existing file keeps its mode (a new one is 0644).
+    """
+    with destination_file_parent(path, True) as parent_descriptor:
+        existing_mode = mode_at(parent_descriptor, path.name)
+        if existing_mode is not None and not stat.S_ISREG(existing_mode):
+            raise OSError(f"Refusing to replace non-regular destination file {path.name}")
+        file_mode = stat.S_IMODE(existing_mode) if existing_mode is not None else 0o644
+        temporary_name, descriptor = temporary_regular_file(parent_descriptor, path.name)
+        try:
+            with os.fdopen(descriptor, "wb") as file:
+                write_all(file.fileno(), content)
+                os.fchmod(file.fileno(), file_mode)
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+
+
+def check_local_excludes(repo: Path, exclude_path: Path, folders: list[str]) -> None:
+    """Check with git, after the write, that it ignores each folder given a line."""
+    visible: list[str] = []
+    for folder in folders:
+        (rule,) = git_ignore_rules(repo, folder, f"{folder}/")
+        if not ignores(rule):
+            log(f"git does not ignore {folder}/ after the write: {describe_ignore_rule(rule)}")
+            visible.append(f"{folder}/")
+    if visible:
+        raise SystemExit(
+            f"Could not exclude {', '.join(visible)} through {exclude_path}: "
+            "git does not ignore them after the write"
+        )
+
+
+def ensure_local_excludes(repo: Path, dry_run: bool) -> None:
+    """Keep the wholly untracked Speckit and agent folders out of `git status`.
+
+    Appends an anchored `/F/` line to the repository's own exclude file for each
+    folder `missing_local_excludes` finds, whether the run created it or it was
+    there before, holding only untracked files. In a linked worktree that file
+    is shared by every worktree of the repository. git decides each folder, and
+    is asked again after the write. The file's existing bytes are kept, whatever
+    their encoding, and it is read and written as every other destination is,
+    so a symlinked or non-regular file, or a symlinked folder on its path, is
+    refused. A dry run sees only the folders that exist when it runs.
+    """
+    exclude_path, skip_reason = local_exclude_path(repo)
+    if exclude_path is None:
+        log(f"skipped local git excludes: {skip_reason}")
+        return
+    folders, absent = missing_local_excludes(repo, dry_run)
+    unknown = f"folders the run would create are decided by a real run: {exclude_path}"
+    if not folders:
+        log(unknown if dry_run and absent else f"unchanged {exclude_path}")
+        return
+    try:
+        existing = read_destination_bytes(exclude_path) or b""
+    except OSError as exc:
+        raise SystemExit(f"Could not update {exclude_path}: {exc}") from exc
+    lines = [f"/{folder}/" for folder in folders]
+    comment = LOCAL_EXCLUDE_COMMENT.encode("utf-8")
+    if not any(line.rstrip(b"\r") == comment for line in existing.split(b"\n")):
+        lines.insert(0, LOCAL_EXCLUDE_COMMENT)
+    separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
+    content = existing + separator + "".join(f"{line}\n" for line in lines).encode("utf-8")
+    if dry_run:
+        log(f"would write {exclude_path}")
+        for folder in folders:
+            log(f"would add /{folder}/ to {exclude_path}")
+        if absent:
+            log(unknown)
+        return
+    try:
+        write_local_exclude(exclude_path, content)
+    except OSError as exc:
+        raise SystemExit(f"Could not update {exclude_path}: {exc}") from exc
+    log(f"wrote {exclude_path}")
+    for folder in folders:
+        log(f"added /{folder}/ to {exclude_path}")
+    check_local_excludes(repo, exclude_path, folders)
+
+
 def ensure_worktree_overlay(
     repo: Path,
     template_root: Path | None,
@@ -4446,6 +5223,12 @@ def main() -> int:
 
         if not args.no_global_agent_pointers:
             ensure_global_agent_pointers(agent_root_spelling, args.dry_run)
+
+        # After every write to the repository: each candidate folder at its top
+        # with no tracked file, whether the run created it or it was there
+        # before, goes to the repository's own exclude file (the assembly
+        # root's in a three-leg project; the legs are never touched).
+        ensure_local_excludes(repo, args.dry_run)
 
     if shape is not None and not args.dry_run:
         report_two_commit_split(repo, shape)

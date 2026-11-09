@@ -1,5 +1,9 @@
 # workBenches
 
+Release tracking starts at **v1.5.0**. Run `./setup.sh --version` to identify
+this checkout. See [the release process](docs/releases.md) for source freezes,
+immutable release tags, pinned installations, and validation requirements.
+
 ## Project command
 
 Generic project creation now lives in
@@ -71,14 +75,22 @@ A layered Docker-based development environment system. Each "bench" is a self-co
 
 ## Quick Start
 
+On the v1.6 development branch, setup adds a third **Profiles** page (**G**):
+personal email and verified GitHub linking, then any number of company profiles
+with separate organization sign-ins. See [Profiles onboarding](docs/profiles.md).
+This feature is outside the v1.5 release scope.
+
+These commands follow `main`. For a frozen deployment, use the version-specific
+bootstrap in [the release guide](docs/releases.md#install-a-published-release).
+
 On a new workstation, install Git and download the standalone bootstrap.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opensoft/workBenches/main/bootstrap.sh -o workbenches-bootstrap.sh
+curl -fsSL https://raw.githubusercontent.com/opensoft/openBenches/main/bootstrap.sh -o workbenches-bootstrap.sh
 bash workbenches-bootstrap.sh --setup
 ```
 
-Bootstrap clones to `~/Projects/workBenches`. Use `--directory PATH` to choose
+Bootstrap clones to `~/Projects/openBenches`. Use `--directory PATH` to choose
 another location, or omit `--setup` to clone without running setup. It prefers
 SSH when your existing SSH configuration or agent can access the repository;
 otherwise it falls back to HTTPS. SSH probes are noninteractive and require a
@@ -100,19 +112,19 @@ From an existing checkout:
 
 This single command:
 
-1. Checks Docker access and common dependencies, offering installation when needed.
-2. Opens the TUI to select benches, AI assistants, and tools. An empty selection finishes without installs or image builds.
-3. Shows selected changes, shared host setup, and local credential readiness, then asks for confirmation before changing profiles, recovering credentials, or configuring the host.
+1. Identifies the OS and checks required Docker access, Windows/WSL 2 readiness, and common dependencies. Missing requirements open a guided setup screen before component selection.
+2. Opens the TUI to select benches, AI assistants, and tools. Press **P** for **Requirements**, or **G** for **Profiles**, including personal/company identities and AI credential setup. An empty component selection finishes without component installs or image builds.
+3. Enter applies the selected changes immediately, with a compact install/update summary. Q cancels and an empty selection exits.
 4. Checks Node/npm only for selected tools that require them. A system-owned npm location falls back to `~/.local`, with PATH configured for new terminals.
-5. Reuses valid local credentials, or offers direct sign-in, guided vault recovery, or authentication later for selected AI tools, with optional personal/organization profiles.
-6. Configures the shell and installs pinned estate commands, then initializes the workspace repository if needed.
+5. Installs AI tools without requiring sign-in. Open **Profiles** to configure identity-specific AI accounts or select **AI accounts** for existing account setup, using direct sign-in or guided vault recovery. Existing profiles and credentials are preserved. Organization sign-in is optional; Keycloak login requires organization-provided settings.
+6. Configures host shell settings only when **Shell setup** is selected. **Org workspace** explicitly initializes the workspace repository, after installing its pinned estate-command dependencies.
 7. Installs selected tools and builds only selected bench dependencies. Wave widgets and VPN setup follow the selected tools.
 
 After setup, open any bench in VS Code → "Reopen in Container" to start developing.
 
 ### Re-running setup.sh
 
-Installed items show their status and default to no changes. Space selects an install/update and pressing it again undoes the selection. D selects removal and pressing it again undoes removal. Only explicit selections are applied; an unchanged selection exits without host setup or builds. On runs with requested changes, the estate commands (`openRepoShape`, `openRepoTools`, `park`, `resume`, `status` and the five lane tools) are checked against workBenches' pin on every run and are re-placed only when a host copy differs from it. The workspace repository step does nothing at all once you have one: it is a file test on `~/.agents/workspace.yaml`, so that step skips an existing workspace without asking questions or contacting the network.
+Installed items show their status and default to no changes. Space selects an install/update and pressing it again undoes the selection. D selects removal and pressing it again undoes removal. Only explicit selections are applied; an unchanged selection exits without host setup or builds. Bench checkout deletion requires a focused confirmation and refuses local changes, untracked/ignored files, local-only commits, or use by a running container. Docker images, volumes, and credentials are preserved. For selected bench installs or organization workspace setup, the estate commands (`openRepoShape`, `openRepoTools`, `park`, `resume`, `status` and the five lane tools) are checked against workBenches' pin and are re-placed only when a host copy differs from it. The optional workspace repository step does nothing at all once you have one: it is a file test on `~/.agents/workspace.yaml`, so that step skips an existing workspace without asking questions or contacting the network.
 
 ## Docker Image Layers
 
@@ -173,20 +185,20 @@ checkout unchanged.
 
 ```
 setup.sh
-  ├── Docker access + Python/jq/git/curl preflight
-  ├── Component TUI: Benches | AI Assistants | Tools
-  │     └── Q/EOF cancels; empty Enter finishes without installs/builds
-  ├── Node/npm prerequisite for selected npm tools
-  ├── Selected AI tools: direct sign-in / recover from vault / configure later
-  │     ├── Optional personal/organization profiles
-  │     └── Guided vault item mappings or advanced JSON import
-  ├── Selected changes + per-profile local credential presence
-  ├── Shell + pinned estate commands → workspace repository
-  ├── Selected Wave widgets / Claude workflows
-  ├── Layer 0 only when benches are selected
-  ├── Apply saved component selection; native login for missing credentials
-  ├── Layer 1 builds only for selected bench categories
-  └── Summary + log file path
+  ├── Immediate TUI with yellow Loading… states
+  ├── Background OS / WSL 2 + Docker + Tools checks (containerized Python/jq/Git/curl)
+  │     └── Results update live; missing requirements offer Install / Start
+  ├── Optional Vault Up: credential-access tools; provider sign-in when needed
+  ├── Component TUI: Benches | AI Assistants | Tools | Requirements (P)
+  │     └── Enter applies; Q/EOF cancels; empty Enter finishes
+  ├── Compact selected-change summary + selected Node/npm prerequisites
+  ├── Reuse existing profiles; preserve host shell settings
+  ├── Selected bench dependencies: shared commands → Layer 0 → family Layer 1
+  ├── Install/update selected components
+  ├── Optional Shell setup / Org workspace
+  ├── Optional workBenches account: organization Keycloak browser approval
+  ├── Optional AI accounts: profiles, direct login or confirmed vault recovery
+  └── Summary + authentication pending where applicable + log path
 ```
 
 Docker verification runs before host installers and credential onboarding.
@@ -196,15 +208,17 @@ passwords are entered into sudo. A stopped local system Docker service can be
 started with the user's agreement. Declining, cancellation, installation
 failure or inaccessible Docker stops setup before later steps. Remote/rootless
 contexts use their configured daemon and local access policy.
+See [Workstation requirements and optional accounts](docs/setup-requirements.md)
+for Windows guidance and organization Keycloak configuration.
 
-Your host's `openRepoShape`, `openRepoTools`, `park`, `resume`, `status`, `lane`, `lanes`, `lane-handoff`, `lane-rename`, `lanes-edit.sh`, `lane-start`, `lane-end`, `link-estates`, `repos.tsv`, `claude-current` and `claude-restart-check` come from workBenches' own pin (`devBenches/base-image/upstream-pin.yaml`). `setup.sh` places them from the vendored copies in `devBenches/base-image/files/openreposhape/` and `devBenches/base-image/files/openrepotools/`, and re-places them whenever a host copy differs from the pin, in either direction — behind, ahead, or hand-edited. To move them to a new upstream commit, move the pin with `update-upstream.py apply` and re-run `setup.sh`; do not edit the vendored files or the installed commands directly. The step refuses to run over a symlinked, non-regular, or read-only target, and verifies the fifteen placed openRepoTools files (and openRepoShape's own) against the vendored copies before it reports success. Set `WORKBENCHES_SKIP_ESTATE_COMMANDS=1` to skip this step.
+Your host's `openRepoShape`, `openRepoTools`, `park`, `resume`, `status`, `lane`, `lanes`, `lane-handoff`, `lane-rename`, `lanes-edit.sh`, `lane-start`, `lane-end`, `link-estates`, `repos.tsv`, `claude-current` and `claude-restart-check` come from workBenches' own pin (`devBenches/base-image/upstream-pin.yaml`). `setup.sh` places them from the vendored copies in `devBenches/base-image/files/openreposhape/` and `devBenches/base-image/files/openrepotools/`, and re-places them whenever a host copy differs from the pin, in either direction — behind, ahead, or hand-edited. To move them to a new upstream commit, move the pin with `update-upstream.py apply` and re-run `setup.sh`; do not edit the vendored files or the installed commands directly. The step refuses to run over a symlinked, non-regular, or read-only target, and verifies the fifteen placed openRepoTools files (and openRepoShape's own) against the vendored copies before it reports success. It also holds `openRepoShape` on the release the pin names, the way the dev-bench image holds its own: the install writes the pin's `openreposhape` commit to `openRepoShape.ref` beside the placed command (`${OPENREPOSHAPE_BIN_DIR:-~/.local/bin}/openRepoShape.ref`), fetching nothing to do it, so the command fetches `setup.sh` and clones the standard at that commit instead of following openRepoShape's `main`, and `openRepoShape --version` prints it. A record already there — left by the one-line installer, by an earlier run of this step, or by a stray `OPENREPOSHAPE_RECORD_REF=1` in your shell — is replaced, never removed, and this step does not read `OPENREPOSHAPE_RECORD_REF` or `OPENREPOSHAPE_REF` from your shell; it refuses a symlinked, non-regular or unreadable record, and refuses to report success unless the record holds the pin's commit. Set `WORKBENCHES_SKIP_ESTATE_COMMANDS=1` to skip this step.
 
 ## Your Workspace Repository
 
-After the estate commands are installed, `setup.sh` runs `openRepoTools wip init` — the fourth link in the onboarding chain of lane-collision-protocol Amendment 9(e):
+When **Org workspace** is selected, setup installs the estate commands and runs `openRepoTools wip init` — the fourth link in the onboarding chain of lane-collision-protocol Amendment 9(e):
 
 ```text
-gh repo clone opensoft/workBenches && cd workBenches && ./setup.sh   # the host, and the estate commands
+gh repo clone opensoft/openBenches && cd openBenches && ./setup.sh   # the host, and the estate commands
 openRepoTools --install                            # (setup.sh already did this for you)
 openRepoTools wip init                             # your workspace repository
 pclaude <profile>
@@ -216,6 +230,8 @@ lane-start <repo> <n>
 The workspace repository (`<org>/<login>-wip`) holds your lane register, your handoffs and your workspace manifests. It holds **no code**: the lane tooling is installed from `opensoft/openRepoTools`.
 
 **`openRepoTools --install` is the single writer of everything it places** (lane-collision-protocol Amendment 9(b), adoption act 4b). It places fifteen files into `${OPENREPOTOOLS_BIN_DIR:-~/.local/bin}` at 755 — `openRepoTools`, `park`, `resume`, `status`, `lane`, `lanes`, `lane-handoff`, `lane-rename`, `lanes-edit.sh`, `lane-start`, `lane-end`, `link-estates`, the shipped alias table `repos.tsv`, and the two Claude Code launch commands `claude-current` and `claude-restart-check` — plus fourteen artifacts that are not in that directory: the `handoff`, `lane-swap` and `restart` skills and the `handoff`, `ctx` and `swap` command files, each at `${CLAUDE_PROFILES_HOME:-~/.claude-profiles}/shared/skills/<name>/SKILL.md` (or `.../shared/commands/<name>.md`), and a copy of each at `~/.claude/skills/<name>/SKILL.md` (or `~/.claude/commands/<name>.md`) for a bare `claude` outside the launcher, plus two merged entries in `~/.claude/settings.json` — the `SessionStart` entry and lane-collision-protocol Amendment 12's `UserPromptSubmit` name guard. **Those counts are not blindly trusted forever:** `scripts/setup-estate-commands.sh` keeps its own `TOOLS_FILES`, `SKILL_NAMES` and `COMMAND_NAMES` — hand-kept mirrors of the pinned shim's `INSTALLABLES`, `SKILLS` and `COMMANDS` arrays, since there is no `--list-installables` to generate them from — but checks each one against the shim's own array before installing anything (`check_shim_list`, Copilot's review of workBenches#91), so a shim that grew past what this script lists refuses the whole install rather than silently installing the new file with no preflight or verification. Nothing else in this repository writes any of those twenty-nine: `scripts/setup-claude-profiles.sh` used to install the skill and ensure that hook entry, and adoption act 4b deleted both. The one `SessionStart` ensure that is NOT `--install`'s is the launcher's own, in each *profile's* `settings.json` — a different file for a different run. That merge refuses — placing nothing at all, exit 2, bin directory untouched — on one condition only: a `SessionStart` entry that itself runs `session-start` under a different command string, which is a second program running the same hook verb and would fire it twice (R-A9-8, narrowed from `lanes-edit.sh` to the verb by R-A9-14). An unrelated `SessionStart` entry is merged beside it and the install exits 0.
+
+**Where the code that `openRepoTools --install` places lives depends on the shape of `opensoft/openRepoTools`.** In the single-repository shape it is in `opensoft/openRepoTools` itself, with the `openRepoTools` installer at its root. In the three-repository shape (an assembly root with a spec leg and a code leg, as `opensoft/openRepoShape` defines it) `opensoft/openRepoTools` is the assembly: the code is in the code leg, `opensoft/openRepoTools-code`, which the assembly mounts at `code/`, and the assembly's root `openRepoTools` runs the installer that leg carries.
 
 **This step asks you nothing.** The login comes from `gh api user -q .login`, lowercased; the organisation is your home organisation (`opensoft` in this estate). There is no prompt in it in any path — where nothing can be derived it prints the one command that fixes that (`gh auth login`) and continues rather than asking you for what it could not read.
 
@@ -237,18 +253,25 @@ Tests: `devcontainer.test/test-setup-workspace-repo.sh` (110 checks; fakes `open
 
 ## Wave Terminal Widgets
 
-`setup.sh` runs the Wave Terminal installer as a best-effort host setup step so
-all workBenches checkouts get the same desktop shortcuts. The installer comes
-from `opensoft/Install-Wave-Terminal`; setup prefers a sibling
+`setup.sh` checks the Wave widgets when Wave Terminal is already installed and
+syncs bench launch widgets with the verified installed runtimes after setup.
+Setup updates the managed shortcuts and preserves other Wave settings. If it
+detects that Wave saved changes during the sync, rerun setup to retry. Publication
+never replaces a newly saved file: displaced originals are retained in a private
+`.openbenches-settings-backup.*` directory beside the settings, and its path is
+reported. Keep that backup if a conflict needs manual reconciliation; it can also
+contain a late save from an editor that held the original file open.
+
+Widget templates come from `opensoft/Install-Wave-Terminal`. Setup prefers a sibling
 `../Install-Wave-Terminal` checkout when present, then falls back to cloning it
 into `~/.cache/workbenches/Install-Wave-Terminal`.
 
-Installed widgets include:
+Available widgets are listed below. Bench widgets appear once their runtimes are installed.
 
 | Widget | Behavior |
 |--------|----------|
-| `terminal` | Overrides Wave's built-in terminal to open `wsl://Ubuntu-24.04` instead of PowerShell |
-| `projects` | Opens the Wave files view at `$HOME/projects` on the WSL connection |
+| `terminal` | Opens the local shell or configured WSL connection in Wave's built-in terminal |
+| `projects` | Opens the Wave files view at `$HOME/projects` on that connection |
 | `pyBench` | Starts or repairs `py-bench`, then opens an interactive shell |
 | `flutterBench` | Starts or repairs `flutter-bench`, then opens an interactive shell |
 | `C++Bench` | Starts or repairs `cpp-bench`, then opens an interactive shell |
@@ -282,9 +305,11 @@ same project sessions should read
 The cross-provider ownership and composition model is documented in
 [AI credential ownership and profile composition](docs/ai-credential-ownership.md).
 
-The WSL connection defaults to `wsl://Ubuntu-24.04` and the projects widget
-defaults to `$HOME/projects`. Override them with `WAVE_WSL_CONNECTION` and
-`WAVE_PROJECTS_ROOT`. Widget font size defaults to `16`; override it with
+On WSL, the connection defaults to the current distro. When the distro name is
+unavailable, it falls back to `wsl://Ubuntu-24.04`. Native Linux/macOS use the
+local connection instead. The projects widget defaults
+to `$HOME/projects`. Override them with `WAVE_WSL_CONNECTION` and
+`WAVE_PROJECTS_ROOT`. New widgets use font size `16` by default. Override it with
 `WAVE_WIDGET_FONT_SIZE`. Set `WORKBENCHES_SKIP_WAVE_WIDGETS=1` to skip this
 step.
 
@@ -292,16 +317,38 @@ step.
 
 | State | Action |
 |-------|--------|
-| Installed + images exist | `✓ up to date` — skipped |
-| Installed + Layer 3 missing | `⚠ Layer 3 missing` — hint to run ensure-layer3.sh |
-| Needs setup (repo exists, no infra) | Runs `setup.sh` or `build-layer.sh` |
-| Not installed | Clones repo, then runs setup |
-| No setup.sh or build-layer.sh | Marks as ready for VS Code |
+| Installed images/container | Space selects an update; leaving it unchecked keeps it |
+| Base bench image only, missing user runtime | Shows `image only`; Space completes setup, D removes the cached image |
+| Checkout only, missing runtime | Shows `needs setup`; Space runs bench setup |
+| Not installed | Space selects cloning and installation |
+| Selected uninstall | D removes the selected runtime and verifies its absence |
+| Docker inventory unavailable | Shows `needs docker`; install/removal selections verify Docker before applying |
+| Different checkout/runtime ownership | Shows `needs check`; restore the expected checkout and refresh |
+
+Run `./setup.sh` again to manage installed components. Use **Space** to select
+or undo an install/update, **D** to select or undo an uninstall, **R** to
+refresh the installed state, **Enter** to apply, and **Q** to cancel.
+
+Bench uninstall stops/removes only the selected bench's containers and removes
+its `latest` and current-user image tags. The checkout, local work, mounted
+projects, credentials, volumes, and shared base images remain available.
+The source checkout then shows `needs setup` and can be installed again.
+
+Host-tool removal uses the recognized native, npm, uv, Linux package, or Windows
+WinGet installation method. It preserves account/profile data and verifies
+that the tool is gone. An unknown installation or failed removal reports a
+failure with an actionable message. Saved terminal settings alone are not
+evidence that the terminal application is installed. Setup verifies required
+Docker access before selection, including host-only removal; removal does not
+install/update Node.js.
+
+Shell setup, Org workspace, and AI accounts are configuration actions; they can
+be configured again without deleting shell settings, workspaces, or credentials.
 
 ## Directory Structure
 
 ```
-workBenches/
+openBenches/
 ├── setup.sh                    ← Main entry point
 ├── base-image/                 ← Layer 0: workbench-base Dockerfile
 ├── user-layer/                 ← Layer 3: User personalization Dockerfile
@@ -459,7 +506,7 @@ sysBenches/cloudBench/docs/amnezia-server-runbook.md
 
 | Bench | Repository |
 |-------|----------|
-| workBenches (this repo) | [opensoft/workBenches](https://github.com/opensoft/workBenches) |
+| openBenches (this repo) | [opensoft/openBenches](https://github.com/opensoft/openBenches) |
 | cloudBench | [opensoft/cloudBench](https://github.com/opensoft/cloudBench) |
 | cppBench | [opensoft/cppBench](https://github.com/opensoft/cppBench) |
 | dotNetBench | [opensoft/dotNetBench](https://github.com/opensoft/dotNetBench) |
@@ -471,3 +518,33 @@ sysBenches/cloudBench/docs/amnezia-server-runbook.md
 | pyBench | [opensoft/pyBench](https://github.com/opensoft/pyBench) |
 | gentecBench | [opensoft/gentecBench](https://github.com/opensoft/gentecBench) |
 | simBench | [opensoft/simBench](https://github.com/opensoft/simBench) |
+
+For existing cloudBench checkouts and historical release pins, see the
+[cloudBench source transition](docs/cloudbench-source-transition.md).
+
+### Faster workstation setup
+
+New Compose benches are created with the shared Wave mounts and must pass an
+ordinary launch check before setup reports them ready. Existing running benches
+are preserved; stop them before applying setup changes or use Wave's explicit
+repair command when appropriate.
+
+Select **AI accounts** to open account setup after installation. At the authentication route prompt, use `2B` for Bitwarden, `2V` for Vaultwarden,
+`2P` for 1Password, or `2A` for Azure Key Vault. The compact password-manager flow
+uses editable email defaults and infers unambiguous credential formats. Item and
+destination confirmation remain explicit. Choose `2` for advanced imports,
+multiple vaults, and automation authentication.
+
+Shared base images are reused only when their source fingerprint, platform, and
+parent image match. Otherwise setup tries a public release manifest with pinned
+image digests, then builds locally if the matching release is unavailable.
+Set `WORKBENCHES_BUILD_LOCAL=1` to force local builds. Build spinners show elapsed
+time and print the command to follow their log in another terminal.
+
+Maintainers publish the first system/developer images by running **Shared
+workstation images** with `workflow_dispatch`. New GHCR packages must be set to
+public at their package settings. The workflow checks anonymous access before
+publishing its immutable `shared-images-…` release manifest; a private package
+cannot become the default download path. The initial release targets
+`linux/amd64`; other platforms retain local builds. Publishing never includes
+personalized Layer 3 or workstation credentials.

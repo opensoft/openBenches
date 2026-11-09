@@ -49,6 +49,15 @@
 # pass"): the two ownership branches `retire_commands` decides between, an
 # installer-owned stale copy (removed) and a person's own file of the same
 # name (named and left, byte for byte).
+#
+# Scenarios (ab)-(ah), at the END of this file (they test the host step, and sit
+# after the others only to keep the other letters where they were), guard
+# opensoft/workBenches#159: the host's openRepoShape is held on the pin's
+# commit by the record `openRepoShape --install` writes beside it, fetching
+# nothing (hazard 1: it used to record nothing and remove a record, so the
+# host followed main), and the caller's own $OPENREPOSHAPE_RECORD_REF never
+# reaches that install (hazard 2: with it set to 1 the install recorded the
+# no-fetch sentinel as the command's ref).
 
 set -euo pipefail
 
@@ -68,13 +77,16 @@ STATUS_VENDOR="$BASE_IMAGE_DIR/files/openrepotools/status"
 # and #45, and opensoft/workBenches#119's two launch commands at the END). One
 # list, so scenarios (a), (b) and (l) cannot disagree about what a complete
 # bin-directory install is.
-TOOLS_FILES=(openRepoTools park resume status lane lanes lane-handoff lane-rename lanes-edit.sh lane-start lane-end link-estates repos.tsv claude-current claude-restart-check)
+TOOLS_FILES=(openRepoTools park resume status lane lanes lane-handoff lane-rename lanes-edit.sh lane-start lane-end link-estates repos.tsv claude-current claude-restart-check lanes-index lane-worktrees)
 tools_vendor_path() { printf '%s/files/openrepotools/%s\n' "$BASE_IMAGE_DIR" "$1"; }
 
 SKILL_NAMES=(handoff lane-swap restart)
 COMMAND_NAMES=(handoff ctx swap)
 
 TMPDIR_ROOT="$(mktemp -d)"
+# Each scenario supplies its own HOME. Host XDG/receipt overrides must not send
+# fixture installation records into the real user's data directory.
+unset XDG_DATA_HOME OPENREPOTOOLS_DATA_DIR
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
 failures=0
@@ -275,6 +287,20 @@ assert_guard_hook_present() {
     assert_mode "$settings" '600' "$label: settings.json is mode 0600"
 }
 
+assert_hooks_deferred() {
+    local settings="$1/.claude/settings.json" label="$2"
+    if [ ! -e "$settings" ]; then
+        pass "$label: no settings file calling an absent target"
+    elif jq -e '[.hooks.SessionStart[]?.hooks[]?.command,
+                  .hooks.UserPromptSubmit[]?.hooks[]?.command]
+                 | all(. != "~/projects/xFactory/lanes-edit.sh guard"
+                       and . != "~/projects/xFactory/lanes-edit.sh session-start || true")' "$settings" >/dev/null; then
+        pass "$label: neither hook calls an absent target"
+    else
+        fail "$label: an unready hook was installed"
+    fi
+}
+
 printf '%s\n' '--- Scenario (a): fresh bin dir + fresh $HOME installs all TWENTY-NINE openRepoTools artifacts, plus openRepoShape ---'
 BIN_A="$TMPDIR_ROOT/bin-a"
 HOME_A="$TMPDIR_ROOT/home-a"
@@ -294,7 +320,7 @@ for name in "${TOOLS_FILES[@]}"; do
     assert_identical "$BIN_A/$name" "$(tools_vendor_path "$name")" "fresh $name is byte-identical to the vendored copy"
     assert_contains "$OUTPUT_A" "$name: installed at" "fresh install reports an installed verb for $name"
 done
-assert_contains "$OUTPUT_A" 'openRepoTools: 15 of 15 placed in' 'fresh install reports all fifteen openRepoTools bin files placed'
+assert_contains "$OUTPUT_A" 'openRepoTools: 17 of 17 placed in' 'fresh install reports all fifteen openRepoTools bin files placed'
 for name in "${SKILL_NAMES[@]}"; do
     assert_skill_pair "$HOME_A" "$name" "fresh install places the $name skill"
     assert_contains "$OUTPUT_A" "$name: installed at" "fresh install reports an installed verb for the $name skill"
@@ -303,10 +329,10 @@ for name in "${COMMAND_NAMES[@]}"; do
     assert_command_pair "$HOME_A" "$name" "fresh install places the /$name command file"
     assert_contains "$OUTPUT_A" "/$name: installed at" "fresh install reports an installed verb for /$name"
 done
-assert_hook_present "$HOME_A" 'fresh install merges the SessionStart hook'
-assert_contains "$OUTPUT_A" 'SessionStart hook: installed in' 'fresh install reports the hook as installed (new file)'
-assert_guard_hook_present "$HOME_A" 'fresh install merges the UserPromptSubmit guard hook'
-assert_contains "$OUTPUT_A" 'UserPromptSubmit guard: installed in' 'fresh install reports the guard hook as installed (new file)'
+assert_hooks_deferred "$HOME_A" 'fresh install defers the pair until workspace linking'
+assert_contains "$OUTPUT_A" 'SessionStart hook: deferred' 'fresh install reports SessionStart deferred'
+assert_hooks_deferred "$HOME_A" 'fresh install has no broken prompt hook'
+assert_contains "$OUTPUT_A" 'UserPromptSubmit guard: deferred' 'fresh install reports the prompt guard deferred'
 assert_contains "$OUTPUT_A" "openRepoShape pinned at $SHAPE_COMMIT" 'fresh install prints the openRepoShape pin commit'
 assert_contains "$OUTPUT_A" "openRepoTools pinned at $TOOLS_COMMIT" 'fresh install prints the openRepoTools pin commit'
 assert_contains "$OUTPUT_A" 'Estate commands verified against the vendored pin.' 'fresh install reports success only after post-install verification'
@@ -340,10 +366,10 @@ for name in "${COMMAND_NAMES[@]}"; do
     assert_contains "$OUTPUT_B" "/$name: already installed at" "second run reports /$name unchanged"
     assert_command_pair "$HOME_A" "$name" "second run still has the /$name command file"
 done
-assert_contains "$OUTPUT_B" 'SessionStart hook: already installed in' 'second run reports the hook unchanged'
-assert_hook_present "$HOME_A" 'second run still has the hook'
-assert_contains "$OUTPUT_B" 'UserPromptSubmit guard: already installed in' 'second run reports the guard hook unchanged'
-assert_guard_hook_present "$HOME_A" 'second run still has the guard hook'
+assert_contains "$OUTPUT_B" 'SessionStart hook: deferred' 'second run still reports SessionStart deferred'
+assert_hooks_deferred "$HOME_A" 'second run still defers the unready hook'
+assert_contains "$OUTPUT_B" 'UserPromptSubmit guard: deferred' 'second run reports the guard hook unchanged'
+assert_hooks_deferred "$HOME_A" 'second run still defers the unready guard'
 
 printf '%s\n' '--- Scenario (c): a locally-modified park is replaced and reported updated ---'
 printf '%s\n' '# a local edit, not the vendored bytes' >> "$BIN_A/park"
@@ -365,7 +391,7 @@ assert_contains "$OUTPUT_C" 'status: already installed at' 'updated-park run sti
 assert_contains "$OUTPUT_C" 'repos.tsv: already installed at' 'updated-park run still reports repos.tsv unchanged'
 assert_contains "$OUTPUT_C" 'lane-swap: already installed at' 'updated-park run still reports the lane-swap skill unchanged'
 assert_contains "$OUTPUT_C" '/swap: already installed at' 'updated-park run still reports /swap unchanged'
-assert_contains "$OUTPUT_C" 'SessionStart hook: already installed in' 'updated-park run still reports the hook unchanged'
+assert_contains "$OUTPUT_C" 'SessionStart hook: deferred' 'updated-park run still defers the unready hook'
 
 printf '%s\n' '--- Scenario (d): a corrupted vendor copy refuses to install anything ---'
 CORRUPT_BASE="$TMPDIR_ROOT/corrupt-base-image"
@@ -837,15 +863,15 @@ for name in "${TOOLS_FILES[@]}"; do
     assert_file_executable "$BIN_Q/$name" "the start step places $name, executable"
     assert_identical "$BIN_Q/$name" "$(tools_vendor_path "$name")" "the start step's $name is byte-identical to the vendored copy"
 done
-assert_contains "$OUTPUT_Q" 'openRepoTools: 15 of 15 placed in' 'the start step relays the installer'"'"'s own count line, not a summary of its own'
+assert_contains "$OUTPUT_Q" 'openRepoTools: 17 of 17 placed in' 'the start step relays the installer'"'"'s own count line, not a summary of its own'
 for name in "${SKILL_NAMES[@]}"; do
     assert_skill_pair "$HOME_Q" "$name" "the start step places the $name skill"
 done
 for name in "${COMMAND_NAMES[@]}"; do
     assert_command_pair "$HOME_Q" "$name" "the start step places the /$name command file"
 done
-assert_hook_present "$HOME_Q" 'the start step merges the SessionStart hook'
-assert_guard_hook_present "$HOME_Q" 'the start step merges the UserPromptSubmit guard hook'
+assert_hooks_deferred "$HOME_Q" 'the start step defers SessionStart without a workspace'
+assert_hooks_deferred "$HOME_Q" 'the start step defers the prompt guard without a workspace'
 # The six per-user artifacts and the two hook entries are the half the image's
 # own COPY into /usr/local/bin can never restore -- a build has no user's $HOME
 # -- which is why the step runs `--install` rather than trusting those copies.
@@ -871,8 +897,24 @@ assert_not_contains "$OUTPUT_R" ': installed at' 'a second start installs nothin
 for name in "${TOOLS_FILES[@]}"; do
     assert_contains "$OUTPUT_R" "$name: already installed at" "a second start reports $name unchanged"
 done
-assert_contains "$OUTPUT_R" 'SessionStart hook: already installed in' 'a second start reports the SessionStart hook unchanged'
-assert_contains "$OUTPUT_R" 'UserPromptSubmit guard: already installed in' 'a second start reports the guard hook unchanged'
+assert_contains "$OUTPUT_R" 'SessionStart hook: deferred' 'a second start still defers SessionStart without a workspace'
+assert_contains "$OUTPUT_R" 'UserPromptSubmit guard: deferred' 'a second start still defers the prompt guard without a workspace'
+
+# Exercise the INSTALLED payload after repeat startup, not only the source
+# guard: a correct launcher and source tree did not prevent an old image from
+# restoring a guard that ignored the profile-only marker.
+mkdir -p "$HOME_Q/projects"
+PROFILE_GUARD_INPUT="$(printf '{"session_id":"profile-only","cwd":"%s/projects","prompt":"status","hook_event_name":"UserPromptSubmit"}' "$HOME_Q")"
+PROFILE_GUARD_RC=0
+PROFILE_GUARD_OUTPUT="$(env HOME="$HOME_Q" AGENT_PROTOCOL_ROOT="$HOME_Q/missing-agents" \
+    CLAUDE_NO_LANE=1 bash "$BIN_Q/lanes-edit.sh" guard <<< "$PROFILE_GUARD_INPUT" 2>&1)" || PROFILE_GUARD_RC=$?
+assert_equal '0' "$PROFILE_GUARD_RC" 'after repeat startup, installed guard permits profile-only sessions without lane infrastructure'
+assert_equal '' "$PROFILE_GUARD_OUTPUT" 'profile-only installed hook is silent'
+LANE_GUARD_RC=0
+LANE_GUARD_OUTPUT="$(env HOME="$HOME_Q" AGENT_PROTOCOL_ROOT="$HOME_Q/missing-agents" \
+    CLAUDE_NO_LANE=0 bash "$BIN_Q/lanes-edit.sh" guard <<< "$PROFILE_GUARD_INPUT" 2>&1)" || LANE_GUARD_RC=$?
+assert_equal '2' "$LANE_GUARD_RC" 'after repeat startup, installed guard still refuses an unverifiable lane session'
+assert_contains "$LANE_GUARD_OUTPUT" 'THE NAME GUARD REFUSES' 'lane enforcement survives the profile-only exemption'
 
 printf '%s\n' '--- Scenario (s): no ~/.agents/workspace.yaml (a fresh workstation before `openRepoTools wip init`) does not fail container start ---'
 assert_absent "$HOME_Q/.agents/workspace.yaml" 'scenario (s) precondition: the sandbox has no workspace.yaml'
@@ -907,7 +949,8 @@ fi
 assert_identical "$HOME_T/projects/xFactory/lanes-edit.sh" "$BIN_T/lanes-edit.sh" 'that link resolves to the lanes-edit.sh this start step installed'
 assert_equal "$(readlink "$HOME_T/projects/xFactory/LANES.md")" "$WIP_T/lanes/LANES.md" 'the register link points into the workspace repository'
 assert_equal "$(readlink "$HOME_T/projects/xFactory/handoffs")" "$WIP_T/handoffs/xFactory" 'the handoffs link points into the workspace repository'
-assert_not_contains "$OUTPUT_T" 'openRepoTools wip init' 'nothing refuses for want of a workspace repository once there is one'
+assert_hook_present "$HOME_T" 'the first start reconciles SessionStart after successful linking'
+assert_guard_hook_present "$HOME_T" 'the first start reconciles the prompt guard after successful linking'
 
 printf '%s\n' '--- Scenario (u): WORKBENCHES_SKIP_ESTATE_COMMANDS=1 turns the step off from a bench'"'"'s own environment ---'
 BIN_U="$TMPDIR_ROOT/bin-u"
@@ -1245,10 +1288,474 @@ assert_has_line() {
         fail "$label: no line equal to: $line"
     fi
 }
+# Resolve COPY mappings, including multiple sources sharing a destination
+# directory. Every bin must still come from its exact pinned source; grouping
+# the two new files avoids spending additional OverlayFS layers.
+DEV_COPY_MAPPINGS="$(python3 - "$DEV_DOCKERFILE" <<'COPY_MAPPINGS'
+from pathlib import Path
+import shlex
+import sys
+for line in Path(sys.argv[1]).read_text().splitlines():
+    if not line.lstrip().upper().startswith('COPY '):
+        continue
+    words = shlex.split(line, comments=True)
+    if not words or words[0].upper() != 'COPY':
+        continue
+    arguments = [word for word in words[1:] if not word.startswith('--')]
+    for source in arguments[:-1]:
+        destination = arguments[-1]
+        if destination.endswith('/'):
+            destination += Path(source).name
+        print(source + ' ' + destination)
+COPY_MAPPINGS
+)"
 for name in "${SHIM_INSTALLABLES[@]}"; do
-    assert_has_line "$DEV_DOCKERFILE_TEXT" "COPY files/openrepotools/$name /usr/local/bin/$name" "the Dockerfile COPYs $name into /usr/local/bin"
+    assert_has_line "$DEV_COPY_MAPPINGS" "files/openrepotools/$name /usr/local/bin/$name" "the Dockerfile COPYs $name from its exact pinned source into /usr/local/bin"
     assert_has_line "$DEV_CHMOD_WORDS" "/usr/local/bin/$name" "the Dockerfile's chmod 0755 block lists /usr/local/bin/$name"
 done
+
+# ===========================================================================
+# THE HOST'S openRepoShape RECORD (opensoft/workBenches#159, the host half of
+# #153)
+#
+# Scenarios (ab)-(ah) belong with the host step above and sit down here only
+# so that the letters of the scenarios in between stay as they were.
+#
+# The vendored openRepoShape launcher reads the ref it runs at from
+# `openRepoShape.ref` beside the installed command, and its `--install` writes
+# that record only when $OPENREPOSHAPE_RECORD_REF is 1, from
+# $OPENREPOSHAPE_REF. The script used to set neither on purpose and exported
+# the no-fetch sentinel as $OPENREPOSHAPE_REF, so two things went wrong on a
+# host:
+#   1. nothing was recorded, and a record already there was REMOVED, so the
+#      host's command followed openRepoShape's main while the image's command
+#      stayed on the release (hazard 1); and
+#   2. the caller's own $OPENREPOSHAPE_RECORD_REF=1 reached the install, which
+#      then recorded the SENTINEL as the host command's ref (hazard 2).
+# Every scenario here runs with a fetch trap first on $PATH: `gh` and `curl`
+# stubs that log what they were asked and fail, so no scenario can reach the
+# real network or the real gh, and the log shows whether an install fetched.
+TRAP_159="$TMPDIR_ROOT/fetch-trap-159"
+mkdir -p "$TRAP_159"
+for tool in gh curl; do
+    cat > "$TRAP_159/$tool" <<EOF
+#!/bin/sh
+printf '%s %s\n' "$tool" "\$*" >> "$TRAP_159/calls.log"
+exit 97
+EOF
+    chmod 0755 "$TRAP_159/$tool"
+done
+: > "$TRAP_159/calls.log"
+
+run_record_install() {   # <home> <bin dir> [env args...] -- the script under test, the fetch trap first on PATH
+    local home="$1" bin="$2"
+    shift 2
+    env "$@" HOME="$home" \
+        CLAUDE_PROFILES_HOME="$home/.claude-profiles" CLAUDE_USER_DIR="$home/.claude" \
+        OPENREPOSHAPE_BIN_DIR="$bin" OPENREPOTOOLS_BIN_DIR="$bin" \
+        PATH="$TRAP_159:$PATH" "$SCRIPT_UNDER_TEST" 2>&1
+}
+
+# The text of a record, or nothing at all when there is none: a missing file
+# must be a failed assertion below, never a stray `cat` error or an abort.
+record_text() {
+    cat -- "$1" 2>/dev/null || true
+}
+
+printf '%s\n' '--- Scenario (ab) [#159, hazard 1]: a fresh host install records the pin'"'"'s commit beside the command, and fetches nothing to do it ---'
+BIN_AB="$TMPDIR_ROOT/bin-ab"
+HOME_AB="$TMPDIR_ROOT/home-ab"
+mkdir -p "$BIN_AB" "$HOME_AB"
+: > "$TRAP_159/calls.log"
+STATUS_AB=0
+OUTPUT_AB="$(run_record_install "$HOME_AB" "$BIN_AB" -u OPENREPOSHAPE_RECORD_REF)" || STATUS_AB=$?
+CALLS_AB="$(cat "$TRAP_159/calls.log")"
+
+assert_equal '0' "$STATUS_AB" 'fresh install with no OPENREPOSHAPE_RECORD_REF in the caller'"'"'s shell: exit code'
+assert_equal "$(record_text "$BIN_AB/openRepoShape.ref")" "$SHAPE_COMMIT" "the record beside the host's openRepoShape holds the pin's openreposhape commit"
+assert_equal "$(wc -c < "$BIN_AB/openRepoShape.ref" 2>/dev/null | tr -d ' ')" '41' 'the record is the 40-hex commit and one newline, nothing else'
+assert_contains "$OUTPUT_AB" "openRepoShape: pinned to $SHAPE_COMMIT, recorded in $BIN_AB/openRepoShape.ref" "the launcher's own line says it recorded the pin"
+assert_not_contains "$OUTPUT_AB" 'follows main' 'the install does not say it removed a record and follows main'
+# What the command says it runs at, read from the installed copy itself, with the
+# two variables that would override the record taken out of its environment.
+VERSION_AB="$(env -u OPENREPOSHAPE_REF -u OPENREPOSHAPE_REPO PATH="$TRAP_159:$PATH" "$BIN_AB/openRepoShape" --version 2>&1)" || true
+assert_equal "$VERSION_AB" "openRepoShape (opensoft/openRepoShape @ $SHAPE_COMMIT)" "the installed command's --version names the pin's commit, the ref the image's command runs at"
+assert_not_contains "$VERSION_AB" "$ESTATE_SENTINEL_VALUE" 'the installed command does not report the sentinel as its ref'
+# Recording needs no fetch: the launcher run as a file installs the bytes beside
+# it. `gh auth status` is its own machine report, not a fetch.
+assert_not_contains "$CALLS_AB" 'gh api' 'recording the pin fetched nothing through gh api'
+assert_not_contains "$CALLS_AB" 'curl' 'recording the pin fetched nothing through curl'
+
+printf '%s\n' '--- Scenario (ac) [#159, hazard 1]: an older or damaged record is replaced by the pin'"'"'s commit, and a second run leaves it ---'
+BIN_AC="$TMPDIR_ROOT/bin-ac"
+HOME_AC="$TMPDIR_ROOT/home-ac"
+mkdir -p "$BIN_AC" "$HOME_AC"
+# What the one-line installer (install.sh) leaves: the release TAG.
+printf 'v1.0.0\n' > "$BIN_AC/openRepoShape.ref"
+STATUS_AC=0
+OUTPUT_AC="$(run_record_install "$HOME_AC" "$BIN_AC" -u OPENREPOSHAPE_RECORD_REF)" || STATUS_AC=$?
+assert_equal '0' "$STATUS_AC" 'an install over a v1.0.0 record: exit code'
+assert_equal "$(record_text "$BIN_AC/openRepoShape.ref")" "$SHAPE_COMMIT" 'the v1.0.0 record is replaced by the pin'"'"'s commit, not removed'
+assert_contains "$OUTPUT_AC" "pinned to $SHAPE_COMMIT (was v1.0.0), recorded in" 'the launcher says what the record held before'
+assert_not_contains "$OUTPUT_AC" 'no longer pinned' 'the install does not say it un-pinned the host'
+
+STATUS_AC2=0
+OUTPUT_AC2="$(run_record_install "$HOME_AC" "$BIN_AC" -u OPENREPOSHAPE_RECORD_REF)" || STATUS_AC2=$?
+assert_equal '0' "$STATUS_AC2" 'a second run over the pin'"'"'s record: exit code'
+assert_contains "$OUTPUT_AC2" "already pinned to $SHAPE_COMMIT in $BIN_AC/openRepoShape.ref (unchanged)" 'a second run reports the record unchanged'
+assert_equal "$(record_text "$BIN_AC/openRepoShape.ref")" "$SHAPE_COMMIT" 'a second run leaves the record as it was'
+
+# A host that hazard 2 had already damaged: the sentinel recorded as its ref.
+printf '%s\n' "$ESTATE_SENTINEL_VALUE" > "$BIN_AC/openRepoShape.ref"
+STATUS_AC3=0
+OUTPUT_AC3="$(run_record_install "$HOME_AC" "$BIN_AC" -u OPENREPOSHAPE_RECORD_REF)" || STATUS_AC3=$?
+assert_equal '0' "$STATUS_AC3" 'an install over a record that holds the sentinel: exit code'
+assert_equal "$(record_text "$BIN_AC/openRepoShape.ref")" "$SHAPE_COMMIT" 'a record that holds the sentinel is repaired to the pin'"'"'s commit'
+assert_contains "$OUTPUT_AC3" "(was $ESTATE_SENTINEL_VALUE)" 'the launcher names the sentinel record it replaced'
+
+printf '%s\n' '--- Scenario (ad) [#159, hazard 2]: the caller'"'"'s own OPENREPOSHAPE_RECORD_REF (and REF) never reaches the install, and the sentinel is never recorded ---'
+# `1` is the hazard: the install recorded $OPENREPOSHAPE_REF, which this script
+# had exported as the sentinel. `0` and `yes` are the other things a shell may
+# hold: the install used to record nothing for them (and remove a record), and
+# now records the pin whatever the caller's shell says. The last row is an
+# operator who names a branch of their own AND asks for it to be recorded.
+ad_run=0
+for ad_spec in '1|' '0|' 'yes|' '1|operator-branch'; do
+    ad_run=$((ad_run + 1))
+    ad_record_ref="${ad_spec%%|*}"
+    ad_ref="${ad_spec#*|}"
+    HOME_AD="$TMPDIR_ROOT/home-ad$ad_run"
+    BIN_AD="$TMPDIR_ROOT/bin-ad$ad_run"
+    mkdir -p "$HOME_AD" "$BIN_AD"
+    ad_env=(OPENREPOSHAPE_RECORD_REF="$ad_record_ref")
+    [ -z "$ad_ref" ] || ad_env+=(OPENREPOSHAPE_REF="$ad_ref")
+    ad_label="OPENREPOSHAPE_RECORD_REF=$ad_record_ref${ad_ref:+ OPENREPOSHAPE_REF=$ad_ref} in the caller's shell"
+    STATUS_AD=0
+    OUTPUT_AD="$(run_record_install "$HOME_AD" "$BIN_AD" "${ad_env[@]}")" || STATUS_AD=$?
+    assert_equal '0' "$STATUS_AD" "$ad_label: exit code"
+    assert_equal "$(record_text "$BIN_AD/openRepoShape.ref")" "$SHAPE_COMMIT" "$ad_label: the record holds the pin's commit"
+    assert_not_contains "$(record_text "$BIN_AD/openRepoShape.ref")" "$ESTATE_SENTINEL_VALUE" "$ad_label: the sentinel is not what was recorded"
+    assert_not_contains "$OUTPUT_AD" "pinned to $ESTATE_SENTINEL_VALUE" "$ad_label: the launcher does not say it pinned the sentinel"
+    assert_not_contains "$OUTPUT_AD" 'pinned to operator-branch' "$ad_label: the operator's own ref is not what was recorded"
+done
+# The reproduction RV154 gave on #159, read back through the installed command.
+BIN_AD1="$TMPDIR_ROOT/bin-ad1"
+VERSION_AD1="$(env -u OPENREPOSHAPE_REF -u OPENREPOSHAPE_REPO PATH="$TRAP_159:$PATH" "$BIN_AD1/openRepoShape" --version 2>&1)" || true
+assert_equal "$VERSION_AD1" "openRepoShape (opensoft/openRepoShape @ $SHAPE_COMMIT)" 'after an install with OPENREPOSHAPE_RECORD_REF=1 in the caller'"'"'s shell, the command reports the pin, not "@ pinned-by-workBenches-no-fetch"'
+
+printf '%s\n' '--- Scenario (ae) [#159]: a symlinked or non-regular record refuses before anything is placed, like every other target ---'
+BIN_AE="$TMPDIR_ROOT/bin-ae"
+HOME_AE="$TMPDIR_ROOT/home-ae"
+OTHER_AE="$TMPDIR_ROOT/other-ae"
+mkdir -p "$BIN_AE" "$HOME_AE" "$OTHER_AE"
+printf 'somebody else'"'"'s ref\n' > "$OTHER_AE/record"
+ln -s "$OTHER_AE/record" "$BIN_AE/openRepoShape.ref"
+STATUS_AE=0
+OUTPUT_AE="$(run_record_install "$HOME_AE" "$BIN_AE" -u OPENREPOSHAPE_RECORD_REF)" || STATUS_AE=$?
+assert_equal '1' "$STATUS_AE" 'a symlinked record: exit code'
+assert_contains "$OUTPUT_AE" "$BIN_AE/openRepoShape.ref" 'the refusal names the symlinked record'
+assert_contains "$OUTPUT_AE" 'symlink' 'the refusal says it is a symlink'
+assert_equal "somebody else's ref" "$(cat "$OTHER_AE/record")" 'what the symlink points at is byte for byte unchanged'
+assert_equal '1' "$(find "$BIN_AE" -mindepth 1 | wc -l | tr -d ' ')" 'nothing was placed into the bin dir (only the symlink remains)'
+assert_absent "$HOME_AE/.claude" 'nothing was written under $HOME/.claude either (neither shim ran)'
+
+BIN_AE2="$TMPDIR_ROOT/bin-ae2"
+HOME_AE2="$TMPDIR_ROOT/home-ae2"
+mkdir -p "$BIN_AE2/openRepoShape.ref" "$HOME_AE2"
+STATUS_AE2=0
+OUTPUT_AE2="$(run_record_install "$HOME_AE2" "$BIN_AE2" -u OPENREPOSHAPE_RECORD_REF)" || STATUS_AE2=$?
+assert_equal '1' "$STATUS_AE2" 'a directory standing in for the record: exit code'
+assert_contains "$OUTPUT_AE2" 'not a regular file' 'the refusal says the record is not a regular file'
+assert_equal '0' "$([ -e "$BIN_AE2/openRepoShape" ] && echo 1 || echo 0)" 'openRepoShape was NOT placed beside a record that cannot be written'
+assert_absent "$HOME_AE2/.claude" 'nothing was written under $HOME/.claude either (neither shim ran)'
+
+# A record this user cannot READ: the launcher reads the ref it holds before it
+# replaces it, and does that only after placing openRepoShape. Mode 0200 is
+# unreadable to a non-root user and readable to root, which no chmod changes;
+# like scenario (i) this assumes a non-root runner, and where the file is still
+# readable after the chmod it is SKIPPED, not failed, as scenario (y) is for want
+# of flock.
+BIN_AE3="$TMPDIR_ROOT/bin-ae3"
+HOME_AE3="$TMPDIR_ROOT/home-ae3"
+mkdir -p "$BIN_AE3" "$HOME_AE3"
+printf '%s\n' "$SHAPE_COMMIT" > "$BIN_AE3/openRepoShape.ref"
+chmod 0200 "$BIN_AE3/openRepoShape.ref"
+if [ -r "$BIN_AE3/openRepoShape.ref" ]; then
+    printf 'SKIP: scenario (ae) unreadable record needs a user that mode 0200 locks out; this one (root?) can still read it.\n'
+else
+    STATUS_AE3=0
+    OUTPUT_AE3="$(run_record_install "$HOME_AE3" "$BIN_AE3" -u OPENREPOSHAPE_RECORD_REF)" || STATUS_AE3=$?
+    assert_equal '1' "$STATUS_AE3" 'an unreadable record: exit code'
+    assert_contains "$OUTPUT_AE3" "$BIN_AE3/openRepoShape.ref exists and is not readable" 'the refusal names the unreadable record'
+    assert_contains "$OUTPUT_AE3" 'Nothing was installed.' 'the refusal is a preflight one: nothing was installed'
+    assert_equal '0' "$([ -e "$BIN_AE3/openRepoShape" ] && echo 1 || echo 0)" 'openRepoShape was NOT placed beside a record the launcher could not read'
+    assert_absent "$HOME_AE3/.claude" 'nothing was written under $HOME/.claude either (neither shim ran)'
+    assert_not_contains "$OUTPUT_AE3" 'Permission denied' 'the refusal is ours, not a bare Permission denied from the launcher'
+fi
+chmod 0644 "$BIN_AE3/openRepoShape.ref"
+
+printf '%s\n' '--- Scenario (af) [#159]: a launcher that leaves no record, or the wrong one, is caught by the post-install check ---'
+# The vendored launcher is the one that records. If a re-pin ever took one that
+# did not (or that recorded something else), every file above would still
+# verify while the host command followed main, so the record is read back and
+# compared with the pin. Proved on throwaway copies of base-image with the ONE
+# launcher line changed and that one pin row re-digested by hand, which is what
+# `update-upstream.py apply` would have done, so `check` still passes.
+patch_shape_launcher() {   # <base dir> <old text> <new text>
+    python3 - "$1" "$2" "$3" <<'PYEOF'
+import hashlib
+import sys
+
+base, old, new = sys.argv[1:4]
+launcher = f"{base}/files/openreposhape/openRepoShape"
+pin_path = f"{base}/upstream-pin.yaml"
+
+with open(launcher, "r", encoding="utf-8") as f:
+    text = f.read()
+if text.count(old) != 1:
+    raise SystemExit(f"expected exactly one occurrence of {old!r}, found {text.count(old)}")
+text = text.replace(old, new)
+with open(launcher, "w", encoding="utf-8") as f:
+    f.write(text)
+digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+with open(pin_path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+out = []
+i = 0
+patched = False
+while i < len(lines):
+    out.append(lines[i])
+    if lines[i].strip() == "- path: openRepoShape":
+        out.append(lines[i + 1].split(":")[0] + f': "{digest}"\n')
+        out.append(lines[i + 2])
+        i += 3
+        patched = True
+        continue
+    i += 1
+if not patched:
+    raise SystemExit("could not find the openRepoShape pin row to patch")
+with open(pin_path, "w", encoding="utf-8") as f:
+    f.writelines(out)
+PYEOF
+}
+
+# What a refusal over the record says (SHOULD 1 of RV161's review of #161): its
+# OWN text, not `refuse_postverify`'s, which names the fifteen openRepoTools
+# commands (not re-checked yet at that point) and tells the person to re-run
+# (which cannot change a record the vendored launcher writes). It must say that
+# openRepoShape is placed and NOT held on the pin, and name the two places the
+# fix is: the pin and the vendored launcher, here in the base-image copy under test.
+assert_record_refusal_text() {   # <output> <base dir> <label>
+    assert_contains "$1" 'openRepoShape is placed but is NOT held on the pin' "$3: the refusal says openRepoShape is placed and not held on the pin"
+    assert_contains "$1" "The fix is the pin" "$3: the refusal says the fix is the pin ..."
+    assert_contains "$1" "$2/upstream-pin.yaml" "$3: ... and names the pin file"
+    assert_contains "$1" "$2/files/openreposhape/openRepoShape" "$3: ... and the vendored launcher"
+    assert_not_contains "$1" 'fifteen openRepoTools commands' "$3: the refusal does not blame the openRepoTools commands"
+    assert_not_contains "$1" 're-run this script' "$3: the refusal does not tell the person to re-run, which cannot help"
+}
+
+NORECORD_BASE="$TMPDIR_ROOT/norecord-base-image"
+mkdir -p "$NORECORD_BASE"
+cp -r "$BASE_IMAGE_DIR/." "$NORECORD_BASE/"
+patch_shape_launcher "$NORECORD_BASE" '	record_ref "$record" "$recording"
+' '	true
+'
+NORECORD_CHECK_STATUS=0
+python3 "$NORECORD_BASE/update-upstream.py" check >"$TMPDIR_ROOT/norecord-check.log" 2>&1 || NORECORD_CHECK_STATUS=$?
+assert_equal '0' "$NORECORD_CHECK_STATUS" "scenario (af) setup: 'check' passes on the copy whose launcher writes no record"
+BIN_AF="$TMPDIR_ROOT/bin-af"
+HOME_AF="$TMPDIR_ROOT/home-af"
+mkdir -p "$BIN_AF" "$HOME_AF"
+STATUS_AF=0
+OUTPUT_AF="$(run_record_install "$HOME_AF" "$BIN_AF" -u OPENREPOSHAPE_RECORD_REF WORKBENCHES_BASE_IMAGE_DIR="$NORECORD_BASE")" || STATUS_AF=$?
+assert_equal '1' "$STATUS_AF" 'a launcher that writes no record: exit code'
+assert_contains "$OUTPUT_AF" "$BIN_AF/openRepoShape.ref is not a regular file after install" 'the refusal names the missing record'
+assert_contains "$OUTPUT_AF" "$SHAPE_COMMIT" 'the refusal names the commit the host is not held on'
+assert_record_refusal_text "$OUTPUT_AF" "$NORECORD_BASE" 'a launcher that writes no record'
+assert_not_contains "$OUTPUT_AF" 'Estate commands verified against the vendored pin.' 'a host that follows main is not reported as verified against the pin'
+
+WRONGREF_BASE="$TMPDIR_ROOT/wrongref-base-image"
+mkdir -p "$WRONGREF_BASE"
+cp -r "$BASE_IMAGE_DIR/." "$WRONGREF_BASE/"
+patch_shape_launcher "$WRONGREF_BASE" 'printf '"'"'%s\n'"'"' "$REF" >"$record"' 'printf '"'"'%s\n'"'"' main >"$record"'
+WRONGREF_CHECK_STATUS=0
+python3 "$WRONGREF_BASE/update-upstream.py" check >"$TMPDIR_ROOT/wrongref-check.log" 2>&1 || WRONGREF_CHECK_STATUS=$?
+assert_equal '0' "$WRONGREF_CHECK_STATUS" "scenario (af) setup: 'check' passes on the copy whose launcher records main"
+BIN_AF2="$TMPDIR_ROOT/bin-af2"
+HOME_AF2="$TMPDIR_ROOT/home-af2"
+mkdir -p "$BIN_AF2" "$HOME_AF2"
+STATUS_AF2=0
+OUTPUT_AF2="$(run_record_install "$HOME_AF2" "$BIN_AF2" -u OPENREPOSHAPE_RECORD_REF WORKBENCHES_BASE_IMAGE_DIR="$WRONGREF_BASE")" || STATUS_AF2=$?
+assert_equal '1' "$STATUS_AF2" 'a launcher that records a ref other than the pin: exit code'
+assert_contains "$OUTPUT_AF2" "$BIN_AF2/openRepoShape.ref holds 'main' after install" 'the refusal names what the record holds'
+assert_not_contains "$OUTPUT_AF2" 'Estate commands verified against the vendored pin.' 'a record that is not the pin is not reported as verified'
+assert_record_refusal_text "$OUTPUT_AF2" "$WRONGREF_BASE" 'a launcher that records main'
+
+# A record that is a COMMIT, but not THE commit: "forty hex digits" is not "the
+# pin". This row is what tells a check of `held = pin` from a check of `held
+# looks like a commit` (mutation m5 of RV161's review of #161).
+OTHER_COMMIT="ffffffffffffffffffffffffffffffffffffffff"
+assert_matches "$OTHER_COMMIT" '^[0-9a-f]{40}$' 'scenario (af) setup: the stand-in commit is 40 lowercase hex'
+if [ "$OTHER_COMMIT" = "$SHAPE_COMMIT" ]; then fail 'scenario (af) setup: the stand-in commit must differ from the pin'; fi
+OTHERCOMMIT_BASE="$TMPDIR_ROOT/othercommit-base-image"
+mkdir -p "$OTHERCOMMIT_BASE"
+cp -r "$BASE_IMAGE_DIR/." "$OTHERCOMMIT_BASE/"
+patch_shape_launcher "$OTHERCOMMIT_BASE" 'printf '"'"'%s\n'"'"' "$REF" >"$record"' "printf '%s\\n' $OTHER_COMMIT >\"\$record\""
+OTHERCOMMIT_CHECK_STATUS=0
+python3 "$OTHERCOMMIT_BASE/update-upstream.py" check >"$TMPDIR_ROOT/othercommit-check.log" 2>&1 || OTHERCOMMIT_CHECK_STATUS=$?
+assert_equal '0' "$OTHERCOMMIT_CHECK_STATUS" "scenario (af) setup: 'check' passes on the copy whose launcher records a different commit"
+BIN_AF3="$TMPDIR_ROOT/bin-af3"
+HOME_AF3="$TMPDIR_ROOT/home-af3"
+mkdir -p "$BIN_AF3" "$HOME_AF3"
+STATUS_AF3=0
+OUTPUT_AF3="$(run_record_install "$HOME_AF3" "$BIN_AF3" -u OPENREPOSHAPE_RECORD_REF WORKBENCHES_BASE_IMAGE_DIR="$OTHERCOMMIT_BASE")" || STATUS_AF3=$?
+assert_equal '1' "$STATUS_AF3" 'a launcher that records a DIFFERENT commit than the pin: exit code'
+assert_equal "$(record_text "$BIN_AF3/openRepoShape.ref")" "$OTHER_COMMIT" 'scenario (af) setup: that launcher really did record the other commit'
+assert_contains "$OUTPUT_AF3" "$BIN_AF3/openRepoShape.ref holds '$OTHER_COMMIT' after install" 'the refusal names the other commit the record holds'
+assert_contains "$OUTPUT_AF3" "expected the pinned openRepoShape commit $SHAPE_COMMIT" 'the refusal names the pin'"'"'s commit it expected'
+assert_not_contains "$OUTPUT_AF3" 'Estate commands verified against the vendored pin.' 'a record holding some other commit is not reported as verified'
+assert_record_refusal_text "$OUTPUT_AF3" "$OTHERCOMMIT_BASE" 'a launcher that records a different commit'
+
+printf '%s\n' '--- Scenario (ag) [#159]: the record sits beside openRepoShape, wherever OPENREPOSHAPE_BIN_DIR puts it, and not beside openRepoTools ---'
+SHAPE_BIN_AG="$TMPDIR_ROOT/shape-bin-ag"
+TOOLS_BIN_AG="$TMPDIR_ROOT/tools-bin-ag"
+HOME_AG="$TMPDIR_ROOT/home-ag"
+mkdir -p "$SHAPE_BIN_AG" "$TOOLS_BIN_AG" "$HOME_AG"
+STATUS_AG=0
+OUTPUT_AG="$(env -u OPENREPOSHAPE_RECORD_REF HOME="$HOME_AG" \
+    CLAUDE_PROFILES_HOME="$HOME_AG/.claude-profiles" CLAUDE_USER_DIR="$HOME_AG/.claude" \
+    OPENREPOSHAPE_BIN_DIR="$SHAPE_BIN_AG" OPENREPOTOOLS_BIN_DIR="$TOOLS_BIN_AG" \
+    PATH="$TRAP_159:$PATH" "$SCRIPT_UNDER_TEST" 2>&1)" || STATUS_AG=$?
+assert_equal '0' "$STATUS_AG" 'separate bin directories for the two commands: exit code'
+assert_equal "$(record_text "$SHAPE_BIN_AG/openRepoShape.ref")" "$SHAPE_COMMIT" 'the record is beside openRepoShape'
+assert_contains "$OUTPUT_AG" "recorded in $SHAPE_BIN_AG/openRepoShape.ref" 'the launcher says where it recorded the pin'
+assert_absent "$TOOLS_BIN_AG/openRepoShape.ref" 'no record is placed beside the openRepoTools files'
+assert_absent "$TOOLS_BIN_AG/openRepoShape" 'openRepoShape itself is not placed in the openRepoTools bin directory either'
+
+printf '%s\n' '--- Scenario (ah) [#159, RV161 m3 and m10]: the install call carries both variables inline, and the repo on it is still the sentinel ---'
+# Two properties no run can show, because the mutations that break them change
+# nothing a run can see today, so, as scenario (m) does for the four exports, the
+# source is read for them:
+#   - m3: the two variables EXPORTED instead of prefixed to the one call. They
+#     would then reach the openRepoTools install too, and any later call the
+#     script grows; a prefix is in force for that one command only.
+#   - m10: the real repository named on that call instead of the sentinel. A
+#     fetch reached there would then succeed against the network, not fail by
+#     name, and the record would still read the same.
+# Comment lines are dropped first, so a sentence in a comment can neither satisfy
+# nor break one of them.
+SCRIPT_CODE_159="$(grep -v '^[[:space:]]*#' "$SCRIPT_UNDER_TEST")"
+assert_has_line "$SCRIPT_CODE_159" 'if ! OPENREPOSHAPE_REF="$shape_commit" OPENREPOSHAPE_RECORD_REF=1 "$SHAPE_SHIM" --install; then' 'the openRepoShape install call carries both variables inline: the pin'"'"'s commit as the ref, and the record asked for, nothing else on it (no repo)'
+assert_equal '1' "$(count_occurrences "$SCRIPT_CODE_159" 'OPENREPOSHAPE_RECORD_REF')" 'OPENREPOSHAPE_RECORD_REF appears once in the script'"'"'s code: on that call, never exported'
+assert_not_contains "$SCRIPT_CODE_159" 'export OPENREPOSHAPE_RECORD_REF' 'OPENREPOSHAPE_RECORD_REF is not exported'
+assert_not_contains "$SCRIPT_CODE_159" 'export OPENREPOSHAPE_REF="$shape_commit"' 'the pin'"'"'s commit is not exported as OPENREPOSHAPE_REF'
+assert_equal '2' "$(count_occurrences "$SCRIPT_CODE_159" 'OPENREPOSHAPE_REF=')" 'OPENREPOSHAPE_REF is assigned twice in the code: the exported sentinel, and the one call'
+assert_equal '1' "$(count_occurrences "$SCRIPT_CODE_159" 'OPENREPOSHAPE_REPO=')" 'OPENREPOSHAPE_REPO is assigned once in the code: the exported sentinel, so the call'"'"'s repo is the sentinel'
+assert_has_line "$SCRIPT_CODE_159" 'export OPENREPOSHAPE_REPO="$ESTATE_SENTINEL"' 'and that one assignment is the sentinel'
+
+# #237 integration cases stay in this already-triggered CI suite. All homes,
+# receipt/config roots and repositories are disposable; no GitHub is contacted.
+python3 - "$REPO_ROOT" <<'HOOK_GATE_TESTS'
+#!/usr/bin/env python3
+"""Vendored #237 integration: disposable homes, local git only, no real accounts."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(sys.argv.pop(1)).resolve()
+SESSION = '~/projects/xFactory/lanes-edit.sh session-start || true'
+GUARD = '~/projects/xFactory/lanes-edit.sh guard'
+
+
+class EstateHookGateTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name) / 'home'; self.home.mkdir()
+        self.bin = self.home / '.local/bin'
+        self.env = {key: value for key, value in os.environ.items()
+                    if not key.startswith(('LANES_', 'TMUX', 'CLAUDE_', 'WORKBENCHES_', 'OPENREPOTOOLS_', 'OPENREPOSHAPE_', 'GH_', 'GITHUB_', 'XDG_'))}
+        self.env.update(HOME=str(self.home), PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
+            XDG_DATA_HOME=str(self.home / '.local/share'), XDG_CACHE_HOME=str(self.home / '.cache'),
+            XDG_CONFIG_HOME=str(self.home / '.config'), AGENT_PROTOCOL_ROOT=str(self.home / '.agents'),
+            PROJECTS_ROOT=str(self.home / 'projects'), OPENREPOTOOLS_BIN_DIR=str(self.bin),
+            OPENREPOSHAPE_BIN_DIR=str(self.bin), CLAUDE_USER_DIR=str(self.home / '.claude'),
+            CLAUDE_PROFILES_HOME=str(self.home / '.claude-profiles'))
+        self.settings = self.home / '.claude/settings.json'
+
+    def run_command(self, *argv, **kwargs):
+        result = subprocess.run(argv, env=self.env, cwd=ROOT, capture_output=True, text=True, timeout=40, **kwargs)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def install(self):
+        return self.run_command('bash', str(ROOT / 'scripts/setup-estate-commands.sh'))
+
+    def hooks(self, event):
+        data = json.loads(self.settings.read_text()) if self.settings.exists() else {}
+        return [hook.get('command') for item in data.get('hooks', {}).get(event, []) for hook in item.get('hooks', [])]
+
+    def workspace(self):
+        checkout = self.home / 'example-wip'; checkout.mkdir()
+        self.run_command('git', 'init', '-q', str(checkout))
+        self.run_command('git', '-C', str(checkout), 'remote', 'add', 'origin', 'https://github.com/example/example-wip.git')
+        (checkout / 'lanes').mkdir(); (checkout / 'lanes/LANES.md').write_text('')
+        (checkout / 'handoffs/xFactory').mkdir(parents=True)
+        (self.home / 'projects/xFactory').mkdir(parents=True)
+        (self.home / '.agents').mkdir()
+        (self.home / '.agents/workspace.yaml').write_text('repository: example/example-wip\npath: ' + str(checkout) + '\n')
+
+    def assert_pair(self):
+        self.assertEqual(self.hooks('SessionStart').count(SESSION), 1)
+        self.assertEqual(self.hooks('UserPromptSubmit').count(GUARD), 1)
+        self.assertEqual(self.settings.stat().st_mode & 0o777, 0o600)
+
+    def test_fresh_and_interrupted_install_never_places_missing_prompt_target(self):
+        for _ in range(2):
+            result = self.install()
+            self.assertIn('UserPromptSubmit guard: deferred', result.stdout)
+            self.assertNotIn(GUARD, self.hooks('UserPromptSubmit'))
+            self.assertNotIn(SESSION, self.hooks('SessionStart'))
+        for name in ('openRepoTools', 'lanes-index', 'lane-worktrees'):
+            self.assertTrue(os.access(self.bin / name, os.X_OK))
+
+    def test_migration_removes_only_our_broken_guard_and_preserves_foreign_hooks(self):
+        self.settings.parent.mkdir()
+        self.settings.write_text(json.dumps({'custom': 'preserved', 'hooks': {
+            'SessionStart': [{'hooks': [{'type': 'command', 'command': SESSION}]}],
+            'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': GUARD},
+                                          {'type': 'command', 'command': 'echo personal-hook'}]}]}}))
+        self.settings.chmod(0o644)
+        self.install()
+        self.assertEqual(self.hooks('SessionStart'), [SESSION])
+        self.assertEqual(self.hooks('UserPromptSubmit'), ['echo personal-hook'])
+        self.assertEqual(json.loads(self.settings.read_text())['custom'], 'preserved')
+        self.assertEqual(self.settings.stat().st_mode & 0o777, 0o600)
+
+    def test_wip_init_rerun_heals_interruption_and_keeps_real_guard_refusal(self):
+        self.install(); self.workspace()
+        for _ in range(2):
+            self.run_command(str(self.bin / 'openRepoTools'), 'wip', 'init')
+            self.assert_pair()
+        result = subprocess.run(['bash', str(self.bin / 'lanes-edit.sh'), 'guard'], env=self.env,
+            input=json.dumps({'session_id': 'fixture', 'cwd': str(self.home), 'prompt': 'hello'}),
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    def test_container_start_completes_hooks_after_linking_on_the_first_run(self):
+        self.workspace()
+        self.env['WORKBENCHES_ESTATE_VENDOR_DIR'] = str(ROOT / 'devBenches/base-image/files/openrepotools')
+        self.run_command('bash', str(ROOT / 'devBenches/base-image/files/estate/estate-commands-start'))
+        self.assert_pair()
+        self.assertTrue((self.home / 'projects/xFactory/lanes-edit.sh').is_symlink())
+
+
+if __name__ == '__main__': unittest.main()
+HOOK_GATE_TESTS
 
 if (( failures == 0 )); then
     printf '%s\n' 'GREEN: setup-estate-commands regression test passed'

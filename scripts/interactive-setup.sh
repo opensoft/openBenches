@@ -7,10 +7,13 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/image-names.sh"
 source "$SCRIPT_DIR/lib/setup-prerequisites.sh"
+source "$SCRIPT_DIR/lib/setup-status-loader.sh"
+source "$SCRIPT_DIR/lib/setup-terminal.sh"
 source "$SCRIPT_DIR/../bootstrap.sh"
+setup_version="$(workbenches_version)"
 LOG_DIR="$SCRIPT_DIR/../logs"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/setup-$(date +%Y%m%d-%H%M%S).log"
+LOG_FILE="${WORKBENCHES_SETUP_LOG_FILE:-$LOG_DIR/setup-$(date +%Y%m%d-%H%M%S).log}"
 
 # Logging function
 log() {
@@ -54,6 +57,7 @@ windows_command_exists() {
 
 # Log script start
 log "=== Setup script started ==="
+log "Version: $setup_version"
 log "User: $USER"
 log "PWD: $PWD"
 log "Shell: $SHELL"
@@ -65,12 +69,102 @@ fi
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+LOADING_COLOR='\033[38;5;220m\033[5m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 DIM='\033[2m'
+
+# Neutral chrome leaves the component columns' existing colors untouched.
+SILVER='\033[38;5;252m'
+SILVER_MUTED='\033[38;5;245m'
+SILVER_EDGE='\033[38;5;239m'
+SILVER_FOCUS='\033[48;5;235m\033[38;5;255m'
+setup_ui_width=87
+setup_ui_painted=false
+setup_ui_frame_columns=0
+declare -a setup_ui_previous_lines=()
+
+setup_ui_rule() {
+    local rule
+    printf -v rule '%*s' "$1" ''
+    printf '%s' "${rule// /─}"
+}
+
+setup_ui_pair() {
+    local left="$1" right="$2" width="$3" gap
+    right="${right:0:$((width - 1))}"
+    left="${left:0:$((width - ${#right} - 1))}"
+    gap=$((width - ${#left} - ${#right}))
+    printf '%s%*s%s' "$left" "$gap" '' "$right"
+}
+
+setup_requirement_counts() {
+    requirements_ready=0
+    requirements_total=0
+    local key
+    for key in "${requirement_items[@]}"; do
+        case "$key" in vault|workbenches_account|ai_accounts) continue ;; esac
+        requirements_total=$((requirements_total + 1))
+        [[ "${component_status[$key]}" != up ]] || requirements_ready=$((requirements_ready + 1))
+    done
+}
+
+setup_panel_top() {
+    local label="$1" right="${2:-}" line
+    line="$(setup_ui_pair "$label" "$right" "$((setup_ui_width - 6))")"
+    printf '%b╭─ %b%s%b ─╮%b\n' "$SILVER_EDGE" "$SILVER" "$line" "$SILVER_EDGE" "$NC"
+}
+
+setup_panel_bottom() {
+    printf '%b╰%s╯%b\n' "$SILVER_EDGE" "$(setup_ui_rule "$((setup_ui_width - 2))")" "$NC"
+}
+
+draw_requirements_summary() {
+    setup_requirement_counts
+    local title="REQUIREMENTS · $requirements_ready/$requirements_total ready"
+    [[ "$status_checks_running" != true ]] || title="REQUIREMENTS · Loading…"
+    setup_panel_top "$title" 'P Manage'
+    local key label action color plain='' styled='' separator='' width=$((setup_ui_width - 4))
+    for key in "${requirement_items[@]}"; do
+        case "$key" in workbenches_account|ai_accounts) continue ;; esac
+        label="${component_description[$key]} $(setup_status_label "${component_status[$key]}")"
+        if [[ "$key" == vault && "${component_status[$key]}" != loading ]]; then
+            action="$(workbenches_requirement_action vault "${component_status[vault]}" "${component_status[workbenches_account]}")"
+            if [[ "$action" == Loading ]]; then label+=" · Loading…"; else label+=" [V $action]"; fi
+        fi
+        color="$GREEN"
+        [[ "${component_status[$key]}" == up ]] || color="$YELLOW"
+        [[ "${component_status[$key]}" != loading ]] || color="$LOADING_COLOR"
+        # Wrap between services, preserving Vault's action even in narrow terminals.
+        separator=''
+        [[ -z "$plain" ]] || separator='   '
+        if (( ${#plain} + ${#separator} + ${#label} > width )); then
+            printf '%b│%b %b%*s %b│%b\n' "$SILVER_EDGE" "$NC" "$styled" "$((width - ${#plain}))" '' "$SILVER_EDGE" "$NC"
+            plain=''; styled=''; separator=''
+        fi
+        plain+="$separator$label"
+        styled+="$separator${color}${label}${NC}"
+    done
+    printf '%b│%b %b%*s %b│%b\n' "$SILVER_EDGE" "$NC" "$styled" "$((width - ${#plain}))" '' "$SILVER_EDGE" "$NC"
+    setup_panel_bottom
+    [[ -z "$requirements_notice" ]] || printf '\n%b%s%b\n' "$YELLOW" "${requirements_notice:0:$setup_ui_width}" "$NC"
+}
+
+setup_status_label() {
+    case "$1" in
+        loading) printf 'Loading…' ;;
+        up) printf 'Up' ;;
+        down) printf 'Down' ;;
+        installed|ready) printf 'Ready' ;;
+        configured) printf 'Configured' ;;
+        missing) printf 'Missing' ;;
+        optional|'not configured') printf 'Not configured' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
 
 # Spinner for long operations
 show_spinner() {
@@ -80,10 +174,13 @@ show_spinner() {
     local spinner="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     local i=0
     local elapsed=0
+    if [[ "${4:-}" == build ]]; then
+        printf "  Build log: %s\n  Follow live: tail -f %q\n" "$LOG_FILE" "$LOG_FILE"
+    fi
 
     while kill -0 $pid 2>/dev/null; do
         i=$(( (i+1) % 10 ))
-        printf "\r  ${YELLOW}${spinner:$i:1}${NC} ${message}"
+        printf "\r  ${YELLOW}${spinner:$i:1}${NC} ${message} ($((elapsed / 10))s elapsed)"
         sleep 0.1
         elapsed=$((elapsed + 1))
 
@@ -117,17 +214,28 @@ declare -A component_checked
 declare -A component_status
 declare -A component_description
 declare -A component_action  # Empty means keep; otherwise install/update/uninstall.
+declare -A bench_runtime_status
 declare -a component_order
 
 # Current selection
 current_selection=0
 current_block=0
 
-# Three main sections: 0=Benches, 1=AI Assistants, 2=Tools
-CURRENT_SECTION=0  # 0=Benches, 1=AI Assistants, 2=Tools
+# Sections: 0=Benches, 1=AI Assistants, 2=Tools, 3=Requirements, 4=Profiles
+CURRENT_SECTION=0  # Requirements has a separate page for narrow terminals.
+requirements_notice=""
+requirements_return_section=0
+requirements_return_selection=0
+profiles_return_section=0
+profiles_return_selection=0
+profiles_summary='Personal identity, GitHub, and company accounts'
+profile_items=(personal_profiles workbenches_account ai_accounts)
 declare -a bench_items
 declare -a ai_items
 declare -a tool_items
+declare -a requirement_items
+declare -A requirement_detail
+setup_os_label=""
 declare -A bench_status
 declare -A ai_status
 declare -A tool_status
@@ -140,7 +248,7 @@ init_components() {
     local config_file="$script_dir/../config/bench-config.json"
     log "Config file: $config_file"
 
-    if [ -f "$config_file" ]; then
+    if [[ "${1:-}" != --loading && -f "$config_file" ]]; then
         # Get bench names from config
         while IFS= read -r bench_name; do
             bench_items+=("$bench_name")
@@ -150,7 +258,11 @@ init_components() {
     fi
 
     # If no benches found, add some defaults
-    if [ ${#bench_items[@]} -eq 0 ]; then
+    if [[ "${1:-}" == --loading ]]; then
+        bench_items=(loading)
+        component_checked[bench_loading]=false
+        component_description[bench_loading]="Loading benches"
+    elif [ ${#bench_items[@]} -eq 0 ]; then
         bench_items=("flutterBench" "javaBench" "dotNetBench" "pyBench")
         for bench in "${bench_items[@]}"; do
             component_checked["bench_$bench"]=false
@@ -203,11 +315,13 @@ init_components() {
         "wave"
         "amnezia_vpn"
         "0dcloud_vpn"
+        "host_shell"
+        "workspace_repo"
     )
 
     # Initialize tool items
     component_checked["vscode"]=false
-    component_description["vscode"]="Visual Studio Code"
+    component_description["vscode"]="VS Code"
 
     component_checked["warp"]=false
     component_description["warp"]="Warp Terminal"
@@ -220,6 +334,204 @@ init_components() {
 
     component_checked["0dcloud_vpn"]=false
     component_description["0dcloud_vpn"]="0dcloud VPN"
+    for item in host_shell workspace_repo ai_accounts; do
+        component_checked[$item]=false
+    done
+    component_description[host_shell]="Shell setup"
+    component_description[workspace_repo]="Org workspace"
+    component_description[ai_accounts]="AI accounts"
+    component_description[workbenches_account]="workBenches account"
+    component_checked[workbenches_account]=false
+    component_description[docker]=Docker
+    component_description[setup_tools]=Tools
+    component_description[vault]=Vault
+    component_description[wsl]="WSL 2"
+    component_description[personal_profiles]='Personal & companies'
+    component_description[workbenches_account]='Workstation account'
+    component_status[personal_profiles]=optional
+    requirement_items=(docker setup_tools vault)
+    if is_wsl_windows; then requirement_items=(wsl "${requirement_items[@]}"); fi
+}
+
+load_requirements() {
+    local key label state detail
+    setup_os_label="$(workbenches_setup_os)"
+    while IFS=$'\t' read -r key label state detail; do
+        component_description[$key]="$label"
+        component_status[$key]="$state"
+        requirement_detail[$key]="$detail"
+        component_checked[$key]=false
+    done < <(workbenches_requirement_rows)
+    component_status[workbenches_account]="$(python3 "$SCRIPT_DIR/setup-workbenches-account.py" --status)"
+    requirement_detail[workbenches_account]='Organization sign-in. AI and vault access are managed separately.'
+    component_status[ai_accounts]="$(check_component_status ai_accounts)"
+    requirement_detail[ai_accounts]='Sign in, restore assistant profiles, or recover credentials from a vault.'
+}
+
+draw_requirements() {
+    setup_requirement_counts
+    printf '%bREQUIREMENTS%b\n\n' "$SILVER" "$NC"
+    setup_panel_top 'REQUIRED SOFTWARE' "$requirements_ready/$requirements_total ready"
+    local item
+    for item in "${requirement_items[@]}"; do
+        case "$item" in vault|workbenches_account|ai_accounts) continue ;; esac
+        draw_requirement_item "$item" required
+    done
+    setup_panel_bottom
+    printf '\n'
+    setup_panel_top 'OPTIONAL VAULT' 'G Profiles'
+    for item in vault; do
+        draw_requirement_item "$item" optional
+    done
+    setup_panel_bottom
+    [[ -z "$requirements_notice" ]] || printf '\n%b%s%b\n' "$YELLOW" "${requirements_notice:0:$setup_ui_width}" "$NC"
+}
+
+# Cached profile summary only: rendering never reads files or probes accounts.
+draw_profiles() {
+    local line item width=$((setup_ui_width - 4))
+    printf '%bPROFILES%b\n\n' "$SILVER" "$NC"
+    setup_panel_top 'PERSONAL & COMPANY IDENTITIES' 'Now or later'
+    while IFS= read -r line; do
+        while [[ -n "$line" ]]; do
+            printf '%b│%b %-*s %b│%b\n' "$SILVER_EDGE" "$NC" "$width" "${line:0:$width}" "$SILVER_EDGE" "$NC"
+            line="${line:$width}"
+        done
+    done <<< "$profiles_summary"
+    setup_panel_bottom
+    printf '\n'
+    for item in "${!profile_items[@]}"; do
+        line="${component_description[${profile_items[$item]}]}"
+        [[ "$item" != "$current_selection" ]] || line="› $line"
+        printf '  %s\n' "$line"
+    done
+    printf '\nCompany, GitHub, and AI access\nare authorized separately.\n'
+    [[ -z "$requirements_notice" ]] || printf '%s\n' "${requirements_notice:0:$setup_ui_width}"
+}
+
+activate_profile() {
+    local item="${profile_items[$current_selection]}" result=0
+    if ! setup_required_ready; then
+        requirements_notice='Resolve Requirements before opening profile actions.'
+        return 0
+    fi
+    stop_status_loader
+    printf '%b\033[%d;1H' "$SHOW_CURSOR" "$(( ${#setup_ui_previous_lines[@]} + 1 ))"
+    setup_ui_painted=false
+    trap ':' INT
+    case "$item" in
+        personal_profiles) python3 "$SCRIPT_DIR/setup-profiles.py" || result=$? ;;
+        workbenches_account) python3 "$SCRIPT_DIR/setup-workbenches-account.py" || result=$? ;;
+        ai_accounts) configure_selected_accounts || result=$? ;;
+    esac
+    trap 'echo -e "${SHOW_CURSOR}"; exit 130' INT
+    case "$result" in
+        0) requirements_notice='Profile action completed.' ;;
+        130) requirements_notice='Profile action cancelled; saved profiles kept.' ;;
+        143) exit 143 ;;
+        *) requirements_notice='Profile action needs attention. Open it to retry.' ;;
+    esac
+    profiles_summary="$(python3 "$SCRIPT_DIR/setup-profiles.py" --summary 2>/dev/null)" || profiles_summary='Profile metadata needs attention.'
+    refresh_component_statuses
+}
+
+# Service buttons act immediately; installation selections remain untouched.
+activate_requirement() {
+    local key=$1 action result=0
+    if [[ "${component_status[$key]}" == loading || ( "$key" == vault && "${component_status[workbenches_account]}" == loading ) ]]; then
+        requirements_notice='Checks are still loading. Q quits.'
+        draw_ui
+        return 0
+    fi
+    stop_status_loader
+    action="$(workbenches_requirement_action "$key" "${component_status[$key]}" "${component_status[workbenches_account]}")"
+    requirements_notice=''
+    # Interactive helpers can write anywhere on screen. Repaint once on return.
+    if [[ "$action" != Check ]]; then
+        # A partial update leaves the cursor on whichever row changed last.
+        # Put prompts below the TUI before handing the terminal to a helper.
+        printf '%b\033[%d;1H' "$SHOW_CURSOR" "$(( ${#setup_ui_previous_lines[@]} + 1 ))"
+        setup_ui_painted=false
+    fi
+    case "$action" in
+        Connect|'Sign out')
+            # Canceling the browser approval returns to the TUI, rather than
+            # canceling an unrelated component installation plan.
+            trap ':' INT
+            if [[ "$action" == Connect ]]; then
+                python3 "$SCRIPT_DIR/setup-workbenches-account.py" || result=$?
+            else
+                python3 "$SCRIPT_DIR/setup-workbenches-account.py" --logout || result=$?
+            fi
+            trap 'echo -e "${SHOW_CURSOR}"; exit 130' INT
+            case "$result" in
+                0) component_checked[workbenches_account]=false; component_action[workbenches_account]='' ;;
+                130) requirements_notice='Connection cancelled.' ;;
+                143) exit 143 ;;
+                *) requirements_notice='Connection needs attention. Select Connect to retry.' ;;
+            esac ;;
+        Check) ;;
+        *)
+            if [[ "$key" == docker ]]; then
+                ensure_docker "--${action,,}" && ensure_workstation_requirements || result=$?
+            elif [[ "$key" == vault ]]; then
+                ensure_workstation_requirements && workbenches_vault_start || result=$?
+            else
+                ensure_workstation_requirements || result=$?
+            fi
+            setup_propagate_cancel "$result"
+            [[ "$result" == 0 ]] || requirements_notice="$action failed. Check Docker access and try again." ;;
+    esac
+    refresh_component_statuses
+    draw_ui
+    return 0
+}
+
+draw_requirement_item() {
+    local item="$1" kind="$2" marker=' ' icon='✓' color="$GREEN" surface="$SILVER"
+    local status detail line action width=$((setup_ui_width - 4))
+    status="$(setup_status_label "${component_status[$item]}")"
+    if [[ "$kind" == optional && "$item" != vault ]]; then
+        icon='[ ]'; color="$SILVER_MUTED"
+        case "${component_status[$item]}" in
+            configured|installed) status='Connected'; color="$GREEN" ;;
+            'signed in') status='Signed in'; color="$GREEN" ;;
+            *) status='Not connected' ;;
+        esac
+        if [[ "${component_checked[$item]}" == true ]]; then
+            icon='[✓]'; status='Selected'; color="$GREEN"
+        fi
+    elif [[ "${component_status[$item]}" == loading ]]; then
+        icon='…'; color="$LOADING_COLOR"
+    elif [[ "${component_status[$item]}" != up ]]; then
+        icon='!'; color="$YELLOW"
+    fi
+    case "$item" in
+        docker|wsl|setup_tools|vault)
+            action="$(workbenches_requirement_action "$item" "${component_status[$item]}" "${component_status[workbenches_account]}")"
+            if [[ "$item" == vault && "${component_status[$item]}" == up ]]; then
+                if [[ "${component_status[workbenches_account]}" == 'signed in' ]]; then status+=' · Signed in'; else status+=' · Signed out'; fi
+            fi
+            [[ "${component_status[$item]}" == loading ]] || status+="  [$action]" ;;
+    esac
+    if [[ "$item" == "${requirement_items[$current_selection]}" ]]; then
+        marker='›'; surface="$SILVER_FOCUS"
+    fi
+    line="$(setup_ui_pair "${component_description[$item]}" "$status" "$((width - ${#icon} - 3))")"
+    printf '%b│%b %b%s %b%s%b %s %b%b│%b\n' "$SILVER_EDGE" "$NC" "$surface" "$marker" "$color" "$icon" "$surface" "$line" "$NC" "$SILVER_EDGE" "$NC"
+    detail="${requirement_detail[$item]}"
+    # Only the focused row needs its explanation; avoid repeated paragraphs.
+    if [[ "$marker" == '›' ]]; then
+        while [[ -n "$detail" ]]; do
+            line="${detail:0:$((width - 4))}"
+            if (( ${#detail} > width - 4 )) && [[ "$line" == *' '* ]]; then
+                line="${line% *}"
+            fi
+            detail="${detail:${#line}}"
+            detail="${detail# }"
+            printf '%b│%b     %b%-*s %b│%b\n' "$SILVER_EDGE" "$NC" "$SILVER_MUTED" "$((width - 4))" "$line" "$SILVER_EDGE" "$NC"
+        done
+    fi
 }
 
 # Compare GitHub repository identities across HTTPS and SSH clone URLs.
@@ -240,14 +552,30 @@ normalize_bench_remote() {
     esac
 }
 
+component_binary_present() {
+    [[ "$(python3 "$SCRIPT_DIR/setup-components.py" tool-status "$1")" == installed ]]
+}
+
 # Check current installation status
 check_component_status() {
     local component="$1"
     log "Checking status: $component"
+    if [[ -n "${host_tool_status[$component]:-}" ]] && { ! is_wsl_windows || [[ ! "$component" =~ ^(vscode|warp|wave|amnezia_vpn|0dcloud_vpn)$ ]]; }; then
+        printf '%s\n' "${host_tool_status[$component]}"; return
+    fi
 
     case "$component" in
+        host_shell)
+            if [[ -f "$HOME/.zshrc" ]] && cmp -s "$HOME/.zshrc" "$SCRIPT_DIR/../config/shell/zshrc"; then echo configured; else echo optional; fi
+            ;;
+        workspace_repo)
+            [[ -f "${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml" ]] && echo configured || echo optional
+            ;;
+        ai_accounts)
+            if compgen -G "${XDG_CONFIG_HOME:-$HOME/.config}/workbenches/*-profiles.json" >/dev/null; then echo configured; else echo optional; fi
+            ;;
         claude_cli)
-            if command -v claude &> /dev/null; then
+            if component_binary_present claude_cli; then
                 # Check if credentials exist
                 if python3 "$SCRIPT_DIR/profile_credentials.py" status claude; then
                     echo "installed"
@@ -259,14 +587,14 @@ check_component_status() {
             fi
             ;;
         copilot_cli)
-            if command -v copilot &> /dev/null; then
+            if component_binary_present copilot_cli; then
                 echo "installed"
             else
                 echo "not installed"
             fi
             ;;
         codex_cli)
-            if command -v codex &> /dev/null; then
+            if component_binary_present codex_cli; then
                 # Check if authenticated (auth.json or API key)
                 if python3 "$SCRIPT_DIR/profile_credentials.py" status codex; then
                     echo "installed"
@@ -278,14 +606,14 @@ check_component_status() {
             fi
             ;;
         antigravity_cli)
-            if command -v agy &> /dev/null; then
+            if component_binary_present antigravity_cli; then
                 echo "installed"
             else
                 echo "not installed"
             fi
             ;;
         opencode_cli)
-            if command -v opencode &> /dev/null; then
+            if component_binary_present opencode_cli; then
                 if python3 "$SCRIPT_DIR/profile_credentials.py" status omniroute; then
                     echo "installed"
                 else
@@ -296,7 +624,7 @@ check_component_status() {
             fi
             ;;
         pi_cli)
-            if command -v pi &>/dev/null || [[ -x "$HOME/.npm-global/bin/pi" ]]; then
+            if component_binary_present pi_cli; then
                 if python3 "$SCRIPT_DIR/profile_credentials.py" status pi; then
                     echo "installed"
                 else
@@ -307,17 +635,16 @@ check_component_status() {
             fi
             ;;
         spec_kit)
-            command -v specify &> /dev/null && echo "installed" || echo "not installed"
+            python3 "$SCRIPT_DIR/setup-components.py" tool-status spec_kit
             ;;
         openspec)
-            command -v openspec &> /dev/null && echo "installed" || echo "not installed"
+            python3 "$SCRIPT_DIR/setup-components.py" tool-status openspec
             ;;
         vscode)
             # Check for VS Code - on WSL, check for Windows version
             if is_wsl_windows; then
                 # WSL: Check for Windows VS Code and WSL extension
-                if command -v code &> /dev/null ||
-                   windows_file_exists "C:\\Program Files\\Microsoft VS Code\\Code.exe" ||
+                if windows_file_exists "C:\\Program Files\\Microsoft VS Code\\Code.exe" ||
                    windows_env_file_exists "LOCALAPPDATA" "Programs\\Microsoft VS Code\\Code.exe"; then
                     # VS Code is installed, check for WSL extension by checking vscode-server directory
                     if [ -d "$HOME/.vscode-server" ]; then
@@ -338,7 +665,7 @@ check_component_status() {
                 fi
             else
                 # Native Linux: Check for Linux VS Code
-                command -v code &> /dev/null && echo "installed" || echo "not installed"
+                python3 "$SCRIPT_DIR/setup-components.py" tool-status vscode
             fi
             ;;
         warp)
@@ -353,11 +680,7 @@ check_component_status() {
                 fi
             else
                 # Native Linux: Check for Linux Warp
-                if command -v warp-terminal &> /dev/null || [ -d "$HOME/.warp" ] || [ -d "/usr/share/warp-terminal" ]; then
-                    echo "installed"
-                else
-                    echo "not installed"
-                fi
+                python3 "$SCRIPT_DIR/setup-components.py" tool-status warp
             fi
             ;;
         wave)
@@ -373,11 +696,7 @@ check_component_status() {
                 fi
             else
                 # Native Linux: Check for Linux Wave
-                if command -v wave &> /dev/null || [ -d "$HOME/.waveterm" ]; then
-                    echo "installed"
-                else
-                    echo "not installed"
-                fi
+                python3 "$SCRIPT_DIR/setup-components.py" tool-status wave
             fi
             ;;
         amnezia_vpn)
@@ -389,7 +708,7 @@ check_component_status() {
                     echo "not installed"
                 fi
             else
-                echo "not installed"
+                python3 "$SCRIPT_DIR/setup-components.py" tool-status amnezia_vpn
             fi
             ;;
         0dcloud_vpn)
@@ -400,7 +719,7 @@ check_component_status() {
                     echo "not installed"
                 fi
             else
-                echo "not installed"
+                python3 "$SCRIPT_DIR/setup-components.py" tool-status 0dcloud_vpn
             fi
             ;;
         bench_*)
@@ -410,8 +729,8 @@ check_component_status() {
             local config_file="$script_dir/../config/bench-config.json"
 
             # Get the path and URL from config
-            local bench_path=$(jq -r ".benches.${bench_name}.path // \"\"" "$config_file" 2>/dev/null)
-            local bench_url=$(jq -r ".benches.${bench_name}.url // \"\"" "$config_file" 2>/dev/null)
+            local bench_path=$(jq -r --arg name "$bench_name" '.benches[$name].path // ""' "$config_file" 2>/dev/null)
+            local bench_url=$(jq -r --arg name "$bench_name" '.benches[$name].url // ""' "$config_file" 2>/dev/null)
 
             if [ -z "$bench_path" ] || [ "$bench_path" = "null" ]; then
                 # Fallback: check root directory
@@ -436,22 +755,24 @@ check_component_status() {
                                [ -f "$full_path/setup.sh" ] || \
                                [ -f "$full_path/build-layer.sh" ] || \
                                [ -f "$full_path/scripts/build-layer.sh" ]; then
-                                echo "installed"
+                                bench_installation_status "$bench_name"
                             else
-                                echo "needs creds"  # Repo cloned but no bench infrastructure
+                                echo "needs setup"
                             fi
                         else
-                            echo "not installed"  # Wrong remote
+                            echo "needs check"  # Different checkout: never execute its setup script.
                         fi
                     else
                         # No URL configured, just check if it's a git repo
-                        echo "installed"
+                        bench_installation_status "$bench_name"
                     fi
                 else
                     echo "not installed"  # Directory exists but not a git repo
                 fi
             else
-                echo "not installed"
+                # Installed artifacts can remain after a checkout was removed.
+                local runtime="$(bench_installation_status "$bench_name")"
+                if [[ "$runtime" == 'needs setup' ]]; then echo 'not installed'; else echo "$runtime"; fi
             fi
             ;;
         *)
@@ -460,8 +781,59 @@ check_component_status() {
     esac
 }
 
+# A checkout is source availability; installed bench images/containers are runtime.
+refresh_bench_inventory() {
+    local bench state
+    bench_runtime_status=()
+    while IFS=$'\t' read -r bench state; do
+        [[ -n "$bench" ]] && bench_runtime_status[$bench]="$state"
+    done < <(python3 "$SCRIPT_DIR/setup-components.py" bench-statuses)
+}
+
+bench_installation_status() {
+    local bench="$1"
+    [[ -n "${bench_runtime_status[$bench]:-}" ]] || refresh_bench_inventory
+    echo "${bench_runtime_status[$bench]:-needs check}"
+}
+
+refresh_component_statuses() {
+    if [[ "$status_async_ui" == true ]]; then start_status_loader; return; fi
+    refresh_host_tool_inventory
+    local item
+    refresh_bench_inventory
+    for item in "${!component_description[@]}"; do
+        case "$item" in docker|wsl|setup_tools|workbenches_account) continue ;; esac
+        component_status[$item]="$(check_component_status "$item")"
+    done
+    load_requirements
+    host_tool_status=()
+}
+
+uninstall_component() {
+    local item="$1" removal_status=0
+    if is_wsl_windows && [[ "$item" =~ ^(vscode|warp|wave|amnezia_vpn|0dcloud_vpn)$ ]]; then
+        local target="$item"
+        [[ "$item" != amnezia_vpn ]] || target=amnezia
+        [[ "$item" != 0dcloud_vpn ]] || target=0dcloud
+        "$SCRIPT_DIR/setup-windows-tools.sh" --uninstall "$target" || removal_status=$?
+    else
+        python3 "$SCRIPT_DIR/setup-components.py" uninstall "$item" || removal_status=$?
+    fi
+    setup_propagate_cancel "$removal_status"
+    hash -r
+    if [[ "$item" == bench_* ]]; then refresh_bench_inventory; fi
+    component_status[$item]="$(check_component_status "$item")"
+    if [[ "$removal_status" -eq 0 && ( "${component_status[$item]}" == installed || "${component_status[$item]}" == 'needs creds' ) ]]; then
+        echo "Removal needs attention: $item is still installed."
+        return 1
+    fi
+    return "$removal_status"
+}
+
 # Load all component statuses
 load_statuses() {
+    refresh_host_tool_inventory
+    refresh_bench_inventory
     # Load statuses for benches
     for bench in "${bench_items[@]}"; do
         local key="bench_$bench"
@@ -492,6 +864,8 @@ load_statuses() {
         component_checked["$item"]=false
         component_action["$item"]=""
     done
+    load_requirements
+    host_tool_status=()
 }
 
 # Draw a single component line
@@ -512,10 +886,13 @@ draw_component() {
     # Determine status color
     local status_color="$RED"
     local status_symbol="✗"
-    if [[ "$status" == "installed" || "$status" == "configured" ]]; then
+    if [[ "$status" == loading ]]; then
+        status_color="$LOADING_COLOR"
+        status_symbol="…"
+    elif [[ "$status" == "installed" || "$status" == "configured" ]]; then
         status_color="$GREEN"
         status_symbol="✓"
-    elif [[ "$status" == "needs creds" ]]; then
+    elif [[ "$status" == "needs creds" || "$status" == "needs setup" || "$status" == "needs check" || "$status" == "needs docker" || "$status" == 'image only' ]]; then
         status_color="$YELLOW"
         status_symbol="⚠"
     fi
@@ -559,6 +936,9 @@ get_checked_state() {
         [[ "$item" != separator* ]] && state+="${component_checked[$item]}:${component_action[$item]},"
     done
     for item in "${tool_items[@]}"; do
+        state+="${component_checked[$item]}:${component_action[$item]},"
+    done
+    for item in vault workbenches_account ai_accounts; do
         state+="${component_checked[$item]}:${component_action[$item]},"
     done
     echo "$state"
@@ -695,52 +1075,105 @@ draw_row() {
     echo -e "${left_content}      ${middle_content}      ${right_content}"
 }
 
-# Draw the entire UI (full redraw)
+# Build a complete frame off-screen; discovery never runs in the renderer.
+render_setup_frame() {
+    local os_label
+    draw_setup_banner "$setup_ui_width"
+    os_label="${setup_os_label:0:$((setup_ui_width - 20))}"
+    printf '%b%s%b\n' "$SILVER" "$(setup_ui_pair "workBenches v$setup_version" "$os_label" "$setup_ui_width")" "$NC"
+    printf '%b%s%b\n\n' "$SILVER_EDGE" "$(setup_ui_rule "$setup_ui_width")" "$NC"
+
+    if [[ "$CURRENT_SECTION" == 3 ]]; then
+        draw_requirements
+    elif [[ "$CURRENT_SECTION" == 4 ]]; then
+        draw_profiles
+    else
+        draw_requirements_summary
+        printf '\n'
+        draw_three_sections
+    fi
+    draw_setup_footer
+}
+
+# Commit only changed lines in one write, without blanking the screen first.
 draw_ui() {
-    tput clear
-    tput cup 0 0
-    echo -e "${HIDE_CURSOR}"
+    local columns frame output='' cursor index count
+    local -a lines=()
+    columns="$(tput cols 2>/dev/null)"
+    [[ "$columns" =~ ^[0-9]+$ ]] || columns=88
+    setup_ui_width=$((columns - 1))
+    (( setup_ui_width <= 87 )) || setup_ui_width=87
+    (( setup_ui_width >= 36 )) || setup_ui_width=36
+    frame="$(render_setup_frame)"
+    mapfile -t lines <<< "$frame"
 
-    # Opensoft Banner
-    echo -e "${BOLD}${CYAN}"
-    echo "   ___                            __ _   "
-    echo "  / _ \\ _ __    ___  _ __   ___ / _| |_ "
-    echo " | | | | '_ \\  / _ \\| '_ \\ / __| |_| __|"
-    echo " | |_| | |_) ||  __/| | | |\\__ \\  _| |_ "
-    echo "  \\___/| .__/  \\___||_| |_||___/_|  \\__|"
-    echo "       |_|                               "
-    echo -e "${NC}"
-
-    # Header
-    echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${BLUE}║               WorkBenches Configuration Manager                    ║${NC}"
-    echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${CYAN}Navigation:${NC} ↑/↓ Move  ←/→ Section  Space Install/Update (again: undo)  D Remove/Undo  Enter Review  Q Quit"
-    echo ""
-
-    # Draw three sections side by side
-    draw_three_sections
-
-    echo ""
-
-    # Status legend
-    echo -e "${GREEN}✓${NC} Installed  ${DIM}│${NC}  ${YELLOW}⚠${NC} Needs setup ${DIM}(repo cloned but bench commands not configured — run setup)${NC}  ${DIM}│${NC}  ${RED}✗${NC} Not installed"
-    echo ""
-
-    # Show selected count
-    local selected_count=0
-    for bench in "${bench_items[@]}"; do
-        [ "${component_checked[bench_$bench]}" = true ] && ((selected_count++))
+    if [[ "$setup_ui_painted" != true || "$setup_ui_frame_columns" != "$columns" ]]; then
+        output=$'\033[?25l\033[0m\033[2J'
+        setup_ui_previous_lines=()
+    fi
+    count=${#lines[@]}
+    (( count >= ${#setup_ui_previous_lines[@]} )) || count=${#setup_ui_previous_lines[@]}
+    for ((index=0; index<count; index++)); do
+        if [[ "${lines[$index]:-}" != "${setup_ui_previous_lines[$index]:-}" ]]; then
+            printf -v cursor '\033[%d;1H' "$((index + 1))"
+            # Erase after writing, so shortening a row removes stale text
+            # without first flashing a blank line. Removed rows are erased too.
+            output+="${cursor}"$'\033[0m'"${lines[$index]:-}"$'\033[0m\033[K'
+        fi
     done
-    for item in "${ai_items[@]}"; do
-        [[ "$item" != separator* ]] && [ "${component_checked[$item]}" = true ] && ((selected_count++))
-    done
-    for item in "${tool_items[@]}"; do
-        [ "${component_checked[$item]}" = true ] && ((selected_count++))
-    done
+    [[ -z "$output" ]] || printf '%s' "$output"
+    setup_ui_previous_lines=("${lines[@]}")
+    setup_ui_frame_columns=$columns
+    setup_ui_painted=true
+}
 
-    echo -e "${MAGENTA}Changes selected: $selected_count${NC}"
+# Keep action hints together and show detail only for the focused component.
+draw_setup_footer() {
+    if [[ "$CURRENT_SECTION" == 4 ]]; then
+        printf '\n↑↓ Move  Enter/Space Open\n'
+        printf '← Requirements  G Back  Q Quit\n'
+        return
+    fi
+    local selected_item='' selected_count=0 item bench context action space_hint='Select'
+    case "$CURRENT_SECTION" in
+        0) selected_item="bench_${bench_items[$current_selection]}" ;;
+        1) selected_item="${ai_items[$current_selection]}" ;;
+        2) selected_item="${tool_items[$current_selection]}" ;;
+        3) selected_item="${requirement_items[$current_selection]}" ;;
+    esac
+    for item in "${!component_checked[@]}"; do
+        [[ "${component_checked[$item]}" != true ]] || selected_count=$((selected_count + 1))
+    done
+    context="${component_description[$selected_item]} · $(setup_status_label "${component_status[$selected_item]}")"
+    action="${component_action[$selected_item]}"
+    if [[ -n "$action" ]]; then
+        case "$action" in
+            uninstall) context="${component_description[$selected_item]} · Remove; projects and credentials kept" ;;
+            *) context+=" → $action" ;;
+        esac
+    fi
+    case "$selected_item" in
+        host_shell) context='Shell setup · Replaces shell settings' ;;
+        workspace_repo) context='Org workspace · May create a GitHub repository' ;;
+    esac
+    printf '\n%b%s%b\n' "$SILVER_EDGE" "$(setup_ui_rule "$setup_ui_width")" "$NC"
+    printf '%b%s%b\n' "$SILVER" "$(setup_ui_pair "$context" "Changes selected: $selected_count" "$setup_ui_width")" "$NC"
+    if [[ "$CURRENT_SECTION" == 3 ]]; then
+        case "$selected_item" in
+            docker|wsl|setup_tools|vault)
+                space_hint="$(workbenches_requirement_action "$selected_item" "${component_status[$selected_item]}" "${component_status[workbenches_account]}")" ;;
+            *) [[ "${component_checked[$selected_item]}" != true ]] || space_hint='Undo' ;;
+        esac
+        printf '%bNavigation:%b ↑↓ Move  Space %s  ← Tools  G Profiles  P Back\n' "$SILVER_MUTED" "$NC" "$space_hint"
+    else
+        printf '%bNavigation:%b ↑↓ Move  ←→ Section  Space Select  D Remove\n' "$SILVER_MUTED" "$NC"
+        printf '%b            P Requirements  G Profiles%b\n' "$SILVER_MUTED" "$NC"
+    fi
+    if [[ "$CURRENT_SECTION" == 3 && "$selected_item" =~ ^(docker|wsl|setup_tools|vault)$ ]]; then
+        printf '%b            Enter %s  R Refresh  Q Quit%b\n' "$SILVER_MUTED" "$space_hint" "$NC"
+    else
+        printf '%b            R Refresh  Enter Apply  Q Quit%b\n' "$SILVER_MUTED" "$NC"
+    fi
 }
 
 
@@ -819,10 +1252,7 @@ draw_item_compact() {
     local checked="${component_checked[$key]}"
     local desc="${component_description[$key]}"
     local status="${component_status[$key]}"
-    if [ -z "$status" ]; then
-        status=$(check_component_status "$key")
-        component_status["$key"]="$status"
-    fi
+    [[ -n "$status" ]] || status=loading
 
     # Checkbox with action indicator
     local checkbox="[ ]"
@@ -840,12 +1270,18 @@ draw_item_compact() {
     local status_color="$RED"
     local status_symbol="✗"
 
-    if [[ "$status" == "installed" || "$status" == "configured" ]]; then
+    if [[ "$status" == loading ]]; then
+        status_color="$LOADING_COLOR"
+        status_symbol="…"
+    elif [[ "$status" == "installed" || "$status" == "configured" ]]; then
         status_color="$GREEN"
         status_symbol="✓"
-    elif [[ "$status" == "needs creds" ]]; then
+    elif [[ "$status" == "needs creds" || "$status" == "needs setup" || "$status" == "needs check" || "$status" == "needs docker" || "$status" == 'image only' ]]; then
         status_color="$YELLOW"
         status_symbol="⚠"
+    elif [[ "$status" == optional ]]; then
+        status_color="$DIM"
+        status_symbol="·"
     fi
 
     # Selection highlight
@@ -865,7 +1301,14 @@ handle_input() {
     local key
 
     # Read single character
-    IFS= read -rsn1 key || return 2
+    local read_status
+    local -a read_options=(-rsn1)
+    [[ "$status_checks_running" != true ]] || read_options+=(-t 0.15)
+    if IFS= read "${read_options[@]}" key; then :; else
+        read_status=$?
+        if [[ "$status_checks_running" == true && "$read_status" -gt 128 ]]; then return 3; fi
+        return 2
+    fi
 
     # Handle escape sequences (arrow keys, etc.)
     if [[ $key == $'\x1b' ]]; then
@@ -890,8 +1333,12 @@ handle_input() {
                     max_idx=$((${#bench_items[@]} - 1))
                 elif [ $CURRENT_SECTION -eq 1 ]; then
                     max_idx=$((${#ai_items[@]} - 1))
-                else
+                elif [ $CURRENT_SECTION -eq 2 ]; then
                     max_idx=$((${#tool_items[@]} - 1))
+                elif [ $CURRENT_SECTION -eq 4 ]; then
+                    max_idx=$((${#profile_items[@]} - 1))
+                else
+                    max_idx=$((${#requirement_items[@]} - 1))
                 fi
 
                 if [ $current_selection -lt $max_idx ]; then
@@ -907,7 +1354,14 @@ handle_input() {
                 fi
                 ;;
             '[C') # Right arrow - switch section right
-                if [ $CURRENT_SECTION -lt 2 ]; then
+                if [ $CURRENT_SECTION -lt 4 ]; then
+                    if [[ "$CURRENT_SECTION" == 2 ]]; then
+                        requirements_return_section=$CURRENT_SECTION
+                        requirements_return_selection=$current_selection
+                    elif [[ "$CURRENT_SECTION" == 3 ]]; then
+                        profiles_return_section=$CURRENT_SECTION
+                        profiles_return_selection=$current_selection
+                    fi
                     ((CURRENT_SECTION++))
                     current_selection=0
                 fi
@@ -922,6 +1376,10 @@ handle_input() {
     else
         case "$key" in
             ' '|d|D) # Space toggles install/update; D toggles explicit removal.
+                if [[ "$CURRENT_SECTION" == 4 ]]; then
+                    [[ "$key" != ' ' ]] || activate_profile || return "$?"
+                    return 0
+                fi
                 local input_key="$key"
                 local key=""
                 if [ $CURRENT_SECTION -eq 0 ]; then
@@ -933,20 +1391,34 @@ handle_input() {
                         return 0  # Skip separators
                     fi
                     key="$item"
-                else
+                elif [ $CURRENT_SECTION -eq 2 ]; then
                     local item="${tool_items[$current_selection]}"
                     key="$item"
+                else
+                    key="${requirement_items[$current_selection]}"
+                    case "$key" in
+                        docker|wsl|setup_tools|vault)
+                            [[ "$input_key" != d && "$input_key" != D ]] || return 0
+                            activate_requirement "$key" || return "$?"
+                            return 0 ;;
+                    esac
                 fi
 
                 # Determine action based on current status
+                [[ -n "$key" ]] || return 0
                 local status="${component_status[$key]}"
                 local is_installed=false
-                [[ "$status" == "installed" || "$status" == "needs creds" ]] && is_installed=true
+                [[ "$status" != 'needs check' && "$status" != loading ]] || return 0
+                [[ "$status" == "installed" || "$status" == "needs creds" || "$status" == 'image only' ]] && is_installed=true
 
                 local requested="install"
                 [[ "$is_installed" == true ]] && requested="update"
+                if [[ "$key" == host_shell || "$key" == workspace_repo || "$key" == ai_accounts || "$key" == workbenches_account ]]; then
+                    [[ "$input_key" != d && "$input_key" != D ]] || return 0
+                    requested=install
+                fi
                 if [[ "$input_key" == d || "$input_key" == D ]]; then
-                    [[ "$is_installed" == true ]] || return 0
+                    [[ "$is_installed" == true || ( "$key" == bench_* && "$status" == 'needs docker' ) ]] || return 0
                     requested="uninstall"
                 fi
                 if [[ "${component_action[$key]}" == "$requested" ]]; then
@@ -957,9 +1429,44 @@ handle_input() {
                     component_action["$key"]="$requested"
                 fi
                 ;;
-            ''|$'\r'|$'\n') # Enter - confirm and process
+            ''|$'\r'|$'\n') # Enter activates a focused service button.
+                if [[ "$CURRENT_SECTION" == 4 ]]; then activate_profile; return "$?"; fi
+                if [[ "$CURRENT_SECTION" == 3 ]]; then
+                    local requirement="${requirement_items[$current_selection]}"
+                    case "$requirement" in
+                        docker|wsl|setup_tools|vault) activate_requirement "$requirement"; return "$?" ;;
+                    esac
+                fi
+                if [[ "$status_async_ui" == true ]] && { [[ "$status_checks_running" == true ]] || ! setup_required_ready; }; then
+                    requirements_notice='Wait for checks and resolve workstation requirements before Apply.'
+                    draw_ui
+                    return 0
+                fi
                 return 1
                 ;;
+            'r'|'R') requirements_notice=''; refresh_component_statuses; draw_ui ;;
+            'p'|'P')
+                if [[ "$CURRENT_SECTION" == 3 ]]; then
+                    CURRENT_SECTION=$requirements_return_section
+                    current_selection=$requirements_return_selection
+                else
+                    requirements_return_section=$CURRENT_SECTION
+                    requirements_return_selection=$current_selection
+                    CURRENT_SECTION=3
+                    current_selection=0
+                fi ;;
+            'g'|'G')
+                if [[ "$CURRENT_SECTION" == 4 ]]; then
+                    CURRENT_SECTION=$profiles_return_section
+                    current_selection=$profiles_return_selection
+                else
+                    profiles_return_section=$CURRENT_SECTION
+                    profiles_return_selection=$current_selection
+                    CURRENT_SECTION=4
+                    current_selection=0
+                fi ;;
+            'v'|'V') # Vault action is available beside its main-screen status.
+                activate_requirement vault || return "$?" ;;
             'q'|'Q') # Quit
                 return 2
                 ;;
@@ -1264,30 +1771,41 @@ check_dir_safe_to_replace() {
 process_selections() {
     log "Processing selections - applying configuration changes"
     echo -e "${SHOW_CURSOR}"
-    clear
+    if [[ "${WORKBENCHES_INSTALL_SCREEN:-}" != 1 ]]; then
+        clear
 
-    echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}${BLUE}  Applying Configuration Changes${NC}"
-    echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════════════${NC}"
-    echo ""
+        echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}${BLUE}  Applying Configuration Changes${NC}"
+        echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════════════${NC}"
+        echo ""
+    else
+        printf '\nApplying selected components…\n'
+    fi
 
     local any_selected=false
     local success_count=0
-    local fail_count=0
+    local fail_count=0 active_component=""
+    local -A failed_components=()
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local config_file="$script_dir/../config/bench-config.json"
-    local -a items_needing_creds=()
 
     # Process benches
     for bench in "${bench_items[@]}"; do
         local key="bench_$bench"
         if [[ "${component_checked[$key]}" == true && -n "${component_action[$key]}" ]]; then
+            active_component="$key"
             local action="${component_action[$key]}"
             local status="${component_status[$key]}"
+            if [[ "$status" == 'needs check' || "$status" == 'needs docker' ]]; then
+                any_selected=true
+                echo "Needs attention: cannot verify $bench runtime/checkout; refresh after restoring Docker or the expected checkout."
+                failed_components[$active_component]=true; ((fail_count++))
+                continue
+            fi
 
             # Installed benches with no pending action: check Layer 2/3 images, skip if current
             if [[ "$status" == "installed" && -z "$action" ]]; then
-                local bench_path=$(jq -r ".benches.${bench}.path // \"$bench\"" "$config_file" 2>/dev/null)
+                local bench_path=$(jq -r --arg name "$bench" '.benches[$name].path // $name' "$config_file" 2>/dev/null)
                 local full_bench_path="$script_dir/../$bench_path"
                 local image_repo
                 image_repo=$(bench_dir_to_image_repo "$bench")
@@ -1337,35 +1855,28 @@ process_selections() {
             if [[ "$action" == "uninstall" ]]; then
                 log "Uninstalling bench: $bench"
                 echo -e "${BOLD}${CYAN}▶ Uninstalling: $bench${NC}"
-                local bench_path=$(jq -r ".benches.${bench}.path // \"$bench\"" "$config_file" 2>/dev/null)
-                if [ -d "$script_dir/../$bench_path" ]; then
-                    log "Removing directory: $script_dir/../$bench_path"
-                    if rm -rf "$script_dir/../$bench_path"; then
-                        log "Successfully uninstalled $bench"
-                        echo -e "  ${GREEN}✓ Successfully uninstalled $bench${NC}"
-                        ((success_count++))
-                    else
-                        log "ERROR: Failed to uninstall $bench"
-                        echo -e "  ${RED}✗ Failed to uninstall $bench${NC}"
-                        ((fail_count++))
-                    fi
+                local bench_path=$(jq -r --arg name "$bench" '.benches[$name].path // $name' "$config_file" 2>/dev/null)
+                if uninstall_component "$key"; then
+                    ((success_count++))
                 else
-                    echo -e "  ${YELLOW}⚠ $bench not found, already uninstalled${NC}"
+                    local removal_status=$?
+                    setup_propagate_cancel "$removal_status"
+                    failed_components[$active_component]=true; ((fail_count++))
                 fi
                 echo ""
             else
                 # Check if needs setup vs install
-                if [[ "$status" == "needs creds" ]]; then
+                if [[ "$status" == "needs creds" || "$status" == "needs setup" || "$status" == "needs check" || "$status" == 'image only' ]]; then
                     # Bench is installed but not set up
                     log "Setting up bench: $bench"
                     echo -e "${BOLD}${CYAN}▶ Setting up: $bench${NC}"
-                    local bench_path=$(jq -r ".benches.${bench}.path // \"$bench\"" "$config_file" 2>/dev/null)
+                    local bench_path=$(jq -r --arg name "$bench" '.benches[$name].path // $name' "$config_file" 2>/dev/null)
                     local full_bench_path="$script_dir/../$bench_path"
                     local setup_script="$full_bench_path/setup.sh"
 
                     # If it's a git repo, fetch latest updates first
-                    if [ -d "$full_bench_path/.git" ] || [ -f "$full_bench_path/.git" ]; then
-                        local bench_url=$(jq -r ".benches.${bench}.url // \"\"" "$config_file" 2>/dev/null)
+                    if [[ "${WORKBENCHES_FROZEN:-}" != 1 ]] && { [ -d "$full_bench_path/.git" ] || [ -f "$full_bench_path/.git" ]; }; then
+                        local bench_url=$(jq -r --arg name "$bench" '.benches[$name].url // ""' "$config_file" 2>/dev/null)
                         if [ -n "$bench_url" ] && [ "$bench_url" != "null" ]; then
                             echo -e "  ${YELLOW}Fetching latest updates from: $bench_url${NC}"
                             log "Fetching updates for $bench before setup"
@@ -1398,24 +1909,24 @@ process_selections() {
 
                         # Run setup in background with spinner (cd to bench dir first)
                         (
-                            cd "$(dirname "$setup_script")" && bash "$setup_script" >> "$LOG_FILE" 2>&1
+                            python3 "$script_dir/setup-bench-runtime.py" --bench "$bench" --setup "$setup_script" >> "$LOG_FILE" 2>&1
                             echo $? > /tmp/setup_status_$$
                         ) &
                         local setup_pid=$!
-                        show_spinner $setup_pid "Setting up $bench" 1200
+                        show_spinner $setup_pid "Setting up $bench" 1200 build
 
                         local setup_status=$(cat /tmp/setup_status_$$ 2>/dev/null || echo "1")
                         rm -f /tmp/setup_status_$$
 
                         if [ "$setup_status" -eq 0 ]; then
                             log "Successfully set up $bench"
-                            echo -e "  ${GREEN}✓ Successfully set up $bench${NC}"
+                            echo -e "  ${GREEN}✓ $bench is ready (launch verified)${NC}"
                             echo -e "  ${DIM}Command 'new-${bench}-project' should now be available${NC}"
                             ((success_count++))
                         else
                             log "ERROR: Setup script failed for $bench"
                             echo -e "  ${RED}✗ Setup script failed${NC}"
-                            ((fail_count++))
+                            failed_components[$active_component]=true; ((fail_count++))
                         fi
                     else
                         # No setup.sh — try inline setup: look for build-layer.sh
@@ -1447,7 +1958,7 @@ process_selections() {
                             else
                                 log "ERROR: build-layer.sh failed for $bench"
                                 echo -e "  ${RED}✗ Image build failed for $bench${NC}"
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         else
                             # No setup.sh and no build-layer.sh — repo is cloned, that's sufficient
@@ -1464,8 +1975,8 @@ process_selections() {
 
                     # Get bench info from config
                     if [ -f "$config_file" ]; then
-                        local bench_url=$(jq -r ".benches.${bench}.url // \"\"" "$config_file")
-                        local bench_path=$(jq -r ".benches.${bench}.path // \"$bench\"" "$config_file")
+                        local bench_url=$(jq -r --arg name "$bench" '.benches[$name].url // ""' "$config_file")
+                        local bench_path=$(jq -r --arg name "$bench" '.benches[$name].path // $name' "$config_file")
                         local full_bench_path="$script_dir/../$bench_path"
 
                         if [ -n "$bench_url" ] && [ "$bench_url" != "null" ]; then
@@ -1473,30 +1984,34 @@ process_selections() {
                             if [ -d "$full_bench_path" ]; then
                                 # Directory exists - check if it has git
                                 if [ -d "$full_bench_path/.git" ] || [ -f "$full_bench_path/.git" ]; then
-                                    # Has git repo, do a fetch and pull
-                                    echo -e "  ${YELLOW}Directory exists, fetching updates from: $bench_url${NC}"
-                                    log "Fetching and pulling updates for $bench from $bench_url"
-
-                                    # Fetch and pull in background with spinner
-                                    (
-                                        cd "$full_bench_path" && git fetch --all >> "$LOG_FILE" 2>&1 && git pull >> "$LOG_FILE" 2>&1
-                                        echo $? > /tmp/fetch_status_$$
-                                    ) &
-                                    local fetch_pid=$!
-                                    show_spinner $fetch_pid "Updating $bench"
-
-                                    local fetch_status=$(cat /tmp/fetch_status_$$ 2>/dev/null || echo "1")
-                                    rm -f /tmp/fetch_status_$$
-
-                                    if [ "$fetch_status" -eq 0 ]; then
-                                        log "Successfully fetched and pulled updates for $bench"
-                                        echo -e "  ${GREEN}✓ Successfully updated to latest version${NC}"
+                                    # Release sources were prepared at their locked commit.
+                                    if [[ "${WORKBENCHES_FROZEN:-}" == 1 ]]; then
+                                        echo -e "  ${GREEN}Using frozen release source for $bench${NC}"
                                     else
-                                        log "ERROR: Failed to fetch/pull updates for $bench"
-                                        echo -e "  ${RED}✗ Failed to fetch updates${NC}"
-                                        ((fail_count++))
-                                        echo ""
-                                        continue
+                                        echo -e "  ${YELLOW}Directory exists, fetching updates from: $bench_url${NC}"
+                                        log "Fetching and pulling updates for $bench from $bench_url"
+
+                                        # Fetch and pull in background with spinner
+                                        (
+                                            cd "$full_bench_path" && git fetch --all >> "$LOG_FILE" 2>&1 && git pull >> "$LOG_FILE" 2>&1
+                                            echo $? > /tmp/fetch_status_$$
+                                        ) &
+                                        local fetch_pid=$!
+                                        show_spinner $fetch_pid "Updating $bench"
+
+                                        local fetch_status=$(cat /tmp/fetch_status_$$ 2>/dev/null || echo "1")
+                                        rm -f /tmp/fetch_status_$$
+
+                                        if [ "$fetch_status" -eq 0 ]; then
+                                            log "Successfully fetched and pulled updates for $bench"
+                                            echo -e "  ${GREEN}✓ Successfully updated to latest version${NC}"
+                                        else
+                                            log "ERROR: Failed to fetch/pull updates for $bench"
+                                            echo -e "  ${RED}✗ Failed to fetch updates${NC}"
+                                            failed_components[$active_component]=true; ((fail_count++))
+                                            echo ""
+                                            continue
+                                        fi
                                     fi
                                 else
                                     # Directory exists but no git - check if safe to replace
@@ -1534,7 +2049,7 @@ process_selections() {
                                         if [ "$clone_status" -ne 0 ]; then
                                             log "ERROR: Failed to clone $bench"
                                             echo -e "  ${RED}✗ Failed to clone $bench${NC}"
-                                            ((fail_count++))
+                                            failed_components[$active_component]=true; ((fail_count++))
                                             echo ""
                                             continue
                                         fi
@@ -1554,7 +2069,7 @@ process_selections() {
                                         echo -e "  ${DIM}Or initialize as git repo:${NC}"
                                         echo -e "  ${DIM}cd $full_bench_path && git init && git remote add origin $bench_url && git fetch && git checkout -f origin/main${NC}"
                                         echo ""
-                                        ((fail_count++))
+                                        failed_components[$active_component]=true; ((fail_count++))
                                         echo ""
                                         continue
                                     fi
@@ -1578,7 +2093,7 @@ process_selections() {
                                 if [ "$clone_status" -ne 0 ]; then
                                     log "ERROR: Failed to clone $bench"
                                     echo -e "  ${RED}✗ Failed to clone $bench${NC}"
-                                    ((fail_count++))
+                                    failed_components[$active_component]=true; ((fail_count++))
                                     echo ""
                                     continue
                                 fi
@@ -1596,24 +2111,24 @@ process_selections() {
 
                                 # Run setup in background with spinner (cd to bench dir first)
                                 (
-                                    cd "$(dirname "$setup_script")" && bash "$setup_script" >> "$LOG_FILE" 2>&1
+                                    python3 "$script_dir/setup-bench-runtime.py" --bench "$bench" --setup "$setup_script" >> "$LOG_FILE" 2>&1
                                     echo $? > /tmp/setup_status_$$
                                 ) &
                                 local setup_pid=$!
-                                show_spinner $setup_pid "Setting up $bench" 1200
+                                show_spinner $setup_pid "Setting up $bench" 1200 build
 
                                 local setup_status=$(cat /tmp/setup_status_$$ 2>/dev/null || echo "1")
                                 rm -f /tmp/setup_status_$$
 
                                 if [ "$setup_status" -eq 0 ]; then
                                     log "Successfully set up $bench"
-                                    echo -e "  ${GREEN}✓ Successfully set up $bench${NC}"
+                                    echo -e "  ${GREEN}✓ $bench is ready (launch verified)${NC}"
                                     ((success_count++))
                                 else
                                     log "ERROR: Setup failed for $bench"
                                     echo -e "  ${YELLOW}⚠ Setup failed${NC}"
-                                    echo -e "  ${DIM}You may need to run setup manually: $setup_script${NC}"
-                                    ((fail_count++))
+                                    echo -e "  ${DIM}Inspect the build log and rerun workBenches setup after stopping this bench; Wave will display a repair command if needed.${NC}"
+                                    failed_components[$active_component]=true; ((fail_count++))
                                 fi
                             else
                                 # No setup.sh — try inline: build-layer.sh
@@ -1656,11 +2171,11 @@ process_selections() {
                             fi
                         else
                             echo -e "  ${RED}✗ No repository URL found for $bench${NC}"
-                            ((fail_count++))
+                            failed_components[$active_component]=true; ((fail_count++))
                         fi
                     else
                         echo -e "  ${RED}✗ Config file not found${NC}"
-                        ((fail_count++))
+                        failed_components[$active_component]=true; ((fail_count++))
                     fi
                     echo ""
                 fi
@@ -1676,6 +2191,7 @@ process_selections() {
 
         if [[ "${component_checked[$item]}" == true && -n "${component_action[$item]}" ]]; then
             any_selected=true
+            active_component="$item"
             local desc="${component_description[$item]}"
             local action="${component_action[$item]}"
 
@@ -1683,52 +2199,11 @@ process_selections() {
             if [[ "$action" == "uninstall" ]]; then
                 echo -e "${BOLD}${CYAN}▶ Uninstalling: $desc${NC}"
 
-                case "$item" in
-                    claude_cli)
-                        if command -v claude &> /dev/null; then
-                            echo -e "  ${YELLOW}Uninstalling Claude Code CLI...${NC}"
-                            echo -e "  ${DIM}Note: Manual uninstall required, check Claude documentation${NC}"
-                        else
-                            echo -e "  ${YELLOW}⚠ Claude CLI not found${NC}"
-                        fi
-                        ;;
-                    copilot_cli)
-                        if command -v npm &> /dev/null; then
-                            if npm uninstall -g @github/copilot 2>/dev/null; then
-                                echo -e "  ${GREEN}✓ GitHub Copilot CLI uninstalled${NC}"
-                                ((success_count++))
-                            else
-                                echo -e "  ${RED}✗ Failed to uninstall GitHub Copilot CLI${NC}"
-                                ((fail_count++))
-                            fi
-                        fi
-                        ;;
-                    codex_cli)
-                        if command -v npm &> /dev/null; then
-                            if npm uninstall -g @openai/codex 2>/dev/null; then
-                                echo -e "  ${GREEN}✓ Codex CLI uninstalled${NC}"
-                                ((success_count++))
-                            else
-                                echo -e "  ${RED}✗ Failed to uninstall Codex CLI${NC}"
-                                ((fail_count++))
-                            fi
-                        fi
-                        ;;
-                    openspec)
-                        if command -v npm &> /dev/null; then
-                            if npm uninstall -g @fission-ai/openspec 2>/dev/null; then
-                                echo -e "  ${GREEN}✓ OpenSpec uninstalled${NC}"
-                                ((success_count++))
-                            else
-                                echo -e "  ${RED}✗ Failed to uninstall OpenSpec${NC}"
-                                ((fail_count++))
-                            fi
-                        fi
-                        ;;
-                    *)
-                        echo -e "  ${YELLOW}⚠ Uninstall not implemented for $desc${NC}"
-                        ;;
-                esac
+                if uninstall_component "$item"; then
+                    ((success_count++))
+                else
+                    failed_components[$active_component]=true; ((fail_count++))
+                fi
                 echo ""
                 continue
             fi
@@ -1771,13 +2246,12 @@ process_selections() {
                             echo -e "  ${GREEN}✓ Claude Code CLI installed${NC}"
                             echo -e "  ${DIM}Run 'claude' to start using it${NC}"
                             ((success_count++))
-                            items_needing_creds+=("claude")
                         else
                             trap 'exit 130' INT
                             log "ERROR: Claude CLI installation failed"
                             echo -e "  ${RED}✗ Failed to install Claude Code CLI${NC}"
                             echo -e "  ${DIM}Manual install: curl -fsSL https://claude.ai/install.sh | bash${NC}"
-                            ((fail_count++))
+                            failed_components[$active_component]=true; ((fail_count++))
                         fi
                     fi
                     ;;
@@ -1789,23 +2263,22 @@ process_selections() {
                             if npm_update_tool "@github/copilot" "GitHub Copilot CLI"; then
                                 ((success_count++))
                             else
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         else
                             echo -e "  ${YELLOW}Installing GitHub Copilot CLI...${NC}"
                             if npm install -g @github/copilot; then
                                 echo -e "  ${GREEN}✓ GitHub Copilot CLI installed${NC}"
                                 ((success_count++))
-                                items_needing_creds+=("copilot")
                             else
                                 echo -e "  ${RED}✗ Failed to install GitHub Copilot CLI${NC}"
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         fi
                     else
                         echo -e "  ${RED}✗ npm not found - Node.js required${NC}"
                         echo -e "  ${DIM}Install Node.js: https://nodejs.org/${NC}"
-                        ((fail_count++))
+                        failed_components[$active_component]=true; ((fail_count++))
                     fi
                     ;;
 
@@ -1819,29 +2292,28 @@ process_selections() {
                                 if npm_update_tool "@openai/codex" "Codex CLI"; then
                                     ((success_count++))
                                 else
-                                    ((fail_count++))
+                                    failed_components[$active_component]=true; ((fail_count++))
                                 fi
                             else
                                 echo -e "  ${YELLOW}Installing OpenAI Codex CLI...${NC}"
                                 if npm install -g @openai/codex; then
                                     echo -e "  ${GREEN}✓ OpenAI Codex CLI installed${NC}"
                                     ((success_count++))
-                                    items_needing_creds+=("codex")
                                 else
                                     echo -e "  ${RED}✗ Failed to install Codex CLI${NC}"
-                                    ((fail_count++))
+                                    failed_components[$active_component]=true; ((fail_count++))
                                 fi
                             fi
                         else
                             echo -e "  ${RED}✗ Node.js 18+ required (current: v$node_version)${NC}"
                             echo -e "  ${DIM}Recommended: Node.js 24+${NC}"
                             echo -e "  ${DIM}Install/Update Node.js: https://nodejs.org/${NC}"
-                            ((fail_count++))
+                            failed_components[$active_component]=true; ((fail_count++))
                         fi
                     else
                         echo -e "  ${RED}✗ npm not found - Node.js required${NC}"
                         echo -e "  ${DIM}Install Node.js 24+: https://nodejs.org/${NC}"
-                        ((fail_count++))
+                        failed_components[$active_component]=true; ((fail_count++))
                     fi
                     ;;
 
@@ -1870,19 +2342,18 @@ process_selections() {
                                 echo -e "  ${GREEN}✓ Antigravity CLI installed${NC}"
                                 echo -e "  ${DIM}Run 'agy' to start using it${NC}"
                                 ((success_count++))
-                                items_needing_creds+=("antigravity")
                             else
                                 log "ERROR: Antigravity CLI installer completed but agy is not on PATH"
                                 echo -e "  ${RED}✗ Antigravity CLI installed but 'agy' is not on PATH${NC}"
                                 echo -e "  ${DIM}Add ~/.local/bin to PATH or run: ~/.local/bin/agy${NC}"
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         else
                             trap 'exit 130' INT
                             log "ERROR: Antigravity CLI installation failed"
                             echo -e "  ${RED}✗ Failed to install Antigravity CLI${NC}"
                             echo -e "  ${DIM}Manual install: curl -fsSL https://antigravity.google/cli/install.sh | bash${NC}"
-                            ((fail_count++))
+                            failed_components[$active_component]=true; ((fail_count++))
                         fi
                     fi
                     ;;
@@ -1896,9 +2367,8 @@ process_selections() {
                         ((success_count++))
                     else
                         echo -e "  ${RED}✗ Failed to install OpenCode CLI${NC}"
-                        ((fail_count++))
+                        failed_components[$active_component]=true; ((fail_count++))
                     fi
-                    command -v opencode &>/dev/null && items_needing_creds+=("opencode")
                     ;;
 
                 pi_cli)
@@ -1913,9 +2383,8 @@ process_selections() {
                         ((success_count++))
                     else
                         echo -e "  ${RED}✗ Failed to install Pi Coding Agent${NC}"
-                        ((fail_count++))
+                        failed_components[$active_component]=true; ((fail_count++))
                     fi
-                    { command -v pi &>/dev/null || [[ -x "$HOME/.npm-global/bin/pi" ]]; } && items_needing_creds+=("pi")
                     ;;
 
                 spec_kit)
@@ -1960,13 +2429,13 @@ process_selections() {
                             ((success_count++))
                         else
                             echo -e "  ${RED}✗ Failed to install spec-kit${NC}"
-                            ((fail_count++))
+                            failed_components[$active_component]=true; ((fail_count++))
                         fi
                     else
                         echo -e "  ${RED}✗ uv installation failed${NC}"
                         echo -e "  ${DIM}Try manually: curl -LsSf https://astral.sh/uv/install.sh | sh${NC}"
                         echo -e "  ${DIM}Then restart your shell or run: source ~/.zshrc${NC}"
-                        ((fail_count++))
+                        failed_components[$active_component]=true; ((fail_count++))
                     fi
                     ;;
 
@@ -1977,7 +2446,7 @@ process_selections() {
                             if npm_update_tool "@fission-ai/openspec" "OpenSpec"; then
                                 ((success_count++))
                             else
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         else
                             echo -e "  ${YELLOW}Installing OpenSpec...${NC}"
@@ -1986,13 +2455,13 @@ process_selections() {
                                 ((success_count++))
                             else
                                 echo -e "  ${RED}✗ Failed to install OpenSpec${NC}"
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         fi
                     else
                         echo -e "  ${RED}✗ npm not found - Node.js required${NC}"
                         echo -e "  ${DIM}Install Node.js: https://nodejs.org/${NC}"
-                        ((fail_count++))
+                        failed_components[$active_component]=true; ((fail_count++))
                     fi
                     ;;
             esac
@@ -2004,16 +2473,36 @@ process_selections() {
     for item in "${tool_items[@]}"; do
         if [[ "${component_checked[$item]}" == true && -n "${component_action[$item]}" ]]; then
             any_selected=true
+            active_component="$item"
             local desc="${component_description[$item]}"
             local action="${component_action[$item]}"
             local status="${component_status[$item]}"
             local is_installed=false
-            [[ "$status" == "installed" ]] && is_installed=true
+            [[ "$status" == "installed" || "$status" == "needs creds" ]] && is_installed=true
+
+            if [[ "$item" == ai_accounts ]]; then continue; fi
+            if [[ "$item" == host_shell || "$item" == workspace_repo ]]; then
+                local optional_status=0
+                if [[ "$item" == host_shell ]]; then
+                    "$SCRIPT_DIR/setup-shell.sh" || optional_status=$?
+                else
+                    log "WORKSPACE REPOSITORY"
+                    { "$SCRIPT_DIR/setup-estate-commands.sh" && "$SCRIPT_DIR/setup-workspace-repo.sh"; } 2>&1 | tee -a "$LOG_FILE"
+                    optional_status=${PIPESTATUS[0]}
+                fi
+                setup_propagate_cancel "$optional_status"
+                if [[ "$optional_status" -eq 0 ]]; then ((success_count++)); else failed_components[$active_component]=true; ((fail_count++)); fi
+                continue
+            fi
 
             # Handle uninstallation
             if [[ "$action" == "uninstall" ]]; then
                 echo -e "${BOLD}${CYAN}▶ Uninstalling: $desc${NC}"
-                echo -e "  ${YELLOW}⚠ Manual uninstall required for $desc${NC}"
+                if uninstall_component "$item"; then
+                    ((success_count++))
+                else
+                    failed_components[$active_component]=true; ((fail_count++))
+                fi
                 echo ""
                 continue
             fi
@@ -2042,13 +2531,13 @@ process_selections() {
                         echo -e "  ${GREEN}✓ $desc setup completed${NC}"
                         ((success_count++))
                     else
-                        echo -e "  ${YELLOW}⚠ $desc setup completed with warnings${NC}"
+                        echo -e "  ${YELLOW}⚠ $desc setup needs attention${NC}"
                         echo -e "  ${DIM}See docs/vpn-setup.md for manual install steps${NC}"
-                        ((success_count++))
+                        failed_components[$active_component]=true; ((fail_count++))
                     fi
                 else
                     echo -e "  ${RED}✗ setup-vpn.sh not found${NC}"
-                    ((fail_count++))
+                    failed_components[$active_component]=true; ((fail_count++))
                 fi
                 echo ""
                 continue
@@ -2069,11 +2558,11 @@ process_selections() {
                                 if bash "$script_dir/setup-windows-tools.sh" vscode; then
                                     ((success_count++))
                                 else
-                                    ((fail_count++))
+                                    failed_components[$active_component]=true; ((fail_count++))
                                 fi
                             else
                                 echo -e "  ${RED}✗ setup-windows-tools.sh not found${NC}"
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         else
                             echo -e "  ${YELLOW}Installing Visual Studio Code for Linux...${NC}"
@@ -2084,12 +2573,12 @@ process_selections() {
                                 else
                                     echo -e "  ${RED}✗ Failed to install VS Code${NC}"
                                     echo -e "  ${DIM}Visit: https://code.visualstudio.com/${NC}"
-                                    ((fail_count++))
+                                    failed_components[$active_component]=true; ((fail_count++))
                                 fi
                             else
                                 echo -e "  ${YELLOW}snap not available${NC}"
                                 echo -e "  ${DIM}Manual install: https://code.visualstudio.com/${NC}"
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         fi
                         ;;
@@ -2100,18 +2589,18 @@ process_selections() {
                                 if bash "$script_dir/setup-windows-tools.sh" warp; then
                                     ((success_count++))
                                 else
-                                    ((fail_count++))
+                                    failed_components[$active_component]=true; ((fail_count++))
                                 fi
                             else
                                 echo -e "  ${RED}✗ setup-windows-tools.sh not found${NC}"
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         else
                             echo -e "  ${YELLOW}Installing Warp Terminal for Linux...${NC}"
                             echo -e "  ${DIM}Visit: https://warp.dev${NC}"
                             echo -e "  ${YELLOW}Download and install .deb package from website${NC}"
+                            failed_components[$active_component]=true; ((fail_count++))
                         fi
-                        items_needing_creds+=("warp")
                         ;;
                     wave)
                         # Check if running in WSL
@@ -2120,24 +2609,74 @@ process_selections() {
                                 if bash "$script_dir/setup-windows-tools.sh" wave; then
                                     ((success_count++))
                                 else
-                                    ((fail_count++))
+                                    failed_components[$active_component]=true; ((fail_count++))
                                 fi
                             else
                                 echo -e "  ${RED}✗ setup-windows-tools.sh not found${NC}"
-                                ((fail_count++))
+                                failed_components[$active_component]=true; ((fail_count++))
                             fi
                         else
                             echo -e "  ${YELLOW}Installing Wave Terminal for Linux...${NC}"
                             echo -e "  ${DIM}Visit: https://waveterm.dev${NC}"
                             echo -e "  ${YELLOW}Download and install from website${NC}"
+                            failed_components[$active_component]=true; ((fail_count++))
                         fi
-                        items_needing_creds+=("wave")
                         ;;
                 esac
             fi
             echo ""
         fi
     done
+
+    # Verify selected applications against fresh installation evidence. A
+    # successful installer exit alone must never report a missing tool as ready.
+    refresh_component_statuses
+    local verified_item final_status
+    for verified_item in "${!component_action[@]}"; do
+        [[ "${component_checked[$verified_item]}" == true ]] || continue
+        [[ "$verified_item" != host_shell && "$verified_item" != workspace_repo && "$verified_item" != ai_accounts && "$verified_item" != workbenches_account ]] || continue
+        final_status="${component_status[$verified_item]}"
+        if [[ "${component_action[$verified_item]}" == uninstall ]]; then
+            [[ "$final_status" != installed && "$final_status" != 'needs creds' && "$final_status" != 'needs check' && "$final_status" != 'needs docker' && "$final_status" != 'image only' ]] && continue
+        else
+            [[ "$final_status" == installed || "$final_status" == 'needs creds' ]] && continue
+        fi
+        echo "Needs attention: ${component_description[$verified_item]} is $final_status after ${component_action[$verified_item]}."
+        if [[ "${failed_components[$verified_item]:-}" != true ]]; then
+            failed_components[$verified_item]=true
+            ((fail_count++))
+            [[ "$success_count" -le 0 ]] || ((success_count--))
+        fi
+    done
+
+    if [[ "${component_checked[ai_accounts]}" == true ]]; then
+        any_selected=true
+        active_component=ai_accounts
+        if [[ "$fail_count" -gt 0 ]]; then
+            echo "AI accounts skipped because a selected change failed. Retry account setup after resolving it."
+        elif configure_selected_accounts; then
+            ((success_count++))
+        else
+            local account_status=$?
+            setup_propagate_cancel "$account_status"
+            echo "AI account setup needs attention; installed tools remain available."
+            failed_components[$active_component]=true; ((fail_count++))
+        fi
+    else
+        show_pending_authentication
+    fi
+
+    if [[ "${component_checked[workbenches_account]}" == true ]]; then
+        any_selected=true
+        if python3 "$SCRIPT_DIR/setup-workbenches-account.py"; then
+            if [[ "$(python3 "$SCRIPT_DIR/setup-workbenches-account.py" --status)" == 'signed in' ]]; then ((success_count++)); fi
+        else
+            local workbenches_account_status=$?
+            setup_propagate_cancel "$workbenches_account_status"
+            echo 'Optional workBenches account sign-in failed; retry from Requirements.'
+            ((fail_count++))
+        fi
+    fi
 
     # Summary
     echo ""
@@ -2146,28 +2685,66 @@ process_selections() {
     if [ "$any_selected" = false ]; then
         echo -e "${YELLOW}No items were selected.${NC}"
     else
-        echo -e "${BOLD}Installation Summary:${NC}"
+        echo -e "${BOLD}Change Summary:${NC}"
         [ $success_count -gt 0 ] && echo -e "  ${GREEN}✓ Successful: $success_count${NC}"
         [ $fail_count -gt 0 ] && echo -e "  ${RED}✗ Failed: $fail_count${NC}"
 
         if [ $success_count -gt 0 ] && [ $fail_count -eq 0 ]; then
-            echo -e "\n${GREEN}${BOLD}✓ All installations completed successfully!${NC}"
+            echo -e "\n${GREEN}${BOLD}✓ All selected changes completed successfully!${NC}"
         elif [ $success_count -gt 0 ]; then
-            echo -e "\n${YELLOW}⚠️  Some installations completed with errors.${NC}"
+            echo -e "\n${YELLOW}⚠ Some selected changes need attention.${NC}"
+        elif [ $fail_count -gt 0 ]; then
+            echo -e "\n${RED}✗ Selected changes did not complete.${NC}"
         else
-            echo -e "\n${RED}✗ All installations failed.${NC}"
+            echo 'No changes applied; optional account setup deferred.'
         fi
     fi
 
     echo ""
 
-    # Handle credential setup for newly installed CLIs
-    for item in claude_cli codex_cli; do
-        if [[ "${component_checked[$item]}" == true && "${component_action[$item]}" =~ ^(install|update)$ && "${component_status[$item]}" == "needs creds" ]]; then
-            [[ " ${items_needing_creds[*]} " == *" ${item%_cli} "* ]] || items_needing_creds+=("${item%_cli}")
+    [[ "$fail_count" -eq 0 ]]
+}
+
+configure_selected_accounts() {
+    local providers="${WORKBENCHES_SELECTED_PROVIDERS:-}" item cli choice route_file route account_status
+    local -a items_needing_creds=()
+    for item in claude_cli codex_cli pi_cli opencode_cli copilot_cli antigravity_cli warp wave; do
+        if [[ "${component_checked[$item]}" == true && "${component_action[$item]}" =~ ^(install|update)$ ]]; then
+            items_needing_creds+=("${item%_cli}")
         fi
     done
-    if [[ "${WORKBENCHES_AUTH_ROUTE:-}" == later ]]; then items_needing_creds=(); fi
+    if [[ -z "$providers" ]]; then
+        setup_read "AI assistant (codex/claude/pi/opencode/copilot/antigravity) [codex]" choice
+        cli="${choice:-codex}"
+        case "$cli" in
+            codex) providers=openai ;;
+            opencode) providers=omniroute ;;
+            claude|pi|copilot|antigravity) providers="$cli" ;;
+            *) echo "Unknown AI assistant; account setup stopped."; return 1 ;;
+        esac
+        items_needing_creds+=("$cli")
+    fi
+    export WORKBENCHES_SELECTED_PROVIDERS="$providers"
+    route_file="$(mktemp)" || return 1
+    WORKBENCHES_AUTH_ROUTE= WORKBENCHES_AUTH_ROUTE_FILE="$route_file" \
+        "$SCRIPT_DIR/setup-ai-profiles.sh" --interactive
+    account_status=$?
+    route="$(cat "$route_file")"
+    rm -f "$route_file"
+    [[ "$account_status" -eq 0 ]] || return "$account_status"
+    export WORKBENCHES_AUTH_ROUTE="${route%%:*}"
+    if [[ "$route" == vault:* ]]; then
+        export WORKBENCHES_VAULT_SERVICE="${route#vault:}"
+    else
+        unset WORKBENCHES_VAULT_SERVICE
+    fi
+    if [[ ",$providers," == *,claude,* ]] && [[ -x "$SCRIPT_DIR/setup-claude-workflows.sh" ]]; then
+        "$SCRIPT_DIR/setup-claude-workflows.sh" || return "$?"
+    fi
+    if [[ "$WORKBENCHES_AUTH_ROUTE" == later ]]; then
+        echo "Authentication pending. Select AI accounts to finish setup later."
+        return 0
+    fi
     if [ ${#items_needing_creds[@]} -gt 0 ]; then
         echo -e "${BOLD}${BLUE}────────────────────────────────────────────────────────────────────────────${NC}"
         echo -e "${BOLD}${YELLOW}Setting up Credentials${NC}"
@@ -2361,10 +2938,10 @@ process_selections() {
 
                 opencode)
                     echo -e "${CYAN}▶ Setting up OpenCode provider authentication...${NC}"
-                    if "$SCRIPT_DIR/restore-opencode-omniroute-from-kv.sh"; then
+                    if [[ "$WORKBENCHES_AUTH_ROUTE" == vault && "${WORKBENCHES_VAULT_SERVICE:-}" == azure ]] && "$SCRIPT_DIR/restore-opencode-omniroute-from-kv.sh"; then
                         echo -e "${GREEN}✓ Restored Opensoft OmniRoute authentication from approved durable storage${NC}"
                     else
-                        echo -e "${YELLOW}Automatic OmniRoute recovery was unavailable.${NC}"
+                        echo -e "${YELLOW}OpenCode sign-in is needed.${NC}"
                         setup_read "Launch 'opencode auth login' now? [Y/n]: " launch_opencode
                         if [[ ! $launch_opencode =~ ^[Nn] ]]; then
                             opencode auth login
@@ -2446,10 +3023,23 @@ process_selections() {
         echo -e "${BOLD}${BLUE}────────────────────────────────────────────────────────────────────────────${NC}"
     fi
 
-    echo -e "${BLUE}Note: You may need to restart your shell for changes to take effect.${NC}"
-    echo ""
-    setup_read "Press Enter to continue..." continue_answer
-    [[ "$fail_count" -eq 0 ]]
+    return 0
+}
+
+show_pending_authentication() {
+    local item provider
+    local -a pending=()
+    for item in claude_cli codex_cli pi_cli opencode_cli; do
+        [[ "${component_checked[$item]}" == true && "${component_action[$item]}" =~ ^(install|update)$ ]] || continue
+        provider="${item%_cli}"
+        [[ "$provider" == opencode ]] && provider=omniroute
+        if ! python3 "$SCRIPT_DIR/profile_credentials.py" status "$provider"; then
+            pending+=("${component_description[$item]}")
+        fi
+    done
+    if [[ ${#pending[@]} -gt 0 ]]; then
+        printf 'Authentication pending: %s. Select AI accounts to configure later.\n' "$(IFS=,; echo "${pending[*]}")"
+    fi
 }
 
 guide_isolated_profile_logins() {
@@ -2674,16 +3264,28 @@ main() {
         esac
     done
 
-    # Check and install dependencies first
-    log "Checking dependencies..."
-    check_and_install_dependencies
-
-    # Initialize
-    log "Initializing components and loading statuses..."
-    init_components
-    load_statuses
+    ensure_setup_platform || return "$?"
+    if [[ ( "$mode" == interactive || "$mode" == --select-only ) && -t 0 && -t 1 ]]; then
+        status_async_ui=true
+        init_components --loading
+        setup_os_label="$(workbenches_setup_os)"
+        initialize_loading_statuses
+        status_checks_running=true
+        # Draw before Docker, tool activation, jq, or Python can run.
+        draw_ui
+        trap 'stop_status_loader; printf "%b" "$SHOW_CURSOR"' EXIT
+        start_status_loader
+    else
+        ensure_workstation_requirements || return "$?"
+        init_components
+        if [[ "$mode" != --dependencies-plan ]]; then load_statuses; fi
+    fi
     if [[ "$mode" == --apply-plan || "$mode" == --dependencies-plan ]]; then
         load_selection
+        if [[ "$mode" == --apply-plan ]] && workbenches_release_checkout; then
+            export WORKBENCHES_FROZEN=1
+            python3 "$SCRIPT_DIR/release-workbenches.py" prepare --selection "$selection_file" || return "$?"
+        fi
         ensure_selected_dependencies "$mode"
         if [[ "$mode" == --apply-plan ]]; then process_selections || return "$?"; fi
         return
@@ -2692,8 +3294,8 @@ main() {
     # Main loop
     log "Entering main UI loop"
 
-    # Initial full draw
-    draw_ui
+    # The asynchronous path already painted before starting discovery.
+    [[ "$status_async_ui" == true ]] || draw_ui
 
     # Store initial state
     local prev_sel=$current_selection
@@ -2703,14 +3305,15 @@ main() {
     while true; do
         handle_input
         local result=$?
+        poll_status_loader
 
-        # Simple approach: just redraw on any change
-        # This is more reliable than selective updates
+        # Render changed state; draw_ui commits only the lines that differ.
         local current_state=$(get_checked_state)
 
         # Check if anything changed (selection or checkboxes)
-        if [ $current_selection -ne $prev_sel ] || [ $CURRENT_SECTION -ne $prev_sect ] || [ "$current_state" != "$prev_state" ]; then
+        if [[ "$status_ui_dirty" == true ]] || [ $current_selection -ne $prev_sel ] || [ $CURRENT_SECTION -ne $prev_sect ] || [ "$current_state" != "$prev_state" ]; then
             draw_ui
+            status_ui_dirty=false
             prev_sel=$current_selection
             prev_sect=$CURRENT_SECTION
             prev_state="$current_state"
@@ -2737,6 +3340,7 @@ main() {
         fi
     done
 
+    stop_status_loader
     echo -e "${SHOW_CURSOR}"
     log "=== Setup script completed ==="
 }

@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 # Standalone fresh-workstation bootstrap and shared GitHub clone transport.
 
+workbenches_version() {
+    local version='' root="${BASH_SOURCE[0]%/*}"
+    if [[ -r "$root/VERSION" ]] && IFS= read -r version < "$root/VERSION" &&
+        [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+        printf '%s\n' "$version"
+    else
+        printf '0.0.0-dev\n'
+    fi
+}
+
+# Run only after Tools is available, never during first-paint readiness checks.
+workbenches_release_checkout() {
+    [[ "${WORKBENCHES_FROZEN:-}" != 1 ]] || return 0
+    local root="${BASH_SOURCE[0]%/*}" tagged head
+    tagged="$(git -C "$root" rev-parse --verify "refs/tags/v$(workbenches_version)^{commit}" 2>/dev/null)" || return 1
+    head="$(git -C "$root" rev-parse HEAD 2>/dev/null)" || return 1
+    [[ "$tagged" == "$head" ]]
+}
+
 workbenches_github_repo() {
     local url="$1"
     case "$url" in
@@ -41,6 +60,22 @@ workbenches_clone_url() {
     fi
 }
 
+workbenches_github_git() {
+    # Workstation helpers can contain absolute gh paths that do not exist in
+    # Tools. PATH resolves gh to the native command bridge there. Append a
+    # GitHub-only fallback, preserving existing helpers and account selection.
+    if command -v gh >/dev/null 2>&1; then
+        git -c 'credential.https://github.com.helper=!gh auth git-credential' "$@"
+    else
+        git "$@"
+    fi
+}
+
+workbenches_github_access_help() {
+    printf 'Could not access %s. Check network connectivity and repository access.\n' "${1:-GitHub repositories}" >&2
+    printf 'For a private repository, sign in to GitHub CLI on the workstation with an authorized account:\n  gh auth login --hostname github.com\nThen verify repository access (including organization SSO) and retry setup.\n' >&2
+}
+
 workbenches_clone() {
     local requested_url="$1" destination="$2" url repo status
     shift 2
@@ -59,10 +94,17 @@ workbenches_clone() {
         printf 'SSH clone failed; retrying with %s\n' "$url" >&2
     fi
     # Git owns failed-clone cleanup. Never delete an existing destination to retry.
-    if workbenches_github_repo "$url" >/dev/null; then
+    if repo="$(workbenches_github_repo "$url")"; then
         # An exact identity rewrite wins over the common global rule that
         # rewrites all GitHub HTTPS URLs to SSH; fallback must remain HTTPS.
-        GIT_TERMINAL_PROMPT=0 git -c "url.$url.insteadOf=$url" clone "$@" "$url" "$destination"
+        if GIT_TERMINAL_PROMPT=0 workbenches_github_git -c "url.$url.insteadOf=$url" clone "$@" "$url" "$destination"; then
+            return 0
+        else
+            status=$?
+            case "$status" in 130|143) return "$status" ;; esac
+        fi
+        workbenches_github_access_help "https://github.com/$repo"
+        return "$status"
     else
         git clone "$@" "$url" "$destination"
     fi
@@ -70,6 +112,7 @@ workbenches_clone() {
 
 workbenches_init_submodules() {
     local root="$1" key url chosen status
+    shift
     local -a config_args=()
     while read -r key url; do
         [[ -n "$key" ]] || continue
@@ -80,21 +123,28 @@ workbenches_init_submodules() {
         fi
     done < <(git -C "$root" config -f .gitmodules --get-regexp '^submodule\..*\.url$')
     if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$(workbenches_ssh_command)" \
-        git "${config_args[@]}" -C "$root" submodule update --init --recursive; then
+        workbenches_github_git "${config_args[@]}" -C "$root" submodule update --init --recursive -- "$@"; then
         return 0
     else
         status=$?
         case "$status" in 130|143) return "$status" ;; esac
     fi
     printf 'Submodule update failed; retrying GitHub repositories with HTTPS.\n' >&2
-    GIT_TERMINAL_PROMPT=0 git \
+    if GIT_TERMINAL_PROMPT=0 workbenches_github_git \
         -c 'url.https://github.com/.insteadOf=git@github.com:' \
         -c 'url.https://github.com/.insteadOf=ssh://git@github.com/' \
-        -C "$root" submodule update --init --recursive
+        -C "$root" submodule update --init --recursive -- "$@"; then
+        return 0
+    else
+        status=$?
+        case "$status" in 130|143) return "$status" ;; esac
+    fi
+    workbenches_github_access_help
+    return "$status"
 }
 
 workbenches_bootstrap_main() {
-    local destination="${HOME:?HOME is required}/Projects/workBenches" setup=false branch=""
+    local destination="${HOME:?HOME is required}/Projects/openBenches" setup=false branch=""
     command -v git >/dev/null 2>&1 || { echo 'Install Git first, then rerun bootstrap.' >&2; return 1; }
     case "${1:-}" in
         --clone)
@@ -129,11 +179,11 @@ workbenches_bootstrap_main() {
     local -a clone_args=()
     [[ -z "$branch" ]] || clone_args=(--branch "$branch")
     mkdir -p "$(dirname "$destination")" || return $?
-    workbenches_clone https://github.com/opensoft/workBenches.git "$destination" "${clone_args[@]}" || return $?
+    workbenches_clone https://github.com/opensoft/openBenches.git "$destination" "${clone_args[@]}" || return $?
     if [[ "$setup" == true ]]; then
         (cd "$destination" && bash ./setup.sh)
     else
-        printf 'Cloned workBenches to %s. Run ./setup.sh from that directory when ready.\n' "$destination"
+        printf 'Cloned openBenches to %s. Run ./setup.sh from that directory when ready.\n' "$destination"
     fi
 }
 

@@ -62,6 +62,11 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     # GPG for repository keys
     gpg \
     ca-certificates \
+    # PostgreSQL 16, server and client, for the real-database tests of
+    # opensoft/openRepoTools#165. The server binaries live in
+    # /usr/lib/postgresql/16/bin, and nothing in a bench starts a server.
+    postgresql-16 \
+    postgresql-client-16 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -188,6 +193,7 @@ COPY files/lclaude /usr/local/bin/lclaude
 COPY files/codex-profile /usr/local/bin/codex-profile
 COPY files/opencode-profile /usr/local/bin/opencode-profile
 COPY files/workbenches-mcp-sync /usr/local/bin/workbenches-mcp-sync
+COPY --chmod=0644 files/company-profile-sync.sh /usr/local/share/workbenches/company-profile-sync.sh
 COPY files/provider-profile /usr/local/bin/provider-profile
 COPY files/pi-profile /usr/local/bin/pi-profile
 COPY files/claude-statusline-command.sh /usr/local/share/workbenches/claude/statusline-command.sh

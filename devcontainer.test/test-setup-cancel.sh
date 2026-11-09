@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export WORKBENCHES_TEST_NATIVE_TOOLS=1
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_root="$(mktemp -d)"
@@ -8,10 +9,13 @@ fixture="$test_root/workBenches"
 mkdir -p "$fixture/scripts/lib" "$fixture/config" "$fixture/devBenches/testBench" \
     "$fixture/sysBenches/testBench" "$test_root/bin" "$test_root/home/.config/workbenches"
 cp "$repo_root/setup.sh" "$fixture/"
+cp "$repo_root/scripts/sync-wave-widgets.sh" "$fixture/scripts/"
 cp "$repo_root/bootstrap.sh" "$fixture/"
-cp "$repo_root/scripts/lib/"{docker-prerequisite.sh,setup-prerequisites.sh,setup-prompts.sh} "$fixture/scripts/lib/"
+cp "$repo_root/scripts/lib/"{docker-prerequisite.sh,tools-container.sh,setup-status-loader.sh,setup-terminal.sh,setup-prerequisites.sh,setup-prompts.sh} "$fixture/scripts/lib/"
 cp "$repo_root/scripts/setup_selection.py" "$fixture/scripts/"
 cp "$repo_root/scripts/setup-bench-home.py" "$fixture/scripts/"
+cp "$repo_root/scripts/shared-images.py" "$fixture/scripts/"
+export WORKBENCHES_BUILD_LOCAL=1
 cp "$repo_root/scripts/interactive-setup.sh" "$fixture/scripts/interactive-setup-real.sh"
 cp "$repo_root/scripts/lib/image-names.sh" "$fixture/scripts/lib/"
 printf '{"profiles":[{}]}' > "$test_root/home/.config/workbenches/openai-profiles.json"
@@ -47,7 +51,7 @@ for category in devBenches sysBenches; do
 echo build >> "$TEST_ACTION_LOG"
 EOF
 done
-printf '#!/usr/bin/env bash\nexit 0\n' > "$test_root/bin/docker"
+printf '#!/usr/bin/env bash\n[[ "$1" != info ]] || echo linux\nexit 0\n' > "$test_root/bin/docker"
 printf '#!/usr/bin/env bash\nif [[ "$*" == "config get prefix" ]]; then echo "$HOME/.local"; fi\n' > "$test_root/bin/npm"
 export TEST_REAL_PYTHON="$(command -v python3)"
 cat > "$test_root/bin/python3" <<'PYTHON'

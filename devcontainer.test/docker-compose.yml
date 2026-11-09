@@ -1,6 +1,40 @@
 name: workbench-test
 
 services:
+  credential-sync:
+    profiles: [credential-sync]
+    image: workbenches-test:credential-sync
+    build:
+      context: ..
+      dockerfile: credential-broker/Dockerfile
+    working_dir: /source
+    user: "${WORKBENCHES_TEST_UID:-1000}:${WORKBENCHES_TEST_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ..:/source:ro
+    tmpfs: ["/tmp:mode=1777,exec"]
+    command: [python3, devcontainer.test/test-company-credential-sync.py]
+
+  image-release:
+    profiles: [image-release]
+    image: workbenches-test:workstation
+    build:
+      context: workstation
+    working_dir: /source
+    volumes:
+      - ..:/source:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../artifacts/shared-image-release:/release
+    environment:
+      GH_TOKEN: ${GH_TOKEN:-}
+      REGISTRY_USER: ${REGISTRY_USER:-}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-opensoft/workBenches}
+      GITHUB_SHA: ${GITHUB_SHA:-}
+      BUILDKIT_PROGRESS: plain
+    command: [python3, scripts/publish-shared-images.py]
+
   npm-integrity:
     profiles: [merge-validation]
     image: workbenches-test:workstation
@@ -12,13 +46,37 @@ services:
       - ..:/source:ro
     command: [bash, -ec, "bash devcontainer.test/test-claude-npm-guard.sh; bash devcontainer.test/test-layer3-claude-version.sh; bash devcontainer.test/test-wave-container-shell.sh"]
 
+  tools-runtime:
+    init: true
+    profiles: [tools-runtime]
+    image: workbenches-test:workstation
+    build:
+      context: workstation
+    user: "${WORKBENCHES_TEST_UID:-1000}:${WORKBENCHES_TEST_GID:-1000}"
+    group_add: ["${WORKBENCHES_DOCKER_GID:-0}"]
+    working_dir: ${WORKBENCHES_SOURCE_ROOT:-/source}
+    volumes:
+      - ..:${WORKBENCHES_SOURCE_ROOT:-/source}:ro
+      - /tmp:/tmp
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WORKBENCHES_RUNTIME_TEST: "1"
+      PYTHONUNBUFFERED: "1"
+      WORKBENCHES_TEST_VAULT: ${WORKBENCHES_TEST_VAULT:-1}
+      WORKBENCHES_TOOLS_BUILD_NETWORK: ${WORKBENCHES_TOOLS_BUILD_NETWORK:-host}
+    command: [python3, devcontainer.test/test-tools-runtime.py]
+
   acceptance-engine:
-    profiles: [workstation-acceptance]
+    profiles: [workstation-acceptance, component-lifecycle]
     image: docker:28-dind
     privileged: true
     environment:
       DOCKER_TLS_CERTDIR: ""
-    command: [dockerd, "--host=unix:///var/run/docker.sock", "--group=1000", "--bip=172.28.0.1/16", "--default-address-pool=base=172.29.0.0/16,size=24"]
+      # Large SDK exports can OOM-kill dockerd even with host swap. Keep
+      # this disposable engine's Go heap target and CPU concurrency modest.
+      GOMEMLIMIT: 4GiB
+      GOMAXPROCS: "2"
+    command: [dockerd, "--host=unix:///var/run/docker.sock", "--group=1000", "--bip=172.28.0.1/16", "--default-address-pool=base=172.29.0.0/16,size=24", "--mtu=1280"]
     volumes:
       - acceptance-socket:/var/run
       - acceptance-home:/home/node
@@ -42,6 +100,9 @@ services:
     environment:
       WORKBENCHES_ACCEPTANCE_REF: ${WORKBENCHES_ACCEPTANCE_REF:-main}
       WORKBENCHES_ACCEPTANCE_SHA: ${WORKBENCHES_ACCEPTANCE_SHA:-}
+      WORKBENCHES_ACCEPTANCE_REQUIRE_PUBLIC: ${WORKBENCHES_ACCEPTANCE_REQUIRE_PUBLIC:-0}
+      WORKBENCHES_ACCEPTANCE_FROZEN: ${WORKBENCHES_ACCEPTANCE_FROZEN:-0}
+      WORKBENCHES_ACCEPTANCE_EMAIL: ${WORKBENCHES_ACCEPTANCE_EMAIL:-acceptance@example.test}
       TMPDIR: /acceptance/tmp
     volumes:
       - acceptance-socket:/var/run
@@ -50,6 +111,24 @@ services:
       - ..:/source:ro
       - ../artifacts/workstation-acceptance:/report
     command: [bash, -ec, "mkdir -p /acceptance/tmp; chown -R node:node /home/node /acceptance /report; exec runuser -u node -- python3 /source/devcontainer.test/test-workstation-acceptance.py"]
+
+  component-lifecycle:
+    profiles: [component-lifecycle]
+    image: workbenches-test:workstation
+    build:
+      context: workstation
+    depends_on:
+      acceptance-engine:
+        condition: service_healthy
+    environment:
+      TMPDIR: /acceptance/tmp
+      WORKBENCHES_LIFECYCLE_TEST: "1"
+    volumes:
+      - acceptance-socket:/var/run
+      - acceptance-home:/home/node
+      - acceptance-tmp:/acceptance
+      - ..:/source:ro
+    command: [bash, -ec, "mkdir -p /acceptance/tmp; chown -R node:node /home/node /acceptance; exec runuser -u node -- python3 /source/devcontainer.test/test-component-lifecycle.py"]
 
   test:
     image: workbench-base:${USER:-brett}
@@ -114,6 +193,11 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:rw,nosuid,nodev,mode=1777,size=256m"]
+
+networks:
+  default:
+    driver_opts:
+      com.docker.network.driver.mtu: "1280"
 
 volumes:
   acceptance-socket:

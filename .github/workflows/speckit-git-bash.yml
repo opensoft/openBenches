@@ -15,11 +15,20 @@ on:
       - devBenches/base-image/files/ct/ct-functions.zsh
       - devBenches/base-image/upstream-pin.yaml
       - devBenches/base-image/update-upstream.py
+      - devcontainer.test/test-update-upstream.py
       - devBenches/base-image/files/openreposhape/**
       - devBenches/base-image/files/openrepotools/**
       - devBenches/base-image/files/estate/**
       - devBenches/base-image/Dockerfile
       - base-image/files/claude-profile
+      - base-image/files/claude-statusline-command.sh
+      - devcontainer.test/test-claude-profile-lane-default.sh
+      - devcontainer.test/test-claude-profile-lane-start.sh
+      - devcontainer.test/test-claude-profile-session-start-hook.sh
+      - devcontainer.test/test-claude-profile-preserves-model.sh
+      - devcontainer.test/test-claude-tmux-statusline.sh
+      - devcontainer.test/test-claude-tmux-statusline-env-isolation.sh
+      - devcontainer.test/test-claude-statusline-snapshots.sh
       - scripts/setup-estate-commands.sh
       - devcontainer.test/test-setup-estate-commands.sh
       - devcontainer.test/test-base-image-dockerfile.sh
@@ -30,6 +39,8 @@ on:
       - scripts/setup-claude-profiles.sh
       - devcontainer.test/test-claude-profile-skill-install.sh
       - devcontainer.test/test-claude-profile-amendment-11.sh
+      - devcontainer.test/test-claude-profile-refusal-fallback.sh
+      - devcontainer.test/test-claude-profile-agent-model-hook.sh
       - base-image/files/claude-usage-guard.sh
       - docs/claude-multi-account-profiles.md
       - README.md
@@ -49,11 +60,20 @@ on:
       - devBenches/base-image/files/ct/ct-functions.zsh
       - devBenches/base-image/upstream-pin.yaml
       - devBenches/base-image/update-upstream.py
+      - devcontainer.test/test-update-upstream.py
       - devBenches/base-image/files/openreposhape/**
       - devBenches/base-image/files/openrepotools/**
       - devBenches/base-image/files/estate/**
       - devBenches/base-image/Dockerfile
       - base-image/files/claude-profile
+      - base-image/files/claude-statusline-command.sh
+      - devcontainer.test/test-claude-profile-lane-default.sh
+      - devcontainer.test/test-claude-profile-lane-start.sh
+      - devcontainer.test/test-claude-profile-session-start-hook.sh
+      - devcontainer.test/test-claude-profile-preserves-model.sh
+      - devcontainer.test/test-claude-tmux-statusline.sh
+      - devcontainer.test/test-claude-tmux-statusline-env-isolation.sh
+      - devcontainer.test/test-claude-statusline-snapshots.sh
       - scripts/setup-estate-commands.sh
       - devcontainer.test/test-setup-estate-commands.sh
       - devcontainer.test/test-base-image-dockerfile.sh
@@ -64,6 +84,8 @@ on:
       - scripts/setup-claude-profiles.sh
       - devcontainer.test/test-claude-profile-skill-install.sh
       - devcontainer.test/test-claude-profile-amendment-11.sh
+      - devcontainer.test/test-claude-profile-refusal-fallback.sh
+      - devcontainer.test/test-claude-profile-agent-model-hook.sh
       - base-image/files/claude-usage-guard.sh
       - docs/claude-multi-account-profiles.md
       - README.md
@@ -103,6 +125,14 @@ jobs:
       - name: Check the vendored upstream copies against their pin
         run: python3 ./devBenches/base-image/update-upstream.py check
 
+      # opensoft/workBenches#153. `apply`'s two ways to accept a commit: the
+      # default-branch rule, word for word as it was, and a release named by
+      # `--tag` and `--branch`. The real tool runs against a throwaway pin with
+      # a stub `gh` first on PATH, a failing `curl`, a bogus GH_TOKEN and an
+      # empty GH_CONFIG_DIR, so nothing reaches GitHub. Needs python3, git, jq.
+      - name: Run the update-upstream.py apply regression test
+        run: python3 ./devcontainer.test/test-update-upstream.py
+
       - name: Run the setup-estate-commands regression test
         run: bash ./devcontainer.test/test-setup-estate-commands.sh
 
@@ -118,6 +148,23 @@ jobs:
       # and the profile manifest into its own sandbox and needs no tmux.
       - name: Run the base-image Dockerfile wiring test
         run: bash ./devcontainer.test/test-base-image-dockerfile.sh
+
+      # Remaining launcher suites from #105. Fakes and temporary profiles keep
+      # these independent of real accounts, tmux servers, and AI sessions.
+      - name: Run launcher, lane, and statusline regression suites
+        run: |
+          jq --version
+          script --version
+          for suite in \
+            test-claude-profile-lane-default \
+            test-claude-profile-lane-start \
+            test-claude-profile-session-start-hook \
+            test-claude-profile-preserves-model \
+            test-claude-tmux-statusline \
+            test-claude-tmux-statusline-env-isolation \
+            test-claude-statusline-snapshots; do
+            bash "./devcontainer.test/$suite.sh"
+          done
 
       - name: Run the claude-profile name-guard regression test
         run: bash ./devcontainer.test/test-claude-profile-name-guard-hook.sh
@@ -160,6 +207,29 @@ jobs:
       # Host-run, hermetic (its own $TEST_ROOT, real HOME never touched).
       - name: Run the claude-profile Amendment 11 regression test
         run: bash ./devcontainer.test/test-claude-profile-amendment-11.sh
+
+      # Every profile's settings.json gets CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1
+      # under `env` (Brett Heap, 2026-10-13: "we do not want the fallback to
+      # 4.8"); the shared protocol's Build Tiers preflight reads it back. This
+      # suite pins the seeding: a fresh file, an existing `env` kept whole, an
+      # explicit "0" preserved. Host-run, hermetic (its own sandbox for HOME,
+      # CLAUDE_PROFILES_HOME and the manifest), needs only bash and jq.
+      - name: Run the claude-profile refusal-fallback env regression test
+        run: bash ./devcontainer.test/test-claude-profile-refusal-fallback.sh
+
+      # Every profile's settings.json gets the two agent-model-record hook
+      # entries, a PostToolUse on the Agent tool and a SubagentStop, when
+      # `~/.local/bin/claude-agent-model-record` is installed (Brett Heap,
+      # 2026-10-15: "add the posttooluse hook that records the resolved
+      # model"); the shared protocol's Build Tiers "Pin and verify" names the
+      # record they write. This suite pins the seeding: both entries byte for
+      # byte, ensuring twice appends once, an entry already carrying the
+      # command and every foreign entry are left as they are, and nothing is
+      # written (or removed) where the script is not. Host-run, hermetic (its
+      # own sandbox for HOME, CLAUDE_PROFILES_HOME and the manifest), needs
+      # only bash and jq.
+      - name: Run the claude-profile agent-model-record hook regression test
+        run: bash ./devcontainer.test/test-claude-profile-agent-model-hook.sh
 
       - name: Run bootstrap suite
         run: bash ./devBenches/devcontainer.test/test-openspeckit-bootstrap.sh

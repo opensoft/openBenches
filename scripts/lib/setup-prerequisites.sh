@@ -1,30 +1,76 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/docker-prerequisite.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/setup-prompts.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/tools-container.sh"
+
+# setup.sh runs in Linux/WSL or macOS. Git Bash cannot host Linux benches.
+ensure_setup_platform() {
+    local choice
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            echo 'workBenches Setup — Windows'
+            echo 'Requirements: WSL 2 running, Docker with Linux containers.'
+            echo 'Open your WSL 2 distribution and run ./setup.sh there.'
+            echo 'If WSL is missing, install it from an Administrator PowerShell:'
+            echo '  wsl --install -d Ubuntu'
+            echo 'Restart Windows if requested; launch Ubuntu and create your Linux user.'
+            if [[ -t 0 ]] && command -v powershell.exe >/dev/null 2>&1; then
+                setup_read 'Install WSL/Ubuntu now? [y/N] (Q cancels)' choice
+                case "$choice" in
+                    y|Y|yes|YES) powershell.exe -NoProfile -Command "\$p = Start-Process wsl.exe -ArgumentList '--install','-d','Ubuntu','--no-launch' -Verb RunAs -Wait -PassThru; exit \$p.ExitCode" || return "$?" ;;
+                    *) return 130 ;;
+                esac
+            fi
+            return 1 ;;
+    esac
+}
+
+show_setup_requirements() {
+    local key label state detail action
+    echo "workBenches Setup — $(workbenches_setup_os)"
+    echo 'Requirements'
+    while IFS=$'\t' read -r key label state detail; do
+        [[ "$key" != vault ]] || continue
+        action="$(workbenches_requirement_action "$key" "$state")"
+        printf '  %-20s %-7s [%s] — %s\n' "$label (required)" "${state^}" "$action" "$detail"
+    done < <(workbenches_requirement_rows)
+    echo '  Vault                optional — credential access, sign in when needed'
+}
+
+ensure_workstation_requirements() {
+    local choice state action missing_wsl=false
+    # Docker and WSL are checked with Bash before any container tool is needed.
+    while true; do
+        missing_wsl=false
+        if [[ "$(workbenches_setup_os)" == Windows* && "$(workbenches_wsl_state)" != up ]]; then missing_wsl=true; fi
+        state="$(workbenches_docker_state)"
+        if [[ "$missing_wsl" == false && "$state" == up ]]; then
+            workbenches_tools_activate
+            return "$?"
+        fi
+        show_setup_requirements
+        [[ -t 0 ]] || { echo 'Resolve missing requirements in an interactive terminal, then rerun ./setup.sh.'; return 1; }
+        action="$(workbenches_requirement_action docker "$state") Docker"
+        [[ "$missing_wsl" != true ]] || action='Configure WSL 2'
+        setup_read "Enter: $action   R: recheck   Q: quit" choice
+        case "$choice" in q|Q) return 130 ;; r|R) continue ;; '') ;; *) continue ;; esac
+        if [[ "$missing_wsl" == true ]]; then
+            echo 'WSL 2 is required. From Windows PowerShell, run:'
+            printf '  wsl --set-version "%s" 2\n' "${WSL_DISTRO_NAME:-Ubuntu}"
+            echo 'Reopen the distribution and rerun ./setup.sh.'
+            return 1
+        fi
+        action="$(workbenches_requirement_action docker "$state")"
+        if ensure_docker "--${action,,}"; then :; else
+            local requirement_status=$?
+            case "$requirement_status" in 130|143) return "$requirement_status" ;; esac
+            echo 'Resolve the Docker issue above, then press R to recheck (Q quits).'
+        fi
+    done
+}
 
 ensure_setup_dependencies() {
-    local dependency choice status
-    local -a missing=()
-    for dependency in python3 jq git curl; do
-        command -v "$dependency" >/dev/null 2>&1 || missing+=("$dependency")
-    done
-    [[ ${#missing[@]} -gt 0 ]] || return 0
-    echo "Missing setup dependencies: ${missing[*]}"
-    [[ -t 0 ]] || return 1
-    setup_read 'Install these dependencies now? [y/N]' choice
-    [[ "${choice,,}" == y || "${choice,,}" == yes ]] || return 130
-    case "$(workbenches_docker_os)" in
-        arch|endeavouros|manjaro|omarchy) sudo pacman -S --needed "${missing[@]/python3/python}" ;;
-        ubuntu|debian|pop) sudo apt update && sudo apt install -y "${missing[@]}" ;;
-        fedora|rhel|centos) sudo dnf install -y "${missing[@]}" ;;
-        alpine) sudo apk add "${missing[@]}" ;;
-        Darwin|darwin|macos) brew install "${missing[@]/python3/python}" ;;
-        *) echo "Install ${missing[*]} with your OS package manager, then rerun setup."; return 1 ;;
-    esac
-    status=$?
-    setup_propagate_cancel "$status"
-    [[ "$status" == 0 ]] || return "$status"
-    for dependency in "${missing[@]}"; do command -v "$dependency" >/dev/null 2>&1 || return 1; done
+    workbenches_tools_activate
 }
 
 # Preserve writable Node-manager prefixes. System-owned prefixes fall back to

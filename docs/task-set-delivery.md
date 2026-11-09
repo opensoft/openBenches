@@ -10,8 +10,8 @@ boundary or a disabled-by-default flag.
 ## Authoring and review
 
 1. Identify the task set and its parent. Let Spec Kit own the feature and worktree
-   names; use Graphite to track the ordered branches. Do not enable its merge
-   queue for a branch where Mergify owns landing.
+   names; use GitHub's `gh-stack` extension to track the ordered branches.
+   Keep Mergify as the only merge queue for this rollout.
 2. Include the set ID, task IDs, verification command, and predecessor in each PR.
    For a same-repo Mergify-recognized stack, add `Depends-On: #N` on every
    upper PR and verify that its base is that predecessor's head branch.
@@ -49,9 +49,37 @@ A split/retry, partial landing, or missing receipt is not a clean one-run result
 Any new GitHub App grant, ruleset change, or billing approval is a separate step.
 Do not apply sandbox settings or bypasses to OpenBenches.
 
-References: [Mergify two-step CI](https://docs.mergify.com/merge-queue/two-step/),
-[Mergify stack recognition](https://docs.mergify.com/merge-queue/stacks/),
-[Graphite external queue integration](https://graphite.com/docs/external-merge-queue-integration).
+## Publish a stack for Mergify
+
+Use the [official GitHub CLI extension](https://github.com/github/gh-stack)
+with your normal GitHub authentication; no Graphite account is required.
+Install it once with `gh extension install github/gh-stack --pin v0.3.0`.
+For a two-task-set canary:
+
+```bash
+gh stack init --base main ci/stack-canary/example-first
+# Implement, stage and commit the first task set.
+gh stack add ci/stack-canary/example-second
+# Implement, stage and commit the second task set.
+gh stack view --short
+gh stack push
+gh pr create --draft --base main --head ci/stack-canary/example-first
+gh pr create --draft --base ci/stack-canary/example-first --head ci/stack-canary/example-second
+```
+
+In the second PR body, include `Depends-On: #N`, replacing `N` with the
+first PR's number. Use the actual Spec Kit set IDs and PR verification commands.
+`gh stack push` publishes branches without creating or linking PRs. Do not use
+`gh stack submit` or `gh stack link` here: they register a GitHub stack object,
+and [Mergify requires a ruleset exemption for registered stacks](https://docs.mergify.com/merge-queue/stacks/).
+The ordinary PR chain has no GitHub-native stack map; Mergify recognizes it
+from the PR bases and dependency markers. Use Mergify to enqueue and land it,
+not `gh stack merge` or GitHub's native merge queue.
+
+Rebase locally before the first push if needed. If GitHub blocks a
+non-fast-forward update to published branches, use fresh branches and new
+PRs, verify their dependency chain, and obtain fresh CI and review evidence.
+Never bypass the ruleset or rewrite an enqueued stack.
 
 ## OpenBenches rollout canary
 
@@ -59,11 +87,10 @@ The repository configuration is dormant until app access and a live canary
 are separately approved. Keep the current merge path and existing checks in
 place. Do not queue release work.
 
-- Use Graphite to publish one same-repository stack of two or three PRs from
+- Use the gh-stack authoring and ordinary PR steps above to publish one
+  same-repository stack of two or three PRs from
   `ci/stack-canary/` branches, rooted at `main`. The first canary is limited
   to this guide and Markdown files directly under `.specify/templates/`.
-  Verify Graphite submission before relying on it; if restacking requires a
-  blocked force-push, use fresh branches rather than bypassing the rule.
 - A maintainer compares each PR's current head and immediate base with the
   `openbenches-pr-fast` log and checks applicable review on that head. Then
   apply `stack-ci-reviewed` to each member. A label is not approval of a new

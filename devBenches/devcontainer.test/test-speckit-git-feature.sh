@@ -4241,6 +4241,24 @@ test_get_last_worktree_help_without_git() {
     esac
 }
 
+assert_get_last_worktree_usage_error() {
+    local expected="$1" status=0
+    shift
+    (cd "$FIXTURE_ROOT" && PATH=/nonexistent "$BASH" "$GET_LAST_WORKTREE_SCRIPT" "$@") \
+        >"$FIXTURE_ROOT/last-worktree-args.stdout" \
+        2>"$FIXTURE_ROOT/last-worktree-args.stderr" || status=$?
+    assert_equal 2 "$status" 'last-worktree argument error status' || return 1
+    [ ! -s "$FIXTURE_ROOT/last-worktree-args.stdout" ] || return 1
+    grep -Fq -- "$expected" "$FIXTURE_ROOT/last-worktree-args.stderr" &&
+        grep -Fq 'Usage: get-last-worktree.sh' "$FIXTURE_ROOT/last-worktree-args.stderr"
+}
+
+test_get_last_worktree_rejects_bad_args() {
+    assert_get_last_worktree_usage_error 'unrecognized option: --jsno' --jsno &&
+        assert_get_last_worktree_usage_error 'expected at most one option' --json --env &&
+        assert_get_last_worktree_usage_error 'unrecognized option:' ''
+}
+
 failures=0
 run_scenario() {
     local name="$1"
@@ -4257,6 +4275,7 @@ run_scenario() {
 run_scenario 'the vendored openRepoShape copies match devBenches/base-image/upstream-pin.yaml' \
     test_vendored_copies_match_their_pins
 run_scenario 'last-worktree help works without a Git checkout or Git binary' test_get_last_worktree_help_without_git
+run_scenario 'last-worktree rejects malformed arguments before Git discovery' test_get_last_worktree_rejects_bad_args
 run_scenario 'default sequential worktree with apostrophe description' test_default_sequential_worktree
 run_scenario 'branch_template with {number}-{slug} final segment' test_branch_template
 run_scenario 'namespaced sequential numbering' test_namespaced_numbering

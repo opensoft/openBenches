@@ -10,11 +10,23 @@ usage() {
 
 JSON_MODE=false
 ENV_MODE=false
-case "${1:-}" in
-    --json) JSON_MODE=true ;;
-    --env) ENV_MODE=true ;;
-    --help) usage; exit 0 ;;
-esac
+if [ "$#" -gt 1 ]; then
+    printf '%s\n' 'Error: expected at most one option.' >&2
+    usage >&2
+    exit 2
+fi
+if [ "$#" -eq 1 ]; then
+    case "$1" in
+        --json) JSON_MODE=true ;;
+        --env) ENV_MODE=true ;;
+        --help) usage; exit 0 ;;
+        *)
+            printf 'Error: unrecognized option: %q\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+fi
 
 # Shape-dependent extras filled in before emit_result runs.
 EMIT_REPO_SHAPE=single

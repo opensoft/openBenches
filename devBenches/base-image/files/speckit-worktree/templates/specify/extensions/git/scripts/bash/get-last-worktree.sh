@@ -3,11 +3,17 @@
 set -euo pipefail
 # speckit-overlay-shape: 1
 
+usage() {
+    printf '%s\n' 'Usage: get-last-worktree.sh [--json | --env | --help]' \
+        'Print the last Spec Kit worktree path, JSON metadata, or shell assignments.'
+}
+
 JSON_MODE=false
 ENV_MODE=false
 case "${1:-}" in
     --json) JSON_MODE=true ;;
     --env) ENV_MODE=true ;;
+    --help) usage; exit 0 ;;
 esac
 
 # Shape-dependent extras filled in before emit_result runs.

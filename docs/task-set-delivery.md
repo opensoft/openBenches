@@ -22,6 +22,9 @@ boundary or a disabled-by-default flag.
 4. Only queue the approved stack after all members pass. Do not restack it while
    queued. Record the exact batch head, included PRs, heavy job result, and
    resulting target tree. A combined pass is not a guarantee of atomic landing.
+   Queue the top PR with `@mergifyio queue` to include its predecessors. If
+   Mergify does not see a green fast check after first activation, trigger a
+   fresh fast run on the same reviewed head and confirm the queue sees it.
 
 ## CI contract
 

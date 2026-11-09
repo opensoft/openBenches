@@ -8,4 +8,10 @@
 
 - [X] T001 [O] Adopt the task-set constitution and synchronize the Spec Kit templates and guidance — files: `.specify/memory/constitution.md`, `.specify/templates/tasks-template.md`, `.specify/templates/plan-template.md`, `docs/task-set-delivery.md` — verify: `openspec validate task-set-pr-queue-pilot --strict --no-interactive && git diff --check`
 - [X] T002 [O] Provision and validate the synthetic two-step CI sandbox without any existing-repo ruleset changes — files: `docs/task-set-delivery.md` (external sandbox artifacts listed there) — verify: `test -n "$PILOT_FAST_RUNS" && for run in $PILOT_FAST_RUNS; do gh run view "$run" --repo "$PILOT_REPO" --exit-status || exit; done`
-- [ ] T003 [O] Prove Graphite-authored stack recognition, failed-batch isolation, and successful combined validation with Mergify — files: `docs/task-set-delivery.md` (pilot acceptance procedure) — verify: `test -n "$PILOT_HEAVY_RUN" && gh run view "$PILOT_HEAVY_RUN" --repo "$PILOT_REPO" --exit-status`
+- [X] T003 [O] Prove Graphite-authored stack recognition, failed-batch isolation, and successful combined validation with Mergify — files: `docs/task-set-delivery.md` (pilot acceptance procedure) — verify: `test -n "$PILOT_HEAVY_RUN" && gh run view "$PILOT_HEAVY_RUN" --repo "$PILOT_REPO" --exit-status`
+
+Pilot result: Graphite created the local stack; GitHub CLI published its PRs.
+Mergify rejected the deliberately failing three-PR batch without moving the
+target. It then merged the corrected stack after one successful combined heavy
+run, with no split or retry. The final target tree matched the tested candidate.
+Exact run and commit evidence is retained in the private sandbox.

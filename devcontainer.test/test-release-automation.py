@@ -2,6 +2,7 @@
 """Release evidence must fail closed; no runners, credentials or cloud required."""
 import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -99,6 +100,28 @@ class ReleaseAutomationTests(unittest.TestCase):
             with self.assertRaises(rv.ValidationError): image_source.planned_identity(path, expected)
         rv.atomic(path, {'source': dict(identity, version='../../other')})
         with self.assertRaises(rv.ValidationError): image_source.planned_identity(path, 'a' * 40)
+
+    def test_image_source_cli_accepts_only_the_two_authorized_repository_slugs(self):
+        path = Path(self.temp.name) / 'image-plan.json'
+        commit = 'a' * 40
+        rv.atomic(path, {'source': dict(commit=commit, version='1.6.2')})
+        argv = ['release-qa-image-source.py', '--plan', str(path), '--commit', commit, '--require-trusted']
+        for repository in ('opensoft/openBenches', 'opensoft/workBenches', 'fork/openBenches', 'opensoft/other'):
+            with self.subTest(repository=repository), \
+                 patch.object(sys, 'argv', argv), \
+                 patch.dict(os.environ, {'GITHUB_REPOSITORY': repository, 'WB_SOURCE_READ_TOKEN': 'fixture'}, clear=True), \
+                 patch.object(image_source.urllib.request, 'urlopen') as urlopen, \
+                 patch('builtins.print') as report:
+                if repository in ('opensoft/openBenches', 'opensoft/workBenches'):
+                    urlopen.return_value = io.BytesIO(json.dumps({'commit': {'sha': commit}}).encode())
+                    image_source.main()
+                    self.assertEqual(urlopen.call_args.args[0].full_url,
+                                     f'https://api.github.com/repos/{repository}/branches/main')
+                    report.assert_called_once_with('Image source authorized.')
+                else:
+                    with self.assertRaisesRegex(rv.ValidationError, 'unexpected_image_repository'):
+                        image_source.main()
+                    urlopen.assert_not_called()
 
     def test_image_publication_requires_current_main_or_exact_protected_release(self):
         identity = dict(commit='a' * 40, version='1.6.0-rc.3')

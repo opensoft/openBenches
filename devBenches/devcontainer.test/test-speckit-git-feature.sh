@@ -4232,6 +4232,15 @@ test_vendored_copies_match_their_pins() {
     python3 "$UPDATE_UPSTREAM_FILE" check >/dev/null
 }
 
+test_get_last_worktree_help_without_git() {
+    local output
+    output="$(cd "$FIXTURE_ROOT" && PATH=/nonexistent "$BASH" "$GET_LAST_WORKTREE_SCRIPT" --help)" || return 1
+    case "$output" in
+        'Usage: get-last-worktree.sh [--json | --env | --help]'*) return 0 ;;
+        *) printf 'unexpected last-worktree help: %s\n' "$output" >&2; return 1 ;;
+    esac
+}
+
 failures=0
 run_scenario() {
     local name="$1"
@@ -4247,6 +4256,7 @@ run_scenario() {
 
 run_scenario 'the vendored openRepoShape copies match devBenches/base-image/upstream-pin.yaml' \
     test_vendored_copies_match_their_pins
+run_scenario 'last-worktree help works without a Git checkout or Git binary' test_get_last_worktree_help_without_git
 run_scenario 'default sequential worktree with apostrophe description' test_default_sequential_worktree
 run_scenario 'branch_template with {number}-{slug} final segment' test_branch_template
 run_scenario 'namespaced sequential numbering' test_namespaced_numbering

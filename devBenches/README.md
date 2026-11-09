@@ -26,7 +26,8 @@ Layer 1a carries the shared developer tooling used by all devBenches, including:
 - `sonar-scanner` - SonarScanner CLI for project analysis uploads to SonarQube Server or SonarQube Cloud
 - `sonar` - SonarQube CLI for issue/project workflows, secrets scanning, and agent integrations
 - `sonar-env` - container-safe Sonar environment loader that reads `~/.config/sonarqube/sonar.env`
-- `gt` - Graphite CLI for stacked pull request workflows
+- `gt` - legacy Graphite CLI. For OpenBenches stack authoring, install the
+  GitHub `gh-stack` extension as described in [task-set delivery](../docs/task-set-delivery.md).
 
 Devcontainers should mount `~/.config/sonarqube` read-only or mount the full host
 home directory. The shared `sonar-env` helper then loads tokens at runtime and

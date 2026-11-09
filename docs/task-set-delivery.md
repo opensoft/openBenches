@@ -95,6 +95,9 @@ place. Do not queue release work.
   `openbenches-pr-fast` log and checks applicable review on that head. Then
   apply `stack-ci-reviewed` to each member. A label is not approval of a new
   head or base: remove it and obtain fresh evidence after any change.
+- Before queueing, record the PR numbers, head and immediate-base SHAs, fast CI
+  runs, and applicable review receipts in the rollout issue. This makes it
+  possible to compare the approved stack with the queue candidate.
 - With the queue empty, enqueue from the top PR using `@mergifyio queue`.
   Do not edit or restack in flight. Inspect the queue's candidate PR against
   `main`: it must contain exactly the approved members. If the stack or base

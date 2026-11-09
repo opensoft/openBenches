@@ -393,6 +393,12 @@ test_malformed_and_symlinked_state_fall_back_safely() {
     assert_equal "$registered_path" "$(json_field "$output" WORKTREE_PATH)" 'malformed state fallback path' || return 1
     assert_equal 'worktree_root_fallback' "$(json_field "$output" SOURCE)" 'malformed state fallback source' || return 1
 
+    # A state file must be one JSON document, not a stream of objects.
+    write_worktree_state "$state_file" "$registered_path" feature/014-registered || return 1
+    printf '\n{}\n' >> "$state_file" || return 1
+    output="$(cd "$repo" && bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
+    assert_equal 'worktree_root_fallback' "$(json_field "$output" SOURCE)" 'multi-document state fallback source' || return 1
+
     # Given: the same state pathname is a symlink to external sentinel bytes.
     rm -f "$state_file" || return 1
     printf 'external sentinel bytes\n' > "$sentinel" || return 1

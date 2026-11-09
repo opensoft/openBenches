@@ -156,7 +156,7 @@ insert_registered_worktree() {
     canonical_path="$GIT_WORKTREE_VERIFIED_PATH"
     branch="$GIT_WORKTREE_VERIFIED_BRANCH_REF"
     mtime="$(mtime_for_path "$canonical_path" 2>/dev/null || true)"
-    [ -n "$mtime" ] || return 0
+    [[ "$mtime" =~ ^-?[0-9]+$ ]] || return 0
     branch="${branch#refs/heads/}"
     [ -n "$branch" ] || branch="(detached)"
 

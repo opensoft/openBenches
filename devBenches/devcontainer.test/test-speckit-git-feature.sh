@@ -4296,7 +4296,18 @@ SH
     output="$(cd "$repo" && PATH="$shim:$PATH" TEST_MTIME_PATH="$path" TEST_MTIME_LOG="$log" \
         TEST_REAL_STAT="$(command -v stat)" bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
     assert_equal "$path" "$(json_field "$output" WORKTREE_PATH)" 'mtime probe path' || return 1
-    assert_equal 1 "$(grep -c '^probe$' "$log")" 'single successful mtime probe'
+    assert_equal 1 "$(grep -c '^probe$' "$log")" 'single successful mtime probe' || return 1
+
+    # An unusable stat result must not become a selectable worktree.
+    if (cd "$repo" && PATH="$shim:$PATH" TEST_MTIME_PATH="$path" TEST_MTIME_LOG="$log" \
+        TEST_MTIME_VALUE=not-an-epoch TEST_REAL_STAT="$(command -v stat)" \
+        bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json) \
+        >"$FIXTURE_ROOT/invalid-mtime.stdout" 2>"$FIXTURE_ROOT/invalid-mtime.stderr"; then
+        printf 'assertion failed: last-worktree accepted a nonnumeric mtime\n' >&2
+        return 1
+    fi
+    [ ! -s "$FIXTURE_ROOT/invalid-mtime.stdout" ] &&
+        grep -Fq 'no Speckit worktree handoff has been recorded yet' "$FIXTURE_ROOT/invalid-mtime.stderr"
 }
 
 failures=0
@@ -4316,7 +4327,7 @@ run_scenario 'the vendored openRepoShape copies match devBenches/base-image/upst
     test_vendored_copies_match_their_pins
 run_scenario 'last-worktree help works without a Git checkout or Git binary' test_get_last_worktree_help_without_git
 run_scenario 'last-worktree rejects malformed arguments before Git discovery' test_get_last_worktree_rejects_bad_args
-run_scenario 'last-worktree reads a successful mtime probe only once' test_get_last_worktree_reads_mtime_once
+run_scenario 'last-worktree reads a successful mtime once and rejects invalid timestamps' test_get_last_worktree_reads_mtime_once
 run_scenario 'default sequential worktree with apostrophe description' test_default_sequential_worktree
 run_scenario 'branch_template with {number}-{slug} final segment' test_branch_template
 run_scenario 'namespaced sequential numbering' test_namespaced_numbering

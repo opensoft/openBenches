@@ -21,6 +21,8 @@ Assign every implementation task to exactly one task set. Each set maps to one
 PR, delivers one outcome, and has a focused verification command. Keep the task
 IDs and story phases below; use this table to group those IDs rather than
 duplicating the checklist. Split a set that needs more than one review decision.
+For stacked delivery, name the immediate predecessor in the parent column and
+make the fast verification command runnable against that predecessor's branch.
 
 | Set | Outcome | Task IDs | Parent set(s) | Fast verification | Safe intermediate state |
 | --- | --- | --- | --- | --- | --- |

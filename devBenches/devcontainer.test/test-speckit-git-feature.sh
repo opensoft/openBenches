@@ -4310,6 +4310,31 @@ SH
         grep -Fq 'no Speckit worktree handoff has been recorded yet' "$FIXTURE_ROOT/invalid-mtime.stderr"
 }
 
+test_get_last_worktree_breaks_mtime_ties_by_path() {
+    local repo="$FIXTURE_ROOT/mtime-tie-repo"
+    local root="$FIXTURE_ROOT/mtime-tie-worktrees"
+    local first="$root/001-alpha" second="$root/002-zulu"
+    local shim="$FIXTURE_ROOT/mtime-tie-bin"
+    local records="$FIXTURE_ROOT/mtime-tie.records"
+    local config=$'checkout_mode: worktree\nbase_branch: main\nworktree_root: ../mtime-tie-worktrees'
+    local head output
+    initialize_fixture "$repo" "$config" || return 1
+    install_discovery_scripts "$repo" || return 1
+    git -C "$repo" branch feature/mtime-alpha || return 1
+    git -C "$repo" branch feature/mtime-zulu || return 1
+    git -C "$repo" worktree add -q "$first" feature/mtime-alpha || return 1
+    git -C "$repo" worktree add -q "$second" feature/mtime-zulu || return 1
+    touch -t 202001010100 "$first" "$second" || return 1
+    head="$(git -C "$repo" rev-parse HEAD)" || return 1
+    install_git_porcelain_shim "$shim" || return 1
+    printf 'worktree %s\nHEAD %s\nbranch refs/heads/%s\n\n' \
+        "$second" "$head" feature/mtime-zulu "$first" "$head" feature/mtime-alpha > "$records" || return 1
+    output="$(cd "$repo" && PATH="$shim:$PATH" SPECKIT_TEST_REAL_GIT="$REAL_GIT" \
+        SPECKIT_TEST_GIT_MODE=records-file SPECKIT_TEST_GIT_RECORDS_FILE="$records" \
+        bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
+    assert_equal "$first" "$(json_field "$output" WORKTREE_PATH)" 'equal mtime uses path order, not Git enumeration'
+}
+
 failures=0
 run_scenario() {
     local name="$1"
@@ -4328,6 +4353,7 @@ run_scenario 'the vendored openRepoShape copies match devBenches/base-image/upst
 run_scenario 'last-worktree help works without a Git checkout or Git binary' test_get_last_worktree_help_without_git
 run_scenario 'last-worktree rejects malformed arguments before Git discovery' test_get_last_worktree_rejects_bad_args
 run_scenario 'last-worktree reads a successful mtime once and rejects invalid timestamps' test_get_last_worktree_reads_mtime_once
+run_scenario 'last-worktree breaks equal modification times by canonical path' test_get_last_worktree_breaks_mtime_ties_by_path
 run_scenario 'default sequential worktree with apostrophe description' test_default_sequential_worktree
 run_scenario 'branch_template with {number}-{slug} final segment' test_branch_template
 run_scenario 'namespaced sequential numbering' test_namespaced_numbering

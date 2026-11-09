@@ -65,8 +65,23 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     # PostgreSQL 16, server and client, for the real-database tests of
     # opensoft/openRepoTools#165. The server binaries live in
     # /usr/lib/postgresql/16/bin, and nothing in a bench starts a server.
-    postgresql-16 \
+    # postgresql-common and the client come first; the server comes below.
+    postgresql-common \
     postgresql-client-16 \
+    # NO CLUSTER AT INSTALL. The server package's postinst (configure_version
+    # in postgresql-common's maintscripts-functions) creates a `16/main`
+    # cluster unless createcluster.conf's create_main_cluster reads "off", so
+    # it is turned off BEFORE the server is installed. The fixture's tests run
+    # initdb into their own throwaway directories, so no cluster is needed, and
+    # with none, the postinst's `invoke-rc.d postgresql start` starts nothing.
+    # The build then checks there is no cluster and that the four binaries
+    # the fixture needs at major 16 (initdb, pg_ctl, postgres, psql) are there.
+    && conf=/etc/postgresql-common/createcluster.conf \
+    && sed -ri 's/^#?[[:space:]]*create_main_cluster[[:space:]]*=.*$/create_main_cluster = false/' "$conf" \
+    && { grep -qx 'create_main_cluster = false' "$conf" || echo 'create_main_cluster = false' >> "$conf"; } \
+    && apt-get -y install --no-install-recommends postgresql-16 \
+    && test -z "$(pg_lsclusters -h)" \
+    && for bin in initdb pg_ctl postgres psql; do test -x "/usr/lib/postgresql/16/bin/$bin" || exit 1; done \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

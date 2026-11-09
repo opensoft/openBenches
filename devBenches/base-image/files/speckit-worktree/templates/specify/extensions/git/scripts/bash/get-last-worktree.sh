@@ -151,6 +151,7 @@ insert_registered_worktree() {
     local detached="$6"
     local canonical_path mtime
     local candidate_count insert_at index previous_index
+    local LC_ALL=C
 
     verify_git_worktree_candidate "$main_root" "$root" "$path" "$head" "$branch" "$detached" || return 0
     canonical_path="$GIT_WORKTREE_VERIFIED_PATH"
@@ -164,7 +165,9 @@ insert_registered_worktree() {
     insert_at=$candidate_count
     index=0
     while [ "$index" -lt "$candidate_count" ]; do
-        if [ "$mtime" -gt "${REGISTERED_WORKTREE_MTIMES[$index]}" ]; then
+        if [ "$mtime" -gt "${REGISTERED_WORKTREE_MTIMES[$index]}" ] ||
+            { [ "$mtime" -eq "${REGISTERED_WORKTREE_MTIMES[$index]}" ] &&
+                [[ "$canonical_path" < "${REGISTERED_WORKTREE_PATHS[$index]}" ]]; }; then
             insert_at=$index
             break
         fi

@@ -52,3 +52,29 @@ Do not apply sandbox settings or bypasses to OpenBenches.
 References: [Mergify two-step CI](https://docs.mergify.com/merge-queue/two-step/),
 [Mergify stack recognition](https://docs.mergify.com/merge-queue/stacks/),
 [Graphite external queue integration](https://graphite.com/docs/external-merge-queue-integration).
+
+## OpenBenches rollout canary
+
+The repository configuration is dormant until app access and a live canary
+are separately approved. Keep the current merge path and existing checks in
+place. Do not queue release work.
+
+- Use Graphite to publish one same-repository stack of two or three PRs from
+  `ci/stack-canary/` branches, rooted at `main`. The first canary is limited
+  to this guide and Markdown files directly under `.specify/templates/`.
+  Verify Graphite submission before relying on it; if restacking requires a
+  blocked force-push, use fresh branches rather than bypassing the rule.
+- A maintainer compares each PR's current head and immediate base with the
+  `openbenches-pr-fast` log and checks applicable review on that head. Then
+  apply `stack-ci-reviewed` to each member. A label is not approval of a new
+  head or base: remove it and obtain fresh evidence after any change.
+- With the queue empty, enqueue from the top PR using `@mergifyio queue`.
+  Do not edit or restack in flight. Inspect the queue's candidate PR against
+  `main`: it must contain exactly the approved members. If the stack or base
+  moves, dequeue and revalidate. Do not add unrelated PRs to the batch.
+- Capture one successful `openbenches-stack-heavy` run on the exact candidate
+  and compare its tree with the landed tree. A failed candidate must not
+  move the target. Stop admitting stacks and dequeue outstanding work if the
+  canary fails; never manually merge past a failed heavy check.
+
+Existing release validation and publishing are independent of these checks.

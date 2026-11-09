@@ -399,6 +399,12 @@ test_malformed_and_symlinked_state_fall_back_safely() {
     output="$(cd "$repo" && bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
     assert_equal 'worktree_root_fallback' "$(json_field "$output" SOURCE)" 'multi-document state fallback source' || return 1
 
+    # Do not truncate an impossible path to a real registered path at a NUL.
+    python3 -c 'import json, sys; print(json.dumps({"WORKTREE_PATH": sys.argv[1] + "\0ignored"}))' \
+        "$registered_path" > "$state_file" || return 1
+    output="$(cd "$repo" && bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
+    assert_equal 'worktree_root_fallback' "$(json_field "$output" SOURCE)" 'NUL state fallback source' || return 1
+
     # Given: the same state pathname is a symlink to external sentinel bytes.
     rm -f "$state_file" || return 1
     printf 'external sentinel bytes\n' > "$sentinel" || return 1

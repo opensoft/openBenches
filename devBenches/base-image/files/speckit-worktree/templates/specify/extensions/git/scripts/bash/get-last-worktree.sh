@@ -217,7 +217,9 @@ read_state_worktree_path() {
     _git_worktree_create_temp_file || return 1
     output_file="$_GIT_WORKTREE_OUTPUT_FILE"
     if command -v jq >/dev/null 2>&1; then
-        if ! jq -jr 'if type == "object" and ((.WORKTREE_PATH // "") | type) == "string" then (.WORKTREE_PATH // "") else error("invalid state") end' \
+        if ! jq -jrs 'if length == 1 and (.[0] | type) == "object"
+            and ((.[0].WORKTREE_PATH // "") | type) == "string"
+            then (.[0].WORKTREE_PATH // "") else error("invalid state") end' \
             "$state_file" > "$output_file" 2>/dev/null; then
             _git_worktree_remove_temp_file "$output_file" || true
             return 1

@@ -83,3 +83,64 @@ are never linked.
 
 The operation is idempotent. It refuses to replace a real profile-local history
 path or a link targeting another store; migrate that state explicitly first.
+
+## Shared Opensoft desktop projects
+
+The desktop also keeps an account-scoped project registry and chat membership
+map. Sharing session files alone does not preserve the project sidebar when
+the login changes. For the `opensoft` family, Windows setup now installs
+**Codex - Opensoft shared projects** in the WorkBenches Start menu folder.
+Use this launcher after a normal desktop exit to capture the last account's
+changes and prepare the enrolled accounts before opening regular Codex.
+`-SkipDesktopProjectSharing` skips installing this launcher.
+
+The native launcher can also be run directly:
+
+```powershell
+.\scripts\codex-desktop.ps1
+# A normal close, preparation, and relaunch when explicitly wanted:
+.\scripts\codex-desktop.ps1 -Restart
+```
+
+The helper checks the active login against Opensoft `.profile.json` metadata.
+A first recovery can select a verified, preserved account by its owner digest
+with `-EnrollOwner OWNER -SeedOwner OWNER`. The seed is accepted only before
+the catalog exists. `-EnrollIdentities PATH` accepts an explicitly supplied
+credential-free identity inventory (`version: 1`, `identities` array containing
+`owner`, `userId`, `accountId`, `email`, and `family: opensoft`). These bindings
+prepare profiles that have not previously opened this desktop. Never put login
+tokens in the inventory.
+
+The catalog preserves local project IDs, names, roots, ordering, appearance,
+and local chat grouping. Changes made by a synchronized active account become
+the next shared set, including removals and projectless chats. Account-specific
+cloud ownership fields, credentials, and other preferences are preserved in
+their destination accounts rather than copied from another account.
+
+Catalogs live under the selected Codex home's
+`workbenches-projects/<runtime>/opensoft.json`. Windows uses `windows` with the
+regular `OpenAI.Codex` package. Beta/WSL uses `beta-wsl` in its own Linux home:
+
+```bash
+python3 scripts/codex-project-state.py \
+  --runtime beta-wsl --home "$HOME/.codex" \
+  --profiles "$HOME/.chatgpt-profiles/profiles" --apply
+```
+
+Run that command only with Beta stopped, then open Beta through its existing
+launcher. Do not pass a Windows home or catalog to it. The Windows launcher
+does not execute WSL, select `OpenAI.CodexBeta`, change terminal settings, or
+copy runtime configuration. No SQLite database is rebuilt or linked.
+
+**Launch boundary:** the desktop retains global state in memory. This helper
+refuses to change state while the selected package runs. The app's built-in
+account switcher cannot invoke an external workBenches hook; use a normal exit
+and the shared launcher to propagate edits. Already prepared account snapshots
+contain the common set, but changes made since preparation are synchronized at
+the next prepared launch. Opening the launcher while Codex already runs simply
+activates it; use `-Restart` explicitly to prepare immediately.
+
+Before changes, the helper creates original-file backups alongside the catalog,
+checks that inputs have not changed, and uses atomic file replacement. Repeating
+an unchanged preparation writes nothing. To roll back, normally exit the selected
+desktop and restore its global-state file and catalog from the same backup.

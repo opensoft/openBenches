@@ -122,7 +122,7 @@ def merge_changes(shared, before, after):
     """Apply only actual edits since this account's last preparation."""
     shared = deepcopy(shared)
     reassigned = set()
-    for key in ("local-projects", "thread-project-assignments", *PROJECT_MAPS, *HOST_MAPS):
+    for key in ("local-projects", "thread-project-assignments", *PROJECT_MAPS, HOST_MAPS[1]):
         for item in before[key].keys() - after[key].keys():
             shared[key].pop(item, None)
         for item, value in after[key].items():
@@ -130,6 +130,15 @@ def merge_changes(shared, before, after):
                 shared[key][item] = deepcopy(value)
                 if key == "thread-project-assignments":
                     reassigned.add(item)
+    for host in before[HOST_MAPS[0]].keys() | after[HOST_MAPS[0]].keys():
+        previous = before[HOST_MAPS[0]].get(host, {})
+        current = after[HOST_MAPS[0]].get(host, {})
+        merged = shared[HOST_MAPS[0]].setdefault(host, {})
+        for project in previous.keys() - current.keys():
+            merged.pop(project, None)
+        for project, value in current.items():
+            if project not in previous or previous[project] != value:
+                merged[project] = value
     unassigned = set(shared["projectless-thread-ids"])
     unassigned -= set(before["projectless-thread-ids"]) - set(after["projectless-thread-ids"])
     unassigned |= set(after["projectless-thread-ids"]) - set(before["projectless-thread-ids"])

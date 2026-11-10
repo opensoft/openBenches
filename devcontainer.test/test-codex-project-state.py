@@ -202,6 +202,19 @@ class ProjectStateTests(unittest.TestCase):
         self.assertNotIn("t", result["thread-project-assignments"])
         self.assertIn("t", result["projectless-thread-ids"])
 
+    def test_independent_server_project_bindings_merge_within_the_same_host(self):
+        state, catalog = self.seed()
+        key = module.HOST_MAPS[0]
+        host = "local:native-home"
+        inactive = state[module.SCOPE]["inactive"][A]["globals"]
+        inactive["local-projects"]["q"] = project("q")
+        inactive[key][host]["q"] = "server-q"
+        state["local-projects"]["r"] = project("r")
+        state[key][host]["r"] = "server-r"
+        result, catalog = module.synchronize(state, catalog, "windows", "native-home", B)
+        self.assertEqual(result[key][host], {"q": "server-q", "r": "server-r"})
+        self.assertEqual(result[module.SCOPE]["inactive"][A]["globals"][key][host], result[key][host])
+
     def test_destination_cloud_chat_membership_is_preserved(self):
         state = fixture()
         cloud = {"projectKind": "local", "projectId": "g-p-cloud", "projectOrigin": "chatgpt"}

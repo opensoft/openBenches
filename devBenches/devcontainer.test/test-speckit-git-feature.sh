@@ -4268,7 +4268,23 @@ assert_get_last_worktree_usage_error() {
 test_get_last_worktree_rejects_bad_args() {
     assert_get_last_worktree_usage_error 'unrecognized option: --jsno' --jsno &&
         assert_get_last_worktree_usage_error 'expected at most one option' --json --env &&
+        # Help must not hide a second option, regardless of argument order.
+        assert_get_last_worktree_usage_error 'expected at most one option' --help --json &&
+        assert_get_last_worktree_usage_error 'expected at most one option' --env --help &&
         assert_get_last_worktree_usage_error 'unrecognized option:' ''
+}
+
+test_get_last_worktree_keeps_invalid_option_literal() {
+    local sentinel="$FIXTURE_ROOT/invalid-option-must-not-execute"
+    local argument="--\$(touch '$sentinel');*"
+    local quoted
+
+    # Invalid shell-like text is reported, never evaluated or glob-expanded.
+    assert_get_last_worktree_usage_error 'unrecognized option:' "$argument" || return 1
+    printf -v quoted '%q' "$argument"
+    grep -Fq -- "unrecognized option: $quoted" \
+        "$FIXTURE_ROOT/last-worktree-args.stderr" || return 1
+    [ ! -e "$sentinel" ]
 }
 
 test_get_last_worktree_reads_mtime_once() {
@@ -4352,6 +4368,7 @@ run_scenario 'the vendored openRepoShape copies match devBenches/base-image/upst
     test_vendored_copies_match_their_pins
 run_scenario 'last-worktree help works without a Git checkout or Git binary' test_get_last_worktree_help_without_git
 run_scenario 'last-worktree rejects malformed arguments before Git discovery' test_get_last_worktree_rejects_bad_args
+run_scenario 'last-worktree keeps shell-like invalid options literal' test_get_last_worktree_keeps_invalid_option_literal
 run_scenario 'last-worktree reads a successful mtime once and rejects invalid timestamps' test_get_last_worktree_reads_mtime_once
 run_scenario 'last-worktree breaks equal modification times by canonical path' test_get_last_worktree_breaks_mtime_ties_by_path
 run_scenario 'default sequential worktree with apostrophe description' test_default_sequential_worktree

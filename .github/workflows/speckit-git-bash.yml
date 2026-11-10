@@ -14,6 +14,8 @@ on:
       - devcontainer.test/helper-integration-baseline.json
       - devcontainer.test/test-helper-coverage-parity.py
       - devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
+      - devBenches/devcontainer.test/test-task-set-delivery.py
+      - devBenches/base-image/files/openspeckit/task-set-delivery/**
       - devBenches/devcontainer.test/test-speckit-git-feature.sh
       - devBenches/devcontainer.test/test-speckit-git-compat.sh
       - devBenches/devcontainer.test/test-ct-launchers.sh
@@ -69,6 +71,8 @@ on:
       - devcontainer.test/helper-integration-baseline.json
       - devcontainer.test/test-helper-coverage-parity.py
       - devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
+      - devBenches/devcontainer.test/test-task-set-delivery.py
+      - devBenches/base-image/files/openspeckit/task-set-delivery/**
       - devBenches/devcontainer.test/test-speckit-git-feature.sh
       - devBenches/devcontainer.test/test-speckit-git-compat.sh
       - devBenches/devcontainer.test/test-ct-launchers.sh

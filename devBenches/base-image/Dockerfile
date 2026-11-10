@@ -102,8 +102,9 @@ RUN npm install -g @fission-ai/openspec@latest \
 
 # Shared OpenSpec/Speckit project bootstrapper. Keep it with the spec-driven
 # CLIs so every developer bench can initialize the same agent context files.
-COPY files/openspeckit/setup-openspeckit /usr/local/bin/setup-openspeckit
-RUN chmod 0755 /usr/local/bin/setup-openspeckit \
+COPY files/openspeckit/ /usr/local/share/openspeckit/
+RUN chmod 0755 /usr/local/share/openspeckit/setup-openspeckit \
+    && ln -sfn /usr/local/share/openspeckit/setup-openspeckit /usr/local/bin/setup-openspeckit \
     && ln -sfn setup-openspeckit /usr/local/bin/setup-openspec-speckit-project
 
 # OpenSpec Claude commands and skills live with the devBench OpenSpec CLI.

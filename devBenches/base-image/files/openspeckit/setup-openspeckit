@@ -30,6 +30,8 @@ SHAPE_START = "<!-- OPENSPEC-SPECKIT-SHAPE:START -->"
 SHAPE_END = "<!-- OPENSPEC-SPECKIT-SHAPE:END -->"
 ROUTING_START = "<!-- OPENSPEC-SPECKIT-MODEL-ROUTING:START -->"
 ROUTING_END = "<!-- OPENSPEC-SPECKIT-MODEL-ROUTING:END -->"
+DELIVERY_START = "<!-- OPENSPEC-SPECKIT-TASK-SETS:START -->"
+DELIVERY_END = "<!-- OPENSPEC-SPECKIT-TASK-SETS:END -->"
 REPO_AGENT_ROOT: Final = "${AGENT_PROTOCOL_ROOT:-$HOME/.agents}"
 SHAPE_FIRST_LINE_SENTINEL: Final = "AGENTS-shape.md"
 DEFAULT_LEG_PATHS: Final = {"spec": "spec", "code": "code"}
@@ -364,6 +366,14 @@ def parse_args() -> argparse.Namespace:
         "--no-repo-agent-pointers",
         action="store_true",
         help="Do not update repo-local context files for supported agents.",
+    )
+    parser.add_argument(
+        "--task-set-delivery", action="store_true",
+        help="Opt this repo into the shared Claude/Codex task-set delivery preview (1.7).",
+    )
+    parser.add_argument(
+        "--install-stack-tools", action="store_true",
+        help="Explicitly install missing gh-stack v0.3.0; never replace a different installed version.",
     )
     return parser.parse_args()
 
@@ -4009,6 +4019,94 @@ def ensure_scaffold(
             touch(keep_file, dry_run)
 
 
+def task_set_template_root() -> Path:
+    for root in (
+        Path(__file__).resolve().parent / "task-set-delivery",
+        Path("/usr/local/share/openspeckit/task-set-delivery"),
+    ):
+        if root.is_dir():
+            safe_source_tree_entries(root)
+            return root
+    raise SystemExit("Task-set delivery assets missing; use a matching Tools package or source checkout.")
+
+
+def ensure_stack_tools(dry_run: bool) -> None:
+    expected = "gh stack version 0.3.0"
+    try:
+        result = subprocess.run(
+            ["gh", "stack", "--version"], capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            if result.stdout.strip() != expected:
+                raise SystemExit("Existing gh-stack differs from v0.3.0; leaving it unchanged. Review the version explicitly.")
+            log("verified gh-stack v0.3.0")
+            return
+        if dry_run:
+            log("would install github/gh-stack pinned to v0.3.0")
+            return
+        subprocess.run(
+            ["gh", "extension", "install", "github/gh-stack", "--pin", "v0.3.0"],
+            check=True, timeout=120,
+        )
+        result = subprocess.run(
+            ["gh", "stack", "--version"], capture_output=True, text=True, check=True, timeout=30,
+        )
+        if result.stdout.strip() != expected:
+            raise SystemExit("Installed gh-stack did not report 0.3.0; stop before using it.")
+        log("installed and verified gh-stack v0.3.0")
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemExit(f"Stack tools unavailable; check gh and existing GitHub authentication: {exc}") from exc
+
+
+def upsert_delivery_block(path: Path, body: str, dry_run: bool) -> None:
+    ensure_safe_destination_file(path, set())
+    text = read_destination_text(path)
+    if text is None:
+        text = "# Agent Instructions\n"
+    if text.count(DELIVERY_START) != text.count(DELIVERY_END) or text.count(DELIVERY_START) > 1:
+        raise SystemExit(f"Ambiguous task-set instruction markers in {path}; leaving the file unchanged.")
+    block = f"{DELIVERY_START}\n{body.rstrip()}\n{DELIVERY_END}"
+    if DELIVERY_START in text and DELIVERY_END in text:
+        before, rest = text.split(DELIVERY_START, 1)
+        _, after = rest.split(DELIVERY_END, 1)
+        updated = before + block + after
+    else:
+        updated = text.rstrip() + "\n\n" + block + "\n"
+    assert_preserved_first_line(path, text, updated)
+    write_text(path, updated, dry_run)
+
+
+def ensure_task_set_delivery(
+    repo: Path, template: Path, dry_run: bool, force: bool, include_repo_pointers: bool,
+) -> None:
+    for agent_dir in SKILL_HOME_DIRS:
+        link_or_copy_skill(template, repo / agent_dir / "skills" / "task-set-delivery", dry_run, force)
+    instructions = """## Task-set delivery (1.7 preview)
+
+For feature planning, task generation, implementation and PR delivery, use the
+shared `task-set-delivery` skill: `.agents/skills/task-set-delivery/SKILL.md`.
+Claude can invoke `/task-set-delivery`; Codex can invoke `$task-set-delivery`.
+One task set maps to one small PR, with tests and an explicit predecessor.
+Keep full CI outside the repository's approved scope. Installing this workflow
+does not grant queue access, review waivers, merge authority or release authority."""
+    if include_repo_pointers:
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            upsert_delivery_block(repo / name, instructions, dry_run)
+    for name in ("plan-template.md", "tasks-template.md"):
+        path = repo / ".specify" / "templates" / name
+        if destination_mode(path) is not None:
+            upsert_delivery_block(path, """## Task sets and delivery
+
+Read `.agents/skills/task-set-delivery/SKILL.md` for the shared process.
+Assign every implementation task to exactly one set and one PR. Preserve task
+IDs and phases; add a set table with outcome, task IDs, immediate predecessor,
+fast verification command and safe intermediate state. Keep tests in their
+behavior's set. Separate per-PR checks from combined pre-merge validation.
+Retain full CI for mixed or unqualified scopes; release checks are independent.""", dry_run)
+        else:
+            log(f"skipped task-set template block: {path} does not exist")
+
+
 def ensure_skills(
     repo: Path,
     dry_run: bool,
@@ -5109,6 +5207,9 @@ def main() -> int:
         args.no_worktrees,
         args.no_skill_links,
     )
+    delivery_template = task_set_template_root() if args.task_set_delivery else None
+    if args.install_stack_tools:
+        ensure_stack_tools(args.dry_run)
     integration = args.integration or existing_integration(repo) or "claude"
 
     log(f"repo: {repo}")
@@ -5168,6 +5269,12 @@ def main() -> int:
 
         if not args.no_skill_links:
             ensure_skills(repo, args.dry_run, args.force, overlay_owned_destinations)
+
+        if delivery_template is not None:
+            ensure_task_set_delivery(
+                repo, delivery_template, args.dry_run, args.force,
+                not args.no_repo_agent_pointers,
+            )
 
         if not args.no_skill_shape_blocks:
             ensure_skill_shape_blocks(

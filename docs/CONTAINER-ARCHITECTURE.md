@@ -144,6 +144,10 @@ Layer 1 splits into two branches based on use case:
 - spec-kit / `specify` (via uv)
 - OpenSpec (`@fission-ai/openspec` via npm)
 - OpenSpec/Speckit bootstrapper (`setup-openspeckit`) for repo and user-global agent context files
+- Opt-in shared Claude/Codex task-set delivery skill (`setup-openspeckit --task-set-delivery`);
+  pinned gh-stack installation is explicit via `--install-stack-tools`. See the
+  [1.7 workflow preview](shared-task-set-workflow.md); existing benches are not
+  updated or restarted by a source change.
 - Project-agnostic Speckit worktree helpers (`ct`, `ctp`, `ctlist`, `cta`, `ctc`, `ctg`, `cts`) via global shell startup
 - Graphite CLI (`gt`) is present in existing images. OpenBenches stack
   authoring uses the separately installed GitHub `gh-stack` extension; see

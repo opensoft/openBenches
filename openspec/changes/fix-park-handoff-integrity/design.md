@@ -4,7 +4,7 @@ Status: draft
 
 ## Scope
 
-Repair the shared distribution first, with one implementation task list in feature 177. openMFA consumes exact tested source bytes with source commit/digests recorded; its earlier local core-creation/resume corrections remain explicit. Do not run park against the operator's real workspace to test this change.
+Repair the shared distribution first, with one implementation task list in feature 177. openMFA consumes exact tested source bytes with source commit/digests recorded; its local core-creation correction remains explicit, while the shared resume correction supersedes the local resume patch. Do not run park against the operator's real workspace to test this change.
 
 ## Decisions
 

@@ -9,7 +9,7 @@ openMFA PR #2 exposed two inherited park defects: a mismatched code branch can b
 ## What Changes
 
 - Preflight repository identity and expected checked-out branch for every leg before any leg commit.
-- Treat explicit feature selection as a partial manifest update, preserving unselected records from the current file at every write/retry.
+- Treat explicit feature selection as a partial manifest update, preserving unselected records from the current file and through the existing Git rebase/refusal path on push retry.
 - Add isolated regression fixtures and carry the tested shared-source correction into the draft openMFA tooling PR.
 - Address the fresh consumer review finding: validate origin before accepting an existing resume worktree, preserving already-resumed idempotence and refusing unverified or moved remote branches.
 

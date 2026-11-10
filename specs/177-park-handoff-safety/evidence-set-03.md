@@ -17,7 +17,10 @@ After correction, all eleven focused cases passed in 52.305 seconds:
 the prior seven park/subset/race cases plus three origin refusal cases and
 safe repeated resume. Refusal preserves both local heads, worktree status
 and the workspace manifest. Fixtures use local disposable repositories only.
-The full feature suite and published CI/Codex review are separate gates.
+The full local feature suite also passed, ending with all eleven focused
+cases green. At 44adc6717af32edae21e85fda7cc849ba1c7592c, PR #312's
+published CI passed, including Bash 3.2, Git 2.34.1 and Linux/Windows
+PowerShell. Its exact-head Codex review completed without findings.
 
 SET-02 PR #311 at abfd44e8696608ba46e2e180d73b5f97f82526d7 passed
 the published Bash, Bash 3.2, Git 2.34.1, PowerShell Linux/Windows, image

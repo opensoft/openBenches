@@ -22,7 +22,7 @@
 ## US3 and final consumer reconciliation
 
 - [x] T007 [O] Reproduce moved/deleted/unavailable origin on existing worktrees and gate the existing-worktree shortcut before any reset; files: shared resume.sh and focused handoff fixtures. Three refusal cases failed before correction; all eleven focused cases passed afterward.
-- [ ] T008 [S] Validate safe repeat resume, publish SET-03 and obtain current-head CI/Codex evidence.
+- [x] T008 [S] Validate safe repeat resume, publish SET-03 and obtain current-head CI/Codex evidence. PR #312 at 44adc6717af32edae21e85fda7cc849ba1c7592c passed published CI and exact-head Codex review without findings; the full local feature suite also passed.
 - [ ] T006 [S] Copy the tested shared corrections into openMFA PR #2, retain declared unrelated local deviations, rerun its tests/CI/Codex review and reconcile evidence. Upstream merge/fleet installation remain distinct unclaimed states.
 - [ ] T009 [S] Record final source/consumer heads, hashes, test results and review dispositions without claiming upstream landing.
 

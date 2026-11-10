@@ -11,7 +11,9 @@ param(
 
     [string]$MultiCliHome = (Join-Path $env:USERPROFILE "MultiCliProfiles"),
 
-    [string]$SharedCodexHome = (Join-Path $env:USERPROFILE ".codex")
+    [string]$SharedCodexHome = (Join-Path $env:USERPROFILE ".codex"),
+
+    [switch]$SkipDesktopProjectSharing
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +27,7 @@ if (-not (Test-Path -LiteralPath $SharedCodexHome -PathType Container)) {
 }
 
 $profiles = (Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json).profiles
+$opensoftSelected = $false
 $codexProfiles = Join-Path $MultiCliHome "codex"
 New-Item -ItemType Directory -Path $codexProfiles -Force | Out-Null
 
@@ -80,6 +83,7 @@ foreach ($profile in $profiles) {
     }
 
     $profileDir = Join-Path $codexProfiles $profile.name
+    if ($profile.family -eq 'opensoft') { $opensoftSelected = $true }
     New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
     foreach ($name in @("sessions", "archived_sessions")) {
         Set-SharedDirectoryLink -ProfileDir $profileDir -Name $name
@@ -108,3 +112,26 @@ foreach ($profile in $profiles) {
 Write-Host "Multi-CLI Codex profiles synchronized under $codexProfiles"
 Write-Host "Synced company profiles share history from $SharedCodexHome"
 Write-Host "Credential files were not copied or linked."
+
+if ($opensoftSelected -and -not $SkipDesktopProjectSharing) {
+    # Only regular Windows Codex is installed here. Beta/WSL runs the helper
+    # separately in its own Linux home and never uses this installation.
+    if ([IO.Path]::GetFullPath($SharedCodexHome).StartsWith('\\')) {
+        throw 'Desktop project sharing requires a local Windows Codex home.'
+    }
+    $destination = Join-Path $env:LOCALAPPDATA 'workBenches\codex-projects\windows'
+    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    foreach ($name in @('codex-project-state.py', 'codex-desktop.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $destination $name) -Force
+    }
+    $programs = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\WorkBenches'
+    New-Item -ItemType Directory -Path $programs -Force | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut((Join-Path $programs 'Codex - Opensoft shared projects.lnk'))
+    $shortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $shortcut.TargetPath)) { $shortcut.TargetPath = Join-Path $PSHOME 'pwsh.exe' }
+    $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $destination 'codex-desktop.ps1') + '" -CodexHome "' + $SharedCodexHome + '" -ProfileRoot "' + $codexProfiles + '"'
+    $shortcut.Description = 'Prepare shared Opensoft projects, then open regular Windows Codex.'
+    $shortcut.Save()
+    Write-Host "Shared project launcher installed: $destination"
+}

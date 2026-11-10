@@ -4268,6 +4268,9 @@ assert_get_last_worktree_usage_error() {
 test_get_last_worktree_rejects_bad_args() {
     assert_get_last_worktree_usage_error 'unrecognized option: --jsno' --jsno &&
         assert_get_last_worktree_usage_error 'expected at most one option' --json --env &&
+        # Help must not hide a second option, regardless of argument order.
+        assert_get_last_worktree_usage_error 'expected at most one option' --help --json &&
+        assert_get_last_worktree_usage_error 'expected at most one option' --env --help &&
         assert_get_last_worktree_usage_error 'unrecognized option:' ''
 }
 

@@ -157,7 +157,7 @@ class ParkHandoffTests(unittest.TestCase):
         head=self.git(two["code"],"rev-parse","HEAD")
         (one["code"]/"selected.txt").write_text("selected work")
         (two["code"]/"unselected.txt").write_text("unselected work")
-        result=self.park("--feature","001-one")
+        result=self.park("--feature","001-one","--feature","001-one")
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertEqual(self.feature_record(self.manifest.read_text(),"002-two"),before)
         self.assertEqual(self.git(two["code"],"rev-parse","HEAD"),head)

@@ -1072,7 +1072,7 @@ PROJECT_REPOSITORY="$WORKSPACE_PROJECT_REPOSITORY"
     printf 'active_feature\t%s\n' "$ACTIVE_FEATURE"
     printf 'active_feature_source\t%s\n' "$ACTIVE_FEATURE_SOURCE"
     if [ "${#REQUESTED_BRANCHES[@]}" -gt 0 ]; then
-        selected_scope="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${REQUESTED_BRANCHES[@]}")"
+        selected_scope="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PARK_BRANCHES[@]}")"
         printf '_selected_branches\t%s\n' "$selected_scope"
     fi
     printf '_family\t%s\n' "$WORKSPACE_FAMILY"

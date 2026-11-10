@@ -327,6 +327,20 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertIn('duplicate JSON key: ssh://custom', result.stderr)
         self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
 
+    def test_incomplete_inventory_preserves_both_settings(self):
+        self.widgets.write_text('{"custom": true}\n')
+        self.connections.write_text('{"ssh://custom": {}}\n')
+        before = (self.widgets.read_bytes(), self.connections.read_bytes())
+        rows = INVENTORY.splitlines()
+        for omitted in rows:
+            with self.subTest(omitted=omitted):
+                inventory = '\n'.join(row for row in rows if row != omitted)
+                result = self.sync(TEST_INVENTORY=inventory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('inventory could not be verified', result.stderr)
+                self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
+                self.assertFalse((self.config / '.openbenches-widget-sync.lock').exists())
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

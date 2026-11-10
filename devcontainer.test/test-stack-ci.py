@@ -1,6 +1,7 @@
 """Exercise stack CI against real commits in a disposable Git repository."""
 
 import os
+import json
 from copy import deepcopy
 from pathlib import Path
 import runpy
@@ -425,7 +426,7 @@ class WaveEfficiencyTest(unittest.TestCase):
             header = workflow.split(f"  {job}:\n", 1)[1].split("    steps:", 1)[0]
             self.assertIn("needs: classify", header)
             self.assertIn("always() && !cancelled()", header)
-            self.assertIn("needs.classify.result != 'success' || needs.classify.outputs.wave_only != 'true'", header)
+            self.assertIn("needs.classify.result != 'success' || (needs.classify.outputs.wave_only != 'true' && needs.classify.outputs.merged_metadata != 'true')", header)
         self.assertIn("ref: main", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("classify-wave", workflow)
@@ -446,31 +447,152 @@ class WaveEfficiencyTest(unittest.TestCase):
             with self.subTest(event=event):
                 output.write_text("")
                 function({**environment, "GITHUB_EVENT_NAME": event})
-                self.assertEqual(output.read_text(), "wave_only=false\n")
+                self.assertEqual(output.read_text(), "wave_only=false\nmerged_metadata=false\n")
         event_file.write_text("{}")
         with patch.dict(function.__globals__, git=lambda *_: b"f" * 40,
                         wave_pr_qualified=lambda *_: True):
             output.write_text("")
             function(environment)
-            self.assertEqual(output.read_text(), "wave_only=true\n")
+            self.assertEqual(output.read_text(), "wave_only=true\nmerged_metadata=false\n")
         for value in (False, None):
             with patch.dict(function.__globals__, git=lambda *_: b"f" * 40,
                             wave_pr_qualified=lambda *_: value):
                 output.write_text("")
                 function(environment)
-                self.assertEqual(output.read_text(), "wave_only=false\n")
+                self.assertEqual(output.read_text(), "wave_only=false\nmerged_metadata=false\n")
         with patch.dict(function.__globals__,
                         git=lambda *_: (_ for _ in ()).throw(OSError("unavailable"))):
             output.write_text("")
             function(environment)
-            self.assertEqual(output.read_text(), "wave_only=false\n")
+            self.assertEqual(output.read_text(), "wave_only=false\nmerged_metadata=false\n")
 
     def test_only_explicit_successful_classification_can_skip_jobs(self):
         # Matches the expression pinned in the workflow wiring test.
         for result in ("success", "failure", "cancelled", "skipped", ""):
             for output in ("true", "false", "", "True", "unknown"):
-                run_full = result != "success" or output != "true"
-                self.assertEqual(run_full, (result, output) != ("success", "true"))
+                for metadata in ("true", "false", "", "True", "unknown"):
+                    run_full = result != "success" or (output != "true" and metadata != "true")
+                    self.assertEqual(run_full, not (
+                        result == "success" and "true" in (output, metadata)))
+
+    def merged_metadata_fixture(self):
+        event, responses = self.chain(1)
+        event["action"] = "edited"
+        # Reproduce the canary: the payload was captured while still open,
+        # but live GitHub readback shows that the same head has since merged.
+        responses["pulls/10"].update(
+            state="closed", merged=True, merge_commit_sha="a" * 40, changed_files=1)
+        responses["pulls/10/files?per_page=100"] = [
+            {"filename": WAVE_TEST, "status": "modified"}]
+        return event, responses
+
+    def merged_metadata(self, event, responses):
+        return POLICY["merged_wave_metadata"](
+            event, REPO, request=lambda _repo, endpoint: responses[endpoint])
+
+    def test_delayed_metadata_event_uses_live_merged_same_head(self):
+        event, responses = self.merged_metadata_fixture()
+        self.assertEqual(event["pull_request"]["state"], "open")
+        self.assertTrue(self.merged_metadata(event, responses))
+        event["pull_request"]["state"] = "closed"
+        self.assertTrue(self.merged_metadata(event, responses))
+
+    def test_open_or_unmerged_pr_and_head_changes_do_not_get_exemption(self):
+        event, responses = self.merged_metadata_fixture()
+        for field, value in (
+            ("state", "open"), ("merged", False), ("merge_commit_sha", None),
+            ("body", ""), ("changed_files", 2),
+        ):
+            with self.subTest(field=field):
+                changed = deepcopy(responses)
+                changed["pulls/10"][field] = value
+                self.assertFalse(self.merged_metadata(event, changed))
+        for ref, field, value in (
+            ("head", "sha", "f" * 40), ("head", "ref", "ordinary/change"),
+            ("head", "repo", {"full_name": "other/fork"}),
+            ("base", "ref", "other-target"),
+        ):
+            with self.subTest(ref=ref, field=field):
+                changed = deepcopy(responses)
+                changed["pulls/10"][ref][field] = value
+                self.assertFalse(self.merged_metadata(event, changed))
+        for action in ("synchronize", "opened", "reopened", "ready_for_review", ""):
+            self.assertFalse(self.merged_metadata({**event, "action": action}, responses))
+        self.assertFalse(self.merged_metadata(event, {}))
+
+    def test_merged_metadata_exemption_stays_within_complete_wave_scope(self):
+        event, responses = self.merged_metadata_fixture()
+        for files in (
+            [], [{"filename": "bootstrap.sh", "status": "modified"}],
+            [{"filename": WAVE_TEST, "status": "renamed"}],
+            [{"filename": WAVE_TEST, "status": "removed"}],
+        ):
+            with self.subTest(files=files):
+                changed = deepcopy(responses)
+                changed["pulls/10/files?per_page=100"] = files
+                self.assertFalse(self.merged_metadata(event, changed))
+
+    def classify_metadata_fixture(self, event, responses):
+        function = POLICY["classify_wave"]
+        event_file = self.repo / "metadata-event.json"
+        event_file.write_text(json.dumps(event))
+        output = self.repo / "metadata-outputs"
+        output.write_text("")
+        request = lambda _repo, endpoint: responses[endpoint]
+
+        def run_git(*args):
+            if args[0] == "fetch":
+                return b""
+            if args[:2] == ("rev-parse", "HEAD"):
+                return self.base.encode()
+            return subprocess.check_output(["git", *args], cwd=self.repo)
+
+        merged = POLICY["merged_wave_metadata"]
+        eligible = POLICY["wave_pr_qualified"]
+        # Adapt the runner's repository to the fixture namespace, retaining
+        # both real policies and the fixture's Git graph.
+        with patch.dict(function.__globals__, git=run_git,
+                        merged_wave_metadata=lambda e, _r: merged(e, REPO, request=request),
+                        wave_pr_qualified=lambda e, m, _r: eligible(e, m, REPO, request=request, run_git=run_git)):
+            function({
+                "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": "opensoft/openBenches",
+                "GITHUB_EVENT_PATH": str(event_file), "GITHUB_OUTPUT": str(output),
+            })
+        return output.read_text()
+
+    def test_merged_metadata_output_is_distinct_from_open_wave_eligibility(self):
+        event, responses = self.merged_metadata_fixture()
+        self.assertEqual(
+            self.classify_metadata_fixture(event, responses),
+            "wave_only=false\nmerged_metadata=true\n")
+        changed = deepcopy(event)
+        changed["pull_request"]["head"]["sha"] = "f" * 40
+        self.assertEqual(
+            self.classify_metadata_fixture(changed, responses),
+            "wave_only=false\nmerged_metadata=false\n")
+        self.assertEqual(
+            self.classify_metadata_fixture(event, {}),
+            "wave_only=false\nmerged_metadata=false\n")
+
+    def test_real_open_changes_keep_existing_full_or_wave_policy(self):
+        event, responses = self.chain()
+        event["action"] = "edited"
+        self.assertEqual(
+            self.classify_metadata_fixture(event, responses),
+            "wave_only=true\nmerged_metadata=false\n")
+        for field, value in (("body", ""), ("draft", True)):
+            changed = deepcopy(responses)
+            changed["pulls/11"][field] = value
+            self.assertEqual(
+                self.classify_metadata_fixture(event, changed),
+                "wave_only=false\nmerged_metadata=false\n")
+        self.git("switch", "-q", "ci/stack-wave-widget-sync/11")
+        head = self.commit("bootstrap.sh", "# mixed open change\n")
+        event["pull_request"]["head"]["sha"] = head
+        responses["pulls/11"]["head"]["sha"] = head
+        self.assertEqual(
+            self.classify_metadata_fixture(event, responses),
+            "wave_only=false\nmerged_metadata=false\n")
 
 
 if __name__ == "__main__":

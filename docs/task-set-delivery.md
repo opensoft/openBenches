@@ -196,3 +196,13 @@ CodeQL/review, but omits Workstation Setup's `regression`, `tools-runtime`,
 admission receipts and full Ubuntu/macOS queue candidate gate are unchanged.
 Do not apply this opt-in to other components. The config PR is not a live
 efficiency canary; authorize and record that separately in #250.
+
+Already-merged metadata is a separate, narrow exception: for an `edited`
+event, trusted GitHub readback must confirm that the opted-in, same-repository
+Wave PR is closed and merged into main at the exact event head, with a complete
+list of modified files limited to the Wave allowlist. The classifier then
+reports `merged_metadata=true`, not `wave_only=true`. This handles edits queued
+before the merge but processed afterward. Open PRs continue through the
+existing eligibility checks; changed heads, other event actions, unmerged
+closures, missing data, or API errors do not receive this exception. Only
+successful explicit classifier outputs can omit workstation jobs.

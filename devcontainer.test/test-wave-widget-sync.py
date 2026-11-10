@@ -297,6 +297,16 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual(self.widgets.stat().st_mode & 0o777, 0o640)
         self.assertEqual(self.connections.stat().st_mode & 0o777, 0o600)
 
+    def test_initializes_empty_settings_files(self):
+        self.widgets.write_text('')
+        self.connections.write_text('')
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        widgets = json.loads(self.widgets.read_text())
+        self.assertIn('pyBench', widgets)
+        self.assertEqual(widgets['projects']['blockdef']['meta']['file'], str(self.projects.resolve()))
+        self.assertTrue(json.loads(self.connections.read_text())[CONNECTION]['conn:wshenabled'])
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

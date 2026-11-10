@@ -32,7 +32,7 @@ else
     discovery_file="$(expand_absolute_path \
         "${WORKBENCHES_PROJECT_DISCOVERY_FILE:-$HOME/.config/workbenches/project-bin}" \
         WORKBENCHES_PROJECT_DISCOVERY_FILE)" || exit $?
-    if [ -f "$discovery_file" ] && [ ! -L "$discovery_file" ]; then
+    if [ -f "$discovery_file" ] && [ ! -L "$discovery_file" ] && [ -s "$discovery_file" ]; then
         IFS= read -r discovered_dir < "$discovery_file" || true
         discovered_dir="$(expand_absolute_path "$discovered_dir" \
             'persisted project install directory')" || exit $?

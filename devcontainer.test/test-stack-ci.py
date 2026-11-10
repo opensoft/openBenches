@@ -622,5 +622,88 @@ class WaveEfficiencyTest(unittest.TestCase):
             "wave_only=false\nmerged_metadata=false\n")
 
 
+class FastMetadataTest(unittest.TestCase):
+    """A stale retarget test merge must not be mistaken for an open PR check."""
+
+    def fixture(self, scope="helper"):
+        allowed, prefix, _ = POLICY["STACK_SCOPES"][scope]
+        repo = "opensoft/openBenches"
+        head = {"sha": "b" * 40, "ref": prefix + "upper", "repo": {"full_name": repo}}
+        event = {
+            "number": 322, "action": "edited",
+            "pull_request": {"state": "open", "head": deepcopy(head),
+                             "base": {"sha": "c" * 40}},
+        }
+        responses = {
+            "pulls/322": {
+                "number": 322, "head": head, "state": "closed", "merged": True,
+                "base": {"ref": "main", "repo": {"full_name": repo}},
+                "merge_commit_sha": "d" * 40, "changed_files": 1,
+                "body": "Stack-CI: " + scope,
+            },
+            "pulls/322/files?per_page=100": [
+                {"filename": sorted(allowed)[0].decode(), "status": "modified"}],
+        }
+        return event, responses
+
+    def classify(self, event, responses, **extra):
+        with tempfile.TemporaryDirectory() as root:
+            event_file, output = Path(root) / "event.json", Path(root) / "output"
+            event_file.write_text(json.dumps(event))
+            POLICY["classify_fast_metadata"]({
+                "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REPOSITORY": "opensoft/openBenches",
+                "GITHUB_EVENT_PATH": str(event_file), "GITHUB_OUTPUT": str(output),
+                **extra,
+            }, request=lambda _repo, endpoint: responses[endpoint])
+            return output.read_text()
+
+    def test_stale_retarget_after_same_head_merged_is_metadata_only(self):
+        # The old test merge has the predecessor head, not the retargeted main,
+        # as its first parent. No candidate checkout or Git test is claimed here.
+        for scope in POLICY["STACK_SCOPES"]:
+            event, responses = self.fixture(scope)
+            self.assertEqual(self.classify(event, responses), "merged_metadata=true\n")
+
+    def test_open_unmerged_mixed_or_uncertain_pr_keeps_fast_validation(self):
+        event, responses = self.fixture()
+        for field, value in (("state", "open"), ("merged", False),
+                             ("merge_commit_sha", None), ("body", ""),
+                             ("changed_files", 2)):
+            with self.subTest(field=field):
+                changed = deepcopy(responses)
+                changed["pulls/322"][field] = value
+                self.assertEqual(self.classify(event, changed), "merged_metadata=false\n")
+        for ref, field, value in (("head", "sha", "f" * 40),
+                                 ("head", "ref", "ordinary/change"),
+                                 ("head", "repo", {"full_name": "other/fork"}),
+                                 ("base", "ref", "other-target")):
+            changed = deepcopy(responses)
+            changed["pulls/322"][ref][field] = value
+            self.assertEqual(self.classify(event, changed), "merged_metadata=false\n")
+        for files in ([], [{"filename": "bootstrap.sh", "status": "modified"}],
+                      [{"filename": POLICY["HELPER_TEST"], "status": "renamed"}]):
+            changed = deepcopy(responses)
+            changed["pulls/322/files?per_page=100"] = files
+            self.assertEqual(self.classify(event, changed), "merged_metadata=false\n")
+        self.assertEqual(self.classify(event, {}), "merged_metadata=false\n")
+
+    def test_real_changes_and_other_repositories_never_get_metadata_exemption(self):
+        event, responses = self.fixture()
+        for action in ("opened", "reopened", "synchronize", "ready_for_review", "closed", "dequeued", ""):
+            self.assertEqual(self.classify({**event, "action": action}, responses),
+                             "merged_metadata=false\n")
+        for env in ({"GITHUB_REPOSITORY": "other/repo"}, {"GITHUB_EVENT_NAME": "push"}):
+            self.assertEqual(self.classify(event, responses, **env), "merged_metadata=false\n")
+
+    def test_fast_workflow_uses_trusted_preflight_before_event_checkout(self):
+        workflow = (GATE.parents[1] / ".github/workflows/stack-pr-fast.yml").read_text()
+        self.assertLess(workflow.index("ref: main"), workflow.index("classify-fast-metadata"))
+        self.assertLess(workflow.index("classify-fast-metadata"), workflow.index("ref: ${{ github.sha }}"))
+        self.assertEqual(workflow.count("if: steps.metadata.outputs.merged_metadata != 'true'"), 2)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

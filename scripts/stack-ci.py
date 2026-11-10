@@ -156,6 +156,25 @@ def merged_wave_metadata(event, repo, request=github):
     return merged_scoped_metadata(event, repo, "wave-widget-sync", request)
 
 
+def classify_fast_metadata(env, request=github):
+    """Trusted-main preflight; uncertainty always retains normal Fast CI."""
+    merged_metadata = False
+    try:
+        repo = env["GITHUB_REPOSITORY"]
+        if env["GITHUB_EVENT_NAME"] == "pull_request" and repo == "opensoft/openBenches":
+            with open(env["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
+                event = json.load(source)
+            merged_metadata = any(
+                merged_scoped_metadata(event, repo, scope, request)
+                for scope in STACK_SCOPES
+            )
+    except (KeyError, TypeError, ValueError, AttributeError, OSError, subprocess.SubprocessError):
+        pass
+    with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+        print(f"merged_metadata={'true' if merged_metadata else 'false'}", file=output)
+    print(f"Merged metadata only: {merged_metadata}; source validation: {not merged_metadata}")
+
+
 def classify_wave(env):
     """Write only an explicit true result; every uncertainty retains full CI."""
     qualified = False
@@ -318,10 +337,12 @@ def verify_results(env):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("fast", "heavy", "gate", "classify-wave"))
+    parser.add_argument("mode", choices=("fast", "heavy", "gate", "classify-wave", "classify-fast-metadata"))
     mode = parser.parse_args().mode
     try:
-        if mode == "classify-wave":
+        if mode == "classify-fast-metadata":
+            classify_fast_metadata(os.environ)
+        elif mode == "classify-wave":
             classify_wave(os.environ)
         elif mode == "gate":
             verify_results(os.environ)

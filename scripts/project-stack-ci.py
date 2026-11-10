@@ -1,4 +1,8 @@
-"""Conservative project CI deduplication; execute only from trusted main."""
+"""Conservative scoped CI deduplication; execute only from trusted main.
+
+Project is the default; the helper entry point supplies SCOPE explicitly.
+Never select scope from event data or process environment.
+"""
 
 from datetime import datetime
 import json
@@ -15,22 +19,40 @@ regular_scope_diff = COMMON["regular_scope_diff"]
 scoped_pr_qualified = COMMON["scoped_pr_qualified"]
 merged_scoped_metadata = COMMON["merged_scoped_metadata"]
 verify_batch = COMMON["verify_batch"]
-ALLOWED, PREFIX, CONTEXT = COMMON["STACK_SCOPES"]["project"]
+SCOPE = globals().get("SCOPE", "project")
+if SCOPE not in ("project", "helper"):
+    raise ValueError("Unsupported CI policy scope")
+ALLOWED, PREFIX, CONTEXT = COMMON["STACK_SCOPES"][SCOPE]
 WORKFLOW = ".github/workflows/stack-candidate-heavy.yml"
 RUNS_ENDPOINT = "actions/workflows/stack-candidate-heavy.yml/runs?event=push&status=success&per_page=20"
 REQUIRED_JOBS = {
     "Verify queue candidate", "openbenches-stack-heavy",
     *(f"Project stack integration ({os_name})" for os_name in (
         "ubuntu-latest", "ubuntu-24.04", "macos-latest")),
+} if SCOPE == "project" else {
+    "Verify queue candidate", "openbenches-stack-heavy",
+    "Helper full Bash regression", "Helper Git 2.34.1 compatibility",
+    "Helper Bash 3.2 compatibility", "Helper PowerShell Linux", "Helper PowerShell Windows",
 }
 POLICY_PATHS = ("scripts/stack-ci.py", "scripts/project-stack-ci.py", WORKFLOW,
-                ".github/workflows/project-command.yml")
+               ".github/workflows/project-command.yml")
+if SCOPE == "helper":
+    POLICY_PATHS += (
+        "scripts/helper-stack-ci.py",
+        ".github/workflows/speckit-git-bash.yml", ".github/workflows/speckit-git-powershell.yml",
+        ".github/workflows/stack-pr-fast.yml", ".github/actions/openspeckit-bash",
+        ".github/actions/openspeckit-compat", ".github/actions/openspeckit-powershell",
+        "devcontainer.test/helper-integration-baseline.json",
+        "devcontainer.test/test-helper-coverage-parity.py",
+        "devcontainer.test/test-helper-stack-ci.py", "devcontainer.test/test-project-stack-ci.py",
+    )
+
 QUEUE = r"mergify/merge-queue/[0-9a-f]{10}"
 ERRORS = (KeyError, TypeError, ValueError, AttributeError, OSError, subprocess.SubprocessError)
 
 
 def opted_in(text):
-    return bool(re.search(r"(?m)^Stack-CI: project[ \t\r]*$", text or ""))
+    return bool(re.search(rf"(?m)^Stack-CI: {SCOPE}[ \t\r]*$", text or ""))
 
 
 def parents(commit, run_git):
@@ -41,11 +63,11 @@ def receipt(head, repo, request):
     statuses = request(repo, f"commits/{head}/status")["statuses"]
     matching = [status for status in statuses if status["context"] == CONTEXT]
     if len(matching) != 1 or matching[0]["state"] != "success":
-        raise ValueError("Missing unique successful project receipt")
+        raise ValueError(f"Missing unique successful {SCOPE} receipt")
     match = re.fullmatch(r"base=([0-9a-f]{40}) stack=([1-9]\d*(?:,[1-9]\d*){1,2})",
                          matching[0]["description"] or "")
     if not match:
-        raise ValueError("Invalid project receipt")
+        raise ValueError(f"Invalid {SCOPE} receipt")
     members = match[2].split(",")
     if len(set(members)) != len(members):
         raise ValueError("Duplicate members")
@@ -89,11 +111,11 @@ def tested_chain(candidate, repo, request, run_git):
             raise ValueError("Wrong predecessor")
         run_git("merge-base", "--is-ancestor", original_base, head)
         if not regular_scope_diff(original_base, head, ALLOWED, run_git):
-            raise ValueError("Non-project member")
+            raise ValueError(f"Non-{SCOPE} member")
         original_base = head
         prs.append(pr)
     if not regular_scope_diff(root, candidate, ALLOWED, run_git):
-        raise ValueError("Non-project candidate")
+        raise ValueError(f"Non-{SCOPE} candidate")
     return root, merges, prs
 
 
@@ -181,7 +203,7 @@ def candidate_pr(event, main, repo, actor, request, run_git):
     run_git("fetch", "--no-tags", "origin", candidate)
     if pr["state"] == "open" and pr["base"]["sha"] == main:
         try:
-            verify_batch(main, candidate, repo, "project", request, run_git)
+            verify_batch(main, candidate, repo, SCOPE, request, run_git)
             root, _merges, _prs = tested_chain(candidate, repo, request, run_git)
             return root == main
         except ERRORS:
@@ -204,7 +226,7 @@ def candidate_pr(event, main, repo, actor, request, run_git):
 
 
 def merged_metadata(event, main, repo, request, run_git):
-    if not merged_scoped_metadata(event, repo, "project", request):
+    if not merged_scoped_metadata(event, repo, SCOPE, request):
         return False
     pr = request(repo, f"pulls/{event['number']}")
     merge = sha(pr["merge_commit_sha"])
@@ -226,11 +248,11 @@ def decision(kind, event, main, repo, actor, ref, event_sha, request=github, run
                    for ref in ("head", "base")):
                 return None
             if re.fullmatch(QUEUE, event["pull_request"]["head"]["ref"]):
-                return "project-candidate-pr" if candidate_pr(event, main, repo, actor, request, run_git) else None
+                return f"{SCOPE}-candidate-pr" if candidate_pr(event, main, repo, actor, request, run_git) else None
             if merged_metadata(event, main, repo, request, run_git):
-                return "merged-project-metadata"
-            if scoped_pr_qualified(event, main, repo, "project", request, run_git):
-                return "project-pr"
+                return f"merged-{SCOPE}-metadata"
+            if scoped_pr_qualified(event, main, repo, SCOPE, request, run_git):
+                return f"{SCOPE}-pr"
         if (kind != "push" or event["deleted"] is not False
                 or event["repository"]["full_name"].lower() != repo.lower()
                 or event["ref"] != ref or sha(event["after"]) != sha(event_sha)):
@@ -243,15 +265,15 @@ def decision(kind, event, main, repo, actor, ref, event_sha, request=github, run
             run_git("merge-base", "--is-ancestor", main, head)
             message = run_git("show", "-s", "--format=%B", head).decode()
             if opted_in(message) and regular_scope_diff(main, head, ALLOWED, run_git):
-                return "project-source-push"
+                return f"{SCOPE}-source-push"
         elif actor == "mergify[bot]" and re.fullmatch("refs/heads/" + QUEUE, ref):
-            verify_batch(main, head, repo, "project", request, run_git)
+            verify_batch(main, head, repo, SCOPE, request, run_git)
             _root, _merges, _prs = tested_chain(head, repo, request, run_git)
             if regular_scope_diff(main, head, ALLOWED, run_git):
-                return "project-candidate-push"
+                return f"{SCOPE}-candidate-push"
         elif actor == "mergify[bot]" and ref == "refs/heads/main":
             if tested_landing(event, main, repo, request, run_git):
-                return "tested-project-landing"
+                return f"tested-{SCOPE}-landing"
     except ERRORS:
         pass
     return None
@@ -268,8 +290,8 @@ def classify(env):
     except ERRORS:
         pass
     with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        print(f"skip_project={'true' if reason else 'false'}", file=output)
-    print(f"Project CI: {reason or 'full-fallback'}")
+        print(f"skip_{SCOPE}={'true' if reason else 'false'}", file=output)
+    print(f"{SCOPE} CI: {reason or 'full-fallback'}")
 
 
 if __name__ == "__main__":

@@ -285,6 +285,18 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
                 marker.unlink()
                 path.rmdir()
 
+    def test_preserves_existing_settings_permissions_when_publishing(self):
+        self.widgets.write_text('{}\n')
+        self.connections.write_text('{}\n')
+        self.widgets.chmod(0o640)
+        self.connections.chmod(0o600)
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('pyBench', json.loads(self.widgets.read_text()))
+        self.assertTrue(json.loads(self.connections.read_text())[CONNECTION]['conn:wshenabled'])
+        self.assertEqual(self.widgets.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(self.connections.stat().st_mode & 0o777, 0o600)
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

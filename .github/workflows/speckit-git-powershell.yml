@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - .github/workflows/speckit-git-powershell.yml
+      - .github/actions/openspeckit-powershell/**
+      - devcontainer.test/helper-integration-baseline.json
+      - devcontainer.test/test-helper-coverage-parity.py
       - devBenches/devcontainer.test/test-speckit-git-powershell.ps1
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/config-template.yml
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/powershell/**
@@ -12,6 +15,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/speckit-git-powershell.yml
+      - .github/actions/openspeckit-powershell/**
+      - devcontainer.test/helper-integration-baseline.json
+      - devcontainer.test/test-helper-coverage-parity.py
       - devBenches/devcontainer.test/test-speckit-git-powershell.ps1
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/config-template.yml
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/powershell/**
@@ -35,15 +41,5 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Verify Git and PowerShell
-        run: |
-          git --version
-          pwsh --version
-
-      - name: Run full PowerShell regression suite
-        if: runner.os == 'Linux'
-        run: pwsh -NoLogo -NoProfile -File ./devBenches/devcontainer.test/test-speckit-git-powershell.ps1
-
-      - name: Run native Windows state regressions
-        if: runner.os == 'Windows'
-        run: pwsh -NoLogo -NoProfile -File ./devBenches/devcontainer.test/test-speckit-git-powershell.ps1 -WindowsStateOnly
+      - name: Run shared PowerShell integration suites
+        uses: ./.github/actions/openspeckit-powershell

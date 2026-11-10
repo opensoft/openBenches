@@ -953,6 +953,17 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["FromDefaultWithEmptyPointer"])
 
+        # A linked pointer must be ignored, not parsed as a real pointer.
+        tilde_discovery.unlink()
+        linked_pointer = home / "linked-pointer"
+        linked_pointer.write_text("relative/bin\n")
+        tilde_discovery.symlink_to(linked_pointer)
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "FromDefaultWithLinkedPointer"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["FromDefaultWithLinkedPointer"])
+        tilde_discovery.unlink()
         tilde_discovery.write_text("relative/bin\n")
         result = subprocess.run(
             ["bash", str(ROOT / "scripts/project"), "unsafe"],

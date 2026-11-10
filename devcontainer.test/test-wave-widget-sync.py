@@ -218,6 +218,17 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual(self.widgets.read_text(), '{}')
         self.assertFalse(self.connections.exists())
 
+    def test_refuses_an_invalid_selected_connection_without_writes(self):
+        widgets = '{"custom": {"label": "Keep me"}}\n'
+        connections = json.dumps({CONNECTION: "not a settings object", 'ssh://custom': {}})
+        self.widgets.write_text(widgets)
+        self.connections.write_text(connections)
+        result = self.sync()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'Wave connection {CONNECTION} must contain a JSON object', result.stderr)
+        self.assertEqual(self.widgets.read_text(), widgets)
+        self.assertEqual(self.connections.read_text(), connections)
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

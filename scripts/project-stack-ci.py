@@ -167,7 +167,8 @@ def candidate_pr(event, main, repo, actor, request, run_git):
         return False
     expected = event["pull_request"]
     pr = request(repo, f"pulls/{event['number']}")
-    if (pr["number"] != event["number"] or pr["user"]["login"] != "mergify[bot]"
+    if (pr["number"] != event["number"] or pr["state"] not in ("open", "closed")
+            or pr["user"]["login"] != "mergify[bot]"
             or not re.fullmatch(QUEUE, pr["head"]["ref"]) or pr["base"]["ref"] != "main"
             or any(pr[ref]["repo"]["full_name"].lower() != repo.lower() for ref in ("head", "base"))
             or any(pr[ref][key] != expected[ref][key] for ref in ("head", "base") for key in ("sha", "ref"))):
@@ -213,6 +214,9 @@ def decision(kind, event, main, repo, actor, ref, event_sha, request=github, run
             return None
         sha(main)
         if kind == "pull_request":
+            if any(event["pull_request"][ref]["repo"]["full_name"].lower() != repo.lower()
+                   for ref in ("head", "base")):
+                return None
             if re.fullmatch(QUEUE, event["pull_request"]["head"]["ref"]):
                 return "project-candidate-pr" if candidate_pr(event, main, repo, actor, request, run_git) else None
             if merged_metadata(event, main, repo, request, run_git):

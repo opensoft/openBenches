@@ -122,6 +122,13 @@ class ProjectEfficiencyTests(unittest.TestCase):
         event = self.chain(mixed=True)
         self.assertIsNone(self.decide(event))
 
+    def test_foreign_event_snapshot_cannot_use_same_repo_live_data(self):
+        event = self.chain()
+        for ref in ("head", "base"):
+            changed = deepcopy(event)
+            changed["pull_request"][ref]["repo"]["full_name"] = "other/fork"
+            self.assertIsNone(self.decide(changed))
+
     def test_optin_scope_prefix_current_head_base_and_dependency_required(self):
         event = self.chain()
         for field, value in (("body", ""), ("body", "Stack-CI: wave-widget-sync"),

@@ -350,6 +350,28 @@ class WaveEfficiencyTest(unittest.TestCase):
         event, responses = self.chain(mixed_lower=True)
         self.assertFalse(self.qualified(event, responses))
 
+    def test_shared_scope_primitives_cannot_cross_project_and_wave(self):
+        event, responses = self.chain(1)
+
+        def run_git(*args):
+            if args[0] == "fetch":
+                return b""
+            return subprocess.check_output(["git", *args], cwd=self.repo)
+
+        def eligible(scope):
+            return POLICY["scoped_pr_qualified"](
+                event, self.base, REPO, scope,
+                request=lambda _repo, endpoint: responses[endpoint], run_git=run_git)
+
+        self.assertTrue(eligible(WAVE_SCOPE))
+        self.assertFalse(eligible("project"))
+        for pr in (event["pull_request"], responses["pulls/10"]):
+            pr["head"]["ref"] = "ci/stack-project/10"
+            pr["body"] = "Stack-CI: project"
+        # Correct project metadata still cannot authorize Wave file changes.
+        self.assertFalse(eligible("project"))
+        self.assertFalse(eligible(WAVE_SCOPE))
+
     def test_opt_in_prefix_repo_state_and_dependency_are_not_guessed(self):
         event, responses = self.chain()
         for field, value in (

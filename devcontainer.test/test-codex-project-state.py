@@ -224,6 +224,25 @@ class ProjectStateTests(unittest.TestCase):
         result, catalog = module.synchronize(result, catalog, "windows", "native-home", B)
         self.assertIn("t", catalog["shared"]["thread-project-assignments"])
 
+    def test_destination_cloud_server_bindings_are_preserved(self):
+        state = fixture()
+        key = module.HOST_MAPS[0]
+        host = "local:native-home"
+        state[key] = {host: {"g-p-cloud": "cloud-server"}}
+        result, catalog = module.synchronize(state, {}, "windows", "native-home", B, [A], A)
+        self.assertEqual(result[key][host]["g-p-cloud"], "cloud-server")
+        self.assertNotIn("g-p-cloud", module.encode(catalog))
+
+    def test_migration_completion_flags_remain_account_local(self):
+        state = fixture()
+        key = "app-server-projects-migration-by-host"
+        state[key] = {"local:native-home": {"projectsMigrated": False, "pendingThreadAssignmentIds": ["cloud-chat"]}}
+        state[module.SCOPE]["inactive"][A]["globals"][key] = {"local:native-home": {"projectsMigrated": True}}
+        original = deepcopy(state[key])
+        result, catalog = module.synchronize(state, {}, "windows", "native-home", B, [A], A)
+        self.assertEqual(result[key], original)
+        self.assertNotIn(key, module.encode(catalog))
+
     def test_offline_restore_backups_and_live_process_refusal(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

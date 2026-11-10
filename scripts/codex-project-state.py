@@ -24,7 +24,6 @@ PROJECT_FIELDS = ("id", "name", "rootPaths", "createdAt", "updatedAt")
 PROJECT_MAPS = ("project-appearances", "sidebar-project-thread-orders")
 HOST_MAPS = (
     "app-server-project-id-by-legacy-project-id-by-host",
-    "app-server-projects-migration-by-host",
 )
 OWNER = re.compile(r"^[0-9a-f]{64}$")
 
@@ -122,7 +121,7 @@ def merge_changes(shared, before, after):
     """Apply only actual edits since this account's last preparation."""
     shared = deepcopy(shared)
     reassigned = set()
-    for key in ("local-projects", "thread-project-assignments", *PROJECT_MAPS, HOST_MAPS[1]):
+    for key in ("local-projects", "thread-project-assignments", *PROJECT_MAPS):
         for item in before[key].keys() - after[key].keys():
             shared[key].pop(item, None)
         for item, value in after[key].items():
@@ -173,7 +172,10 @@ def apply_project_state(globals_, shared, known_project_ids=()):
     for key in PROJECT_MAPS:
         globals_[key] = {**{p: v for p, v in globals_.get(key, {}).items() if p not in native_ids}, **deepcopy(shared[key])}
     for key in HOST_MAPS:
-        globals_.setdefault(key, {}).update(deepcopy(shared[key]))
+        destination = globals_.setdefault(key, {})
+        for host, mapping in shared[key].items():
+            retained = {p: value for p, value in destination.get(host, {}).items() if p not in native_ids}
+            destination[host] = {**retained, **deepcopy(mapping)}
     hosts = globals_.setdefault("thread-project-membership-host-ids", {})
     for thread in shared["thread-project-assignments"]:
         hosts[thread] = "local"

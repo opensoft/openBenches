@@ -12,7 +12,7 @@ Share native local project organization. Preserve account-specific renderer stat
 
 - A standard-library Python helper maintains a versioned, per-runtime Opensoft catalog and explicit account bindings. It strips cloud ownership fields from shared records and preserves them on each destination account.
 - Bootstrap uses an explicitly selected, identity-verified account snapshot. Subsequently each enrolled snapshot is compared with its last prepared baseline. Only actual changes contribute, including edits saved before an in-app account rotation; unchanged stale copies cannot revive deletions. The active account wins simultaneous conflicting edits. New profiles receive the catalog without replacing it with an empty registry.
-- Per-account project registrations, ordering, membership maps, projectless markers, and the local host migration mapping are shared. Unrelated account atoms and globals are untouched.
+- Per-account project registrations, ordering, membership maps, projectless markers, and native legacy-to-app-server ID bindings are shared. Non-native host bindings and account migration-completion flags remain account-local. Unrelated account atoms and globals are untouched.
 - A PowerShell desktop wrapper captures/prepares state only while the selected package is stopped, then launches that package. Windows resolves only `OpenAI.Codex`; Beta/WSL has an independent entry point and catalog. There is no implicit path conversion or WSL shutdown.
 - Atomic replacement, exclusive synchronization lock, input digest comparison, original-file backups, and unchanged-content no-ops protect state. Only selected keys enter the catalog.
 

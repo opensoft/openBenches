@@ -266,6 +266,25 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
         self.assertFalse((self.config / '.openbenches-widget-sync.lock').exists())
 
+    def test_refuses_a_directory_at_either_settings_path(self):
+        for name in ('widgets.json', 'connections.json'):
+            with self.subTest(name=name):
+                self.widgets.write_text('{}\n')
+                self.connections.write_text('{}\n')
+                path = self.config / name
+                other = self.connections if name == 'widgets.json' else self.widgets
+                path.unlink()
+                path.mkdir()
+                marker = path / 'keep.txt'
+                marker.write_text('keep this directory')
+                result = self.sync()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Refusing to replace Wave settings', result.stderr)
+                self.assertEqual(marker.read_text(), 'keep this directory')
+                self.assertEqual(other.read_text(), '{}\n')
+                marker.unlink()
+                path.rmdir()
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

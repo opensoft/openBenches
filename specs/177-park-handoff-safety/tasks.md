@@ -34,8 +34,8 @@
 ## US5 and final consumer reconciliation
 
 - [x] T012 [O] Reproduce stale receiving manifest and implement safe pre-read refresh; verify dirty/conflicting/unavailable refusals, mutex release and unchanged dry-run. Four new checks failed before correction and the dry-run control passed; all eighteen focused cases passed afterward.
-- [ ] T013 [S] Validate and publish dependent SET-05 with current-head CI and Codex review.
-- [ ] T006 [S] Copy the tested shared corrections into openMFA PR #2, retain declared unrelated local deviations, rerun its tests/CI/Codex review and reconcile evidence. Upstream merge/fleet installation remain distinct unclaimed states.
-- [ ] T009 [S] Record final source/consumer heads, hashes, test results and review dispositions without claiming upstream landing.
+- [ ] T013 [S] Validate and publish dependent SET-05 with current-head CI and completed Codex review. Source CI at a20cb8ff38ff325f98e22a7521cd01242782168b passed; fresh source/consumer reviews failed because the Codex account's code-review usage limit was reached. Completed final review remains externally blocked; no clean receipt is claimed.
+- [x] T006 [S] Copy the tested shared corrections into openMFA PR #2, retain declared unrelated local deviations, rerun its tests/CI/Codex review and reconcile evidence. Consumer 12dc8723239f340c7727387b4a4a36c4359aa2cd passed all 25 cases locally/in CI plus validation and SonarCloud. Its requested review failed on the usage limit recorded under T013. Upstream merge/fleet installation remain distinct unclaimed states.
+- [x] T009 [S] Record source/consumer snapshots, hashes, test results and review dispositions without claiming upstream landing; see final-evidence.md. Final clean-review acceptance remains under T013.
 
 Dependencies: T001 → T002 → T003 → T004 → T005 → T007 → T008 → T010 → T011 → T012 → T013 → T006 → T009. Fresh review expansions are captured before dependent implementation. No parallel-agent execution is required. No queue/ruleset change or release task is included.

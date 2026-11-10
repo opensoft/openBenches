@@ -1,0 +1,34 @@
+name: OpenSpeckit PowerShell integration
+description: Preserved full Linux and native Windows state regression suites.
+runs:
+  using: composite
+  steps:
+    - name: Validate supported runner
+      shell: bash
+      env:
+        OPENSPECKIT_RUNNER_OS: ${{ runner.os }}
+      run: |
+        case "$OPENSPECKIT_RUNNER_OS" in
+          Linux|Windows) ;;
+          *) echo "Unsupported PowerShell integration runner" >&2; exit 1 ;;
+        esac
+    - name: Verify Git and PowerShell (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        git --version
+        pwsh --version
+    - name: Verify Git and PowerShell (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        git --version
+        pwsh --version
+    - name: Run full PowerShell regression suite
+      if: runner.os == 'Linux'
+      shell: bash
+      run: pwsh -NoLogo -NoProfile -File ./devBenches/devcontainer.test/test-speckit-git-powershell.ps1
+    - name: Run native Windows state regressions
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: pwsh -NoLogo -NoProfile -File ./devBenches/devcontainer.test/test-speckit-git-powershell.ps1 -WindowsStateOnly

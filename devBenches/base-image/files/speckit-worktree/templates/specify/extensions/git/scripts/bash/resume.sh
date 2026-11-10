@@ -368,6 +368,19 @@ record_refusal() {
     REFUSED_REMEDIATIONS[${#REFUSED_REMEDIATIONS[@]}]="$3"
 }
 
+if [ "$REPO_SHAPE" = three-leg ] && [ "$DRY_RUN" != true ]; then
+    if [ -L "$REPO_ROOT/.specify" ]; then
+        >&2 echo "Error: the feature selector directory is a symlink; nothing was resumed."
+        exit 2
+    fi
+    assert_state_file_safe "$REPO_ROOT/.specify/feature.json" || exit 2
+    selector_temporary="$REPO_ROOT/.specify/.feature.json.tmp"
+    if [ -e "$selector_temporary" ] || [ -L "$selector_temporary" ]; then
+        >&2 echo "Error: the feature selector temporary path already exists; nothing was resumed."
+        exit 2
+    fi
+fi
+
 _git_worktree_create_temp_file || {
     echo "Error: could not create a temporary file for the resume record." >&2
     exit 1

@@ -294,6 +294,145 @@ class ParkHandoffTests(unittest.TestCase):
         self.assertEqual(self.git(self.workspace_origin,"rev-parse","refs/heads/main"),remote_before)
         self.assertIn("branch: 001-one",self.manifest.read_text())
 
+    def existing_manifest_temporary_is_preserved(self,kind):
+        trees=self.feature("001-one")
+        first=self.park()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        before=self.manifest.read_bytes()
+        temporary=self.manifest.with_name("."+self.manifest.name+".tmp")
+        outside=self.base/"unrelated.txt"
+        outside.write_text("unrelated work\n")
+        if kind=="symlink":
+            temporary.symlink_to(outside)
+        else:
+            temporary.write_text("existing temporary\n")
+        previous=temporary.read_bytes()
+        (trees["code"]/"new-work.txt").write_text("new feature work")
+        result=self.park()
+        self.assertEqual(result.returncode,3,result.stdout+result.stderr)
+        self.assertEqual(outside.read_text(),"unrelated work\n")
+        self.assertEqual(temporary.read_bytes(),previous)
+        self.assertEqual(temporary.is_symlink(),kind=="symlink")
+        self.assertFalse(self.manifest.is_symlink())
+        self.assertEqual(self.manifest.read_bytes(),before)
+
+    def test_manifest_temporary_symlink_does_not_overwrite_unrelated_file(self):
+        self.existing_manifest_temporary_is_preserved("symlink")
+
+    def test_manifest_temporary_existing_file_is_not_truncated(self):
+        self.existing_manifest_temporary_is_preserved("file")
+
+    def manifest_directory_symlink_is_refused(self,level):
+        trees=self.feature("001-one")
+        first=self.park()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        directory=self.workspace/"workspaces" if level=="workspaces" else self.manifest.parent
+        outside=self.base/"outside-manifest-directory"
+        directory.rename(outside)
+        directory.symlink_to(outside,target_is_directory=True)
+        self.git(self.workspace,"add","-A")
+        self.git(self.workspace,"commit","-qm","fixture existing directory symlink")
+        self.git(self.workspace,"push","-q","origin","main")
+        target=outside/"dummy"/self.manifest.name if level=="workspaces" else outside/self.manifest.name
+        before=target.read_bytes()
+        (trees["code"]/"new-work.txt").write_text("new feature work")
+        result=self.park()
+        self.assertEqual(result.returncode,3,result.stdout+result.stderr)
+        self.assertEqual(target.read_bytes(),before)
+        self.assertTrue(directory.is_symlink())
+
+    def test_manifest_workspace_directory_symlink_preserves_outside_target(self):
+        self.manifest_directory_symlink_is_refused("workspaces")
+
+    def test_manifest_org_directory_symlink_preserves_outside_target(self):
+        self.manifest_directory_symlink_is_refused("org")
+
+    def test_resume_selector_symlink_preserves_unrelated_target(self):
+        _,trees=self.parked_wip()
+        heads={role:self.git(tree,"rev-parse","HEAD") for role,tree in trees.items()}
+        outside=self.base/"outside-selector.txt"
+        outside.write_text("unrelated selector target\n")
+        selector=self.root/".specify/feature.json"
+        selector.symlink_to(outside)
+        result=self.resume()
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(outside.read_text(),"unrelated selector target\n")
+        self.assertTrue(selector.is_symlink())
+        for role,tree in trees.items():
+            self.assertEqual(self.git(tree,"rev-parse","HEAD"),heads[role])
+
+    def test_resume_selector_hardlink_preserves_unrelated_target(self):
+        self.parked_wip()
+        outside=self.base/"outside-selector.txt"
+        outside.write_text("unrelated selector target\n")
+        selector=self.root/".specify/feature.json"
+        os.link(outside,selector)
+        result=self.resume()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(outside.read_text(),"unrelated selector target\n")
+        self.assertEqual(json.loads(selector.read_text())["feature_directory"],
+                         "worktrees/001-one/spec/specs/001-one")
+        self.assertNotEqual(selector.stat().st_ino,outside.stat().st_ino)
+
+    def selector_publication_refuses_before_reset(self,kind):
+        _,trees=self.parked_wip()
+        heads={role:self.git(tree,"rev-parse","HEAD") for role,tree in trees.items()}
+        statuses={role:self.git(tree,"status","--porcelain") for role,tree in trees.items()}
+        if kind=="directory":
+            directory=self.root/".specify"
+            outside=self.base/"external-specify"
+            directory.rename(outside)
+            directory.symlink_to(outside,target_is_directory=True)
+        else:
+            (self.root/".specify/.feature.json.tmp").write_text("existing temporary\n")
+        result=self.resume()
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        for role,tree in trees.items():
+            self.assertEqual(self.git(tree,"rev-parse","HEAD"),heads[role])
+            self.assertEqual(self.git(tree,"status","--porcelain"),statuses[role])
+            self.assertEqual((tree/"pending.txt").read_text(),role+" work")
+        if kind=="directory":
+            self.assertTrue((self.root/".specify").is_symlink())
+            self.assertFalse((outside/"feature.json").exists())
+        else:
+            self.assertEqual((self.root/".specify/.feature.json.tmp").read_text(),
+                             "existing temporary\n")
+
+    def test_resume_selector_directory_symlink_refuses_before_reset(self):
+        self.selector_publication_refuses_before_reset("directory")
+
+    def test_resume_selector_occupied_temporary_refuses_before_reset(self):
+        self.selector_publication_refuses_before_reset("temporary")
+
+    def test_manifest_workspace_root_alias_remains_supported(self):
+        self.feature("001-one")
+        alias=self.base/"workspace-alias"
+        alias.symlink_to(self.workspace,target_is_directory=True)
+        self.use_receiver(alias)
+        result=self.park()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn("branch: 001-one",self.manifest.read_text())
+
+    def test_publication_preserves_existing_private_permissions(self):
+        trees=self.feature("001-one")
+        first=self.park()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        self.manifest.chmod(0o600)
+        selector=self.root/".specify/feature.json"
+        selector.write_text(json.dumps({"feature_directory":"older-feature"}))
+        selector.chmod(0o600)
+        (trees["code"]/"new-work.txt").write_text("new feature work")
+        previous=os.umask(0o022)
+        try:
+            parked=self.park()
+            self.assertEqual(parked.returncode,0,parked.stdout+parked.stderr)
+            self.assertEqual(self.manifest.stat().st_mode & 0o777,0o600)
+            resumed=self.resume()
+            self.assertEqual(resumed.returncode,0,resumed.stdout+resumed.stderr)
+            self.assertEqual(selector.stat().st_mode & 0o777,0o600)
+        finally:
+            os.umask(previous)
+
     def receiver_workspace(self):
         receiver=self.base/"receiver-workspace"
         self.git(self.base,"clone","-q","-b","main",str(self.workspace_origin),str(receiver))

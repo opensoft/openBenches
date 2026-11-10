@@ -24,4 +24,11 @@ SET-04 separates conditional manifest commit creation from publication. Even an 
 
 SET-05 refreshes a receiving workspace under the existing mutex before loading its manifest. Resume uses the shared synchronization helper in a strict mode: failed origin fetch refuses cached data, and any dirty content blocks a required rebase without automatic commits or stashing. The existing rebase-conflict abort is retained. The mutex releases on every exit, including before record temporaries exist. A workspace without origin retains local-only compatibility. Dry-run takes no lock and performs no fetch or synchronization.
 
+SET-06 addresses the local security review's reproduced publication escapes. Open manifest directory components without following symlinks, create its temporary exclusively, and refuse pre-existing leaves without following, truncating or deleting them. Use descriptor-relative atomic replacement and clean up only an owned temporary. The shared active-feature selector and consumer core selector also publish atomically through non-symlink directories and refuse a non-regular destination. Tests preserve unrelated targets, existing manifests and selectors for temporary, parent-directory and selector symlinks. Carry exact corrected shared bytes into the consumer; declare the core selector correction alongside its existing local core-creation deviation. Local reviews record exact head/base and remain distinct from unavailable GitHub bot receipts.
+
+Replacement preserves the permission bits of an existing regular manifest or
+selector. Otherwise atomic replacement could widen a private 0600 file to the
+process's default 0644. New-file defaults continue to respect the existing
+umask; permission restoration happens on the owned temporary before writing.
+
 SET-01 is branch/repository preflight with its tests and governance packet. SET-02 depends on SET-01 and changes partial manifest updates with its tests. Use gh-stack for authoring ordinary PR dependencies, without registered-stack or queue policy changes. Record local, CI, exact-head Codex review, upstream merge and downstream readback separately. Do not claim shared-main landing or fleet installation before it occurs.

@@ -28,6 +28,10 @@ A manifest committed locally but absent from origin is not a completed handoff. 
 
 A receiving workstation with an older workspace clone must read the latest published manifest. Refresh under the mutex before reading; refuse unavailable origin or unsafe synchronization while preserving local work. Dry-run remains a cached preview.
 
+### US6 — Preserve unrelated files during publication (P1)
+
+A pre-existing temporary file or symlink must never turn a manifest write into an overwrite of unrelated work. Refuse before opening such a path for writing, keep the old manifest, and retain atomic replacement for valid writes.
+
 ## Requirements
 
 - FR-001: Validate repository/worktree ownership and expected branch for every selected leg before any commit.
@@ -37,6 +41,7 @@ A receiving workstation with an older workspace clone must read the latest publi
 - FR-005: Resume verifies origin before existing-worktree acceptance or WIP reset, while unchanged-origin repeat calls preserve restored work.
 - FR-006: Park retries pending manifest publication independently of content changes and reports failed or exhausted publication as unsuccessful while retaining local evidence.
 - FR-007: Active resume refreshes the receiving workspace before reading its manifest, safely refusing unavailable/dirty/conflicting refreshes and releasing its mutex; dry-run leaves the clone unchanged.
+- FR-008: Exclusive temporary-file creation prevents clobbering pre-existing leaves or symlink targets; refused publication preserves the manifest and only owned temporaries are cleaned up.
 
 ## Key Entities
 

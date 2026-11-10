@@ -4,7 +4,7 @@ Status: draft commissioned implementation
 
 ## Summary
 
-Implement [the governed change](../../openspec/changes/fix-park-handoff-integrity/proposal.md) in five ordered task-set PRs, including fresh resume, pending-publication and stale receiving-workspace findings, preserving existing public formats and merge policy.
+Implement [the governed change](../../openspec/changes/fix-park-handoff-integrity/proposal.md) in six ordered task-set PRs, including resume, pending-publication, stale receiving-workspace and secure temporary-file findings, preserving existing public formats and merge policy.
 
 ## Technical Context
 
@@ -12,7 +12,7 @@ Bash 3.2-compatible shared templates, Git 2.34.1-compatible commands, Python sta
 
 ## Constitution Check
 
-One set per PR, each with related tests and a focused command. Each SET-02 through SET-05 names the preceding set as predecessor and immediate base. CI/review bind exact heads; no queue bypass or pilot scope expansion. The merged candidate and release gates are distinct from source validation. Owner ratification/archive is not invented.
+One set per PR, each with related tests and a focused command. Each SET-02 through SET-06 names the preceding set as predecessor and immediate base. CI/review bind exact heads; no queue bypass or pilot scope expansion. Brett Heap has authorized local review and source landing when green. The merged candidate and release gates are distinct from source validation.
 
 ## Design
 

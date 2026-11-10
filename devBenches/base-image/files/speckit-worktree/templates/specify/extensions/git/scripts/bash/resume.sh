@@ -495,9 +495,51 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
             break
         fi
 
-        # RR4 — already recreated. Not a refusal: resume is idempotent, and
-        # after the first resume the local branch is legitimately BEHIND the
-        # parked commit, so this must be decided before RR1 and RR5.
+        # RR2 — verify origin before accepting even an existing worktree.
+        if [ "$DRY_RUN" != true ]; then
+            if ! GIT_TERMINAL_PROMPT=0 git -C "$leg_repo" fetch -q origin \
+                "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1; then
+                >&2 echo "Error: $branch ($role leg) could not be verified on origin; that feature was NOT recreated."
+                >&2 echo "Check origin access and whether the branch still exists; cached tracking refs are insufficient."
+                record_refusal "$branch" "origin branch could not be verified" \
+                    "check origin access and refs/heads/$branch, then re-run make resume"
+                refused=true
+                break
+            fi
+        fi
+        remote_tip="$(git -C "$leg_repo" rev-parse --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null || true)"
+        if [ -z "$remote_tip" ]; then
+            >&2 echo "Error: $branch is no longer on origin in the $role leg; that feature was NOT recreated."
+            >&2 echo "The manifest recorded it at $parked_commit, parked $MANIFEST_PARKED_AT on $MANIFEST_PARKED_ON."
+            >&2 echo "If the feature landed, delete its entry:"
+            >&2 echo "  $WORKSPACE_PATH/$MANIFEST_RELATIVE  ->  remove the \`- branch: $branch\` block"
+            >&2 echo "If it was deleted by mistake, push it again from the workstation that parked it."
+            record_refusal "$branch" "gone from origin" \
+                "remove the \`- branch: $branch\` block from $MANIFEST_RELATIVE"
+            refused=true
+            break
+        fi
+
+        # RR1 — divergence. The ruling: nothing is ever reset over commits
+        # this workspace did not park.
+        if [ "$remote_tip" != "$parked_commit" ]; then
+            >&2 echo "Error: $branch ($role leg) has moved since it was parked; that feature was NOT recreated."
+            >&2 echo "  parked commit  $parked_commit   (parked $MANIFEST_PARKED_AT on $MANIFEST_PARKED_ON)"
+            >&2 echo "  current tip    $remote_tip   (origin/$branch)"
+            >&2 echo "Nothing is ever reset over commits this workspace did not park. Reconcile by hand:"
+            >&2 echo "  git -C $mount fetch origin $branch"
+            >&2 echo "  git -C $mount log --oneline $parked_commit..origin/$branch"
+            >&2 echo "  git -C $mount worktree add -b $branch $WORKTREE_ROOT_RAW/$branch/$mount origin/$branch"
+            >&2 echo "  # then decide: rebase the parked WIP onto the new tip, or discard it"
+            record_refusal "$branch" "divergence" \
+                "git -C $mount log --oneline $parked_commit..origin/$branch"
+            refused=true
+            break
+        fi
+
+        # RR4 — already recreated. Origin has been verified above. After the
+        # first resume the local branch may be legitimately BEHIND the parked
+        # WIP commit, so decide this before the local-branch check in RR5.
         if leg_registered_at "$leg_repo" "$tree"; then
             if [ "$LEG_REGISTERED_BRANCH" = "$branch" ]; then
                 LEG_ACTION[leg - 1]="present"
@@ -538,41 +580,6 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
             >&2 echo "Move it aside, then re-run \`make resume\`."
             record_refusal "$branch" "an unrelated path is in the way" \
                 "git -C $mount worktree list"
-            refused=true
-            break
-        fi
-
-        # RR2 — the branch is gone from the remote.
-        if [ "$DRY_RUN" != true ]; then
-            GIT_TERMINAL_PROMPT=0 git -C "$leg_repo" fetch -q origin \
-                "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 || true
-        fi
-        remote_tip="$(git -C "$leg_repo" rev-parse --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null || true)"
-        if [ -z "$remote_tip" ]; then
-            >&2 echo "Error: $branch is no longer on origin in the $role leg; that feature was NOT recreated."
-            >&2 echo "The manifest recorded it at $parked_commit, parked $MANIFEST_PARKED_AT on $MANIFEST_PARKED_ON."
-            >&2 echo "If the feature landed, delete its entry:"
-            >&2 echo "  $WORKSPACE_PATH/$MANIFEST_RELATIVE  ->  remove the \`- branch: $branch\` block"
-            >&2 echo "If it was deleted by mistake, push it again from the workstation that parked it."
-            record_refusal "$branch" "gone from origin" \
-                "remove the \`- branch: $branch\` block from $MANIFEST_RELATIVE"
-            refused=true
-            break
-        fi
-
-        # RR1 — divergence. The ruling: nothing is ever reset over commits
-        # this workspace did not park.
-        if [ "$remote_tip" != "$parked_commit" ]; then
-            >&2 echo "Error: $branch ($role leg) has moved since it was parked; that feature was NOT recreated."
-            >&2 echo "  parked commit  $parked_commit   (parked $MANIFEST_PARKED_AT on $MANIFEST_PARKED_ON)"
-            >&2 echo "  current tip    $remote_tip   (origin/$branch)"
-            >&2 echo "Nothing is ever reset over commits this workspace did not park. Reconcile by hand:"
-            >&2 echo "  git -C $mount fetch origin $branch"
-            >&2 echo "  git -C $mount log --oneline $parked_commit..origin/$branch"
-            >&2 echo "  git -C $mount worktree add -b $branch $WORKTREE_ROOT_RAW/$branch/$mount origin/$branch"
-            >&2 echo "  # then decide: rebase the parked WIP onto the new tip, or discard it"
-            record_refusal "$branch" "divergence" \
-                "git -C $mount log --oneline $parked_commit..origin/$branch"
             refused=true
             break
         fi

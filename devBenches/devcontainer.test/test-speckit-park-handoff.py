@@ -37,7 +37,7 @@ class ParkHandoffTests(unittest.TestCase):
             "  - role: spec\n    path: spec\n  - role: code\n    path: code\n")
         destination=self.root/".specify"/SCRIPTS
         destination.mkdir(parents=True)
-        for name in ("park.sh","git-common.sh","workspace-common.sh"):
+        for name in ("park.sh","resume.sh","git-common.sh","workspace-common.sh"):
             shutil.copyfile(TEMPLATES/SCRIPTS/name,destination/name)
         (self.root/".specify/extensions/git/git-config.yml").write_text(
             "checkout_mode: worktree\nbase_branch: main\nworktree_root: worktrees\n")
@@ -257,6 +257,65 @@ class ParkHandoffTests(unittest.TestCase):
         remote=self.git(self.workspace_origin,"show","refs/heads/main:workspaces/dummy/fixture-project.yaml")
         self.assertIn(new_head,remote)
         self.assertIn(self.git(one["code"],"rev-parse","HEAD"),remote)
+
+
+
+    def resume(self):
+        return self.run_command(self.root,"bash",str(Path(".specify")/SCRIPTS/"resume.sh"),
+                                "--json","--workspace",str(self.workspace),check=False)
+
+    def parked_wip(self):
+        branch="001-one"
+        trees=self.feature(branch)
+        for role,tree in trees.items():
+            (tree/"pending.txt").write_text(role+" work")
+        result=self.park()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        return branch,trees
+
+    def existing_resume_refuses_changed_origin(self,state):
+        branch,trees=self.parked_wip()
+        before={role:(self.git(tree,"rev-parse","HEAD"),self.git(tree,"status","--porcelain"))
+                for role,tree in trees.items()}
+        manifest=self.manifest.read_bytes()
+        if state=="advanced":
+            peer=self.base/"peer-code"
+            self.git(self.base,"clone","-q","-b",branch,str(self.origins["code"]),str(peer))
+            self.identity(peer)
+            self.git(peer,"commit","--allow-empty","-qm","remote advanced")
+            self.git(peer,"push","-q","origin",branch)
+        elif state=="deleted":
+            self.git(self.origins["code"],"update-ref","-d","refs/heads/"+branch)
+        else:
+            self.git(self.root/"code","remote","set-url","origin",str(self.base/"missing-origin.git"))
+        result=self.resume()
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        self.assertIn("has moved since it was parked" if state=="advanced" else "could not be verified",
+                      result.stderr)
+        for role,tree in trees.items():
+            self.assertEqual((self.git(tree,"rev-parse","HEAD"),self.git(tree,"status","--porcelain")),before[role])
+        self.assertEqual(self.manifest.read_bytes(),manifest)
+
+    def test_existing_resume_refuses_advanced_origin_before_any_reset(self):
+        self.existing_resume_refuses_changed_origin("advanced")
+
+    def test_existing_resume_refuses_deleted_origin_before_any_reset(self):
+        self.existing_resume_refuses_changed_origin("deleted")
+
+    def test_existing_resume_refuses_unavailable_origin_before_any_reset(self):
+        self.existing_resume_refuses_changed_origin("unavailable")
+
+    def test_existing_resume_is_idempotent_against_unchanged_origin(self):
+        _,trees=self.parked_wip()
+        first=self.resume()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        before={role:(self.git(tree,"rev-parse","HEAD"),self.git(tree,"status","--porcelain"))
+                for role,tree in trees.items()}
+        second=self.resume()
+        self.assertEqual(second.returncode,0,second.stdout+second.stderr)
+        for role,tree in trees.items():
+            self.assertEqual((self.git(tree,"rev-parse","HEAD"),self.git(tree,"status","--porcelain")),before[role])
+            self.assertEqual((tree/"pending.txt").read_text(),role+" work")
 
 
 if __name__=="__main__":

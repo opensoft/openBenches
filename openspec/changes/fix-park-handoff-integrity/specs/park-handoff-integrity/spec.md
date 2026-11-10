@@ -54,3 +54,18 @@ Park SHALL retry publication of an existing pending workspace-manifest commit ev
 #### Scenario: Publication still fails
 - WHEN origin is still unavailable or all push retries are rejected
 - THEN park refuses success and retains the local manifest commit.
+
+### Requirement: Read the refreshed receiving manifest
+An active resume SHALL synchronize a configured workspace origin before loading its manifest. It SHALL refuse unavailable origin and unsafe synchronization without creating or resetting feature worktrees. It SHALL preserve dirty content, abort conflicting rebases, and release its mutex on every exit. Dry-run SHALL NOT synchronize or lock the workspace.
+
+#### Scenario: Clone predates a published handoff
+- WHEN the receiving workspace clone has no copy of the latest parked feature
+- THEN resume refreshes it and restores that published feature.
+
+#### Scenario: Unsafe or unavailable synchronization
+- WHEN refresh requires a rebase of dirty content, conflicts, or cannot reach origin
+- THEN resume refuses, preserving the local workspace and feature heads.
+
+#### Scenario: Dry-run on a stale clone
+- WHEN a stale receiving clone is used with dry-run
+- THEN its files, refs and lock state remain unchanged.

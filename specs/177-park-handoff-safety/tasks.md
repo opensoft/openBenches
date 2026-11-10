@@ -7,7 +7,8 @@
 | SET-01 | Refuse wrong leg repository/branch before park commits | T001–T003 | main | bash devBenches/devcontainer.test/test-speckit-git-feature.sh | Existing subset behavior remains unchanged; no new activation |
 | SET-02 | Preserve unselected parked records at each manifest write | T004–T005 | SET-01 | bash devBenches/devcontainer.test/test-speckit-git-feature.sh | Backward-compatible partial scope; full park unchanged |
 | SET-03 | Verify origin before accepting an existing resumed worktree | T007–T008 | SET-02 | python3 devBenches/devcontainer.test/test-speckit-park-handoff.py | Current-origin refusal restored; safe idempotence retained |
-| SET-04 | Retry pending handoff publication and reconcile the consumer | T006, T009–T011 | SET-03 | python3 devBenches/devcontainer.test/test-speckit-park-handoff.py | Pending commit retained on failure; no new activation |
+| SET-04 | Retry pending handoff publication | T010–T011 | SET-03 | python3 devBenches/devcontainer.test/test-speckit-park-handoff.py | Pending commit retained on failure; no new activation |
+| SET-05 | Refresh receiving manifest and reconcile the consumer | T006, T009, T012–T013 | SET-04 | python3 devBenches/devcontainer.test/test-speckit-park-handoff.py | Refuse unsafe refresh; dry-run unchanged |
 
 ## Governance and US1
 
@@ -25,11 +26,16 @@
 - [x] T007 [O] Reproduce moved/deleted/unavailable origin on existing worktrees and gate the existing-worktree shortcut before any reset; files: shared resume.sh and focused handoff fixtures. Three refusal cases failed before correction; all eleven focused cases passed afterward.
 - [x] T008 [S] Validate safe repeat resume, publish SET-03 and obtain current-head CI/Codex evidence. PR #312 at 44adc6717af32edae21e85fda7cc849ba1c7592c passed published CI and exact-head Codex review without findings; the full local feature suite also passed.
 
-## US4 and final consumer reconciliation
+## US4
 
 - [x] T010 [O] Reproduce an unchanged-content retry after failed manifest publication and exhausted push attempts; separate conditional commit creation from publication and preserve pending evidence. Both fixtures failed before correction; all thirteen focused cases passed afterward.
-- [ ] T011 [S] Validate and publish dependent SET-04 with current-head CI and Codex review.
-- [ ] T006 [S] Copy the tested shared corrections into openMFA PR #2, retain declared unrelated local deviations, rerun its tests/CI/Codex review and reconcile evidence. Upstream merge/fleet installation remain distinct unclaimed states.
-- [ ] T009 [S] Record final source/consumer heads, hashes, test results and review dispositions without claiming upstream landing.
+- [x] T011 [S] Validate and publish dependent SET-04 with current-head CI and Codex review. PR #313 at 0ac1aa4411669ebf78a62445b953a1d81b8180d4 passed CI and exact-head Codex review without findings.
 
-Dependencies: T001 → T002 → T003 → T004 → T005 → T007 → T008 → T010 → T011 → T006 → T009. Fresh review expansions are captured before dependent implementation. No parallel-agent execution is required. No queue/ruleset change or release task is included.
+## US5 and final consumer reconciliation
+
+- [x] T012 [O] Reproduce stale receiving manifest and implement safe pre-read refresh; verify dirty/conflicting/unavailable refusals, mutex release and unchanged dry-run. Four new checks failed before correction and the dry-run control passed; all eighteen focused cases passed afterward.
+- [ ] T013 [S] Validate and publish dependent SET-05 with current-head CI and completed Codex review. Source CI at a20cb8ff38ff325f98e22a7521cd01242782168b passed; fresh source/consumer reviews failed because the Codex account's code-review usage limit was reached. Completed final review remains externally blocked; no clean receipt is claimed.
+- [x] T006 [S] Copy the tested shared corrections into openMFA PR #2, retain declared unrelated local deviations, rerun its tests/CI/Codex review and reconcile evidence. Consumer 12dc8723239f340c7727387b4a4a36c4359aa2cd passed all 25 cases locally/in CI plus validation and SonarCloud. Its requested review failed on the usage limit recorded under T013. Upstream merge/fleet installation remain distinct unclaimed states.
+- [x] T009 [S] Record source/consumer snapshots, hashes, test results and review dispositions without claiming upstream landing; see final-evidence.md. Final clean-review acceptance remains under T013.
+
+Dependencies: T001 → T002 → T003 → T004 → T005 → T007 → T008 → T010 → T011 → T012 → T013 → T006 → T009. Fresh review expansions are captured before dependent implementation. No parallel-agent execution is required. No queue/ruleset change or release task is included.

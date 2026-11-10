@@ -13,6 +13,7 @@ openMFA PR #2 exposed two inherited park defects: a mismatched code branch can b
 - Add isolated regression fixtures and carry the tested shared-source correction into the draft openMFA tooling PR.
 - Address the fresh consumer review finding: validate origin before accepting an existing resume worktree, preserving already-resumed idempotence and refusing unverified or moved remote branches.
 - Address the subsequent consumer finding: retry workspace-manifest publication independently of content changes, retaining pending commits and refusing failed publication.
+- Refresh the receiving workspace before resume reads its manifest, refusing unavailable origin, dirty synchronization and conflicts without touching feature worktrees.
 
 ## Capabilities
 
@@ -24,6 +25,6 @@ None; this formalizes the existing refusal/preservation intent without changing 
 
 ## Impact
 
-Shared bash park/resume tooling, its workspace writer and fixtures. No shape pin, installer activation, live workspace manifest, queue/ruleset, release or public schema change. Follow the current constitution: four task sets and four ordered PRs after the fresh review findings. Existing Mergify pilot allowlists do not include these source paths; no queue admission is inferred.
+Shared bash park/resume tooling, its workspace writer and fixtures. No shape pin, installer activation, live workspace manifest, queue/ruleset, release or public schema change. Follow the current constitution: five task sets and five ordered PRs after the fresh review findings. Existing Mergify pilot allowlists do not include these source paths; no queue admission is inferred.
 
 Implementation handoff: [feature 177](../../../specs/177-park-handoff-safety/plan.md). New source proposals remain draft; the commission is not an invented ratification.

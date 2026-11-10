@@ -307,6 +307,17 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual(widgets['projects']['blockdef']['meta']['file'], str(self.projects.resolve()))
         self.assertTrue(json.loads(self.connections.read_text())[CONNECTION]['conn:wshenabled'])
 
+    def test_incomplete_installer_template_preserves_both_settings(self):
+        self.widgets.write_text('{"custom": {"label": "Keep me"}}\n')
+        self.connections.write_text('{"ssh://custom": {}}\n')
+        before = (self.widgets.read_bytes(), self.connections.read_bytes())
+        templates = json.loads(self.env['TEST_TEMPLATES'])
+        del templates['pyBench']
+        result = self.sync(TEST_TEMPLATES=json.dumps(templates))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Wave installer did not supply widget pyBench', result.stderr)
+        self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

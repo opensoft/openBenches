@@ -229,6 +229,20 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual(self.widgets.read_text(), widgets)
         self.assertEqual(self.connections.read_text(), connections)
 
+    def test_refuses_non_object_settings_without_writes(self):
+        for name in ('widgets.json', 'connections.json'):
+            for content in ('[]\n', 'null\n', '"not an object"\n'):
+                with self.subTest(name=name, content=content):
+                    self.widgets.write_text('{}\n')
+                    self.connections.write_text('{}\n')
+                    path = self.config / name
+                    path.write_text(content)
+                    before = (self.widgets.read_bytes(), self.connections.read_bytes())
+                    result = self.sync()
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('must contain a JSON object', result.stderr)
+                    self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

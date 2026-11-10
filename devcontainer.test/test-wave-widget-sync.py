@@ -128,6 +128,16 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual(self.sync().returncode, 0)
         self.assertEqual((self.widgets.stat().st_ino, self.connections.stat().st_ino), inodes)
 
+    def test_preserves_a_custom_projects_widget(self):
+        custom_projects = widget({'file': str(self.home / 'Personal projects')},
+                                 description='My own projects')
+        self.widgets.write_text(json.dumps({'projects': custom_projects}))
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        widgets = json.loads(self.widgets.read_text())
+        self.assertEqual(widgets['projects'], custom_projects)
+        self.assertIn('pyBench', widgets)
+
     def test_concurrent_edit_aborts_before_either_file_is_published(self):
         self.widgets.write_text('{}')
         self.connections.write_text('{}')

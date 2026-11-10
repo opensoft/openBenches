@@ -1006,7 +1006,7 @@ workspace_push_manifest() {
         attempt=$((attempt + 1))
     done
     echo "[specify] Warning: could not push the manifest commit to origin/$branch after 6 attempts; it is committed locally." >&2
-    return 0
+    return 1
 }
 
 # ---------------------------------------------------------------------------

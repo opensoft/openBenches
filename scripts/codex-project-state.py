@@ -92,7 +92,7 @@ def merge_initial(base, incoming):
     merged = deepcopy(base)
     for key in ("local-projects", "thread-project-assignments", *PROJECT_MAPS):
         merged[key].update(incoming[key])
-    merged["projectless-thread-ids"] = sorted(set(base["projectless-thread-ids"]) | set(incoming["projectless-thread-ids"]))
+    merged["projectless-thread-ids"] = sorted((set(base["projectless-thread-ids"]) | set(incoming["projectless-thread-ids"])) - set(incoming["thread-project-assignments"]))
     merged["project-order"] = list(dict.fromkeys(base["project-order"] + incoming["project-order"]))
     for key in HOST_MAPS:
         for host, value in incoming[key].items():
@@ -121,15 +121,19 @@ def normalize(shared):
 def merge_changes(shared, before, after):
     """Apply only actual edits since this account's last preparation."""
     shared = deepcopy(shared)
+    reassigned = set()
     for key in ("local-projects", "thread-project-assignments", *PROJECT_MAPS, *HOST_MAPS):
         for item in before[key].keys() - after[key].keys():
             shared[key].pop(item, None)
         for item, value in after[key].items():
             if item not in before[key] or before[key][item] != value:
                 shared[key][item] = deepcopy(value)
+                if key == "thread-project-assignments":
+                    reassigned.add(item)
     unassigned = set(shared["projectless-thread-ids"])
     unassigned -= set(before["projectless-thread-ids"]) - set(after["projectless-thread-ids"])
     unassigned |= set(after["projectless-thread-ids"]) - set(before["projectless-thread-ids"])
+    unassigned -= reassigned
     shared["projectless-thread-ids"] = sorted(unassigned)
     if before["project-order"] != after["project-order"]:
         shared["project-order"] = after["project-order"]
@@ -206,11 +210,9 @@ def synchronize(state, catalog, runtime, home, active_owner, enrolled=(), seed_o
             raise ValueError("a catalog already exists; seeding again is refused")
         if seed_owner not in owners or seed_owner not in snapshots:
             raise ValueError("seed account must be explicitly enrolled and present")
-        shared = project_state(snapshots[seed_owner], host_key)
-        if not shared["local-projects"]:
+        if not project_state(snapshots[seed_owner], host_key)["local-projects"]:
             raise ValueError("refusing an empty seed project set")
-        shared = merge_initial(shared, project_state(state, host_key))
-    elif catalog:
+    if catalog:
         shared = catalog["shared"]
         # In-app rotation can leave real edits in an inactive account. Compare
         # every prepared snapshot to its own baseline; unchanged stale copies
@@ -223,7 +225,12 @@ def synchronize(state, catalog, runtime, home, active_owner, enrolled=(), seed_o
             elif digest(current) != baseline["digest"]:
                 shared = merge_changes(shared, baseline["state"], current)
     else:
-        shared = project_state(state, host_key)
+        shared = project_state({}, host_key)
+        # Import every enrolled account before replacing any snapshot. The
+        # selected seed and active account take precedence on initial conflicts.
+        order = sorted(snapshots, key=lambda value: (value == active_owner, value == seed_owner, value))
+        for owner in order:
+            shared = merge_initial(shared, project_state(snapshots[owner], host_key))
     shared = normalize(shared)
     baselines = dict(catalog.get("baselines", {}))
     known_project_ids = set(catalog.get("shared", {}).get("local-projects", {}))

@@ -111,6 +111,23 @@ class ProjectStateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.synchronize(fixture(), {}, "windows", "native-home", B, [A], A, [identity])
 
+    def test_bootstrap_preserves_third_accounts_unique_projects_and_chats(self):
+        state = fixture()
+        owner = module.owner_id("third", "company")
+        state[module.SCOPE]["inactive"][owner] = {
+            "atoms": {"local-document-identity": {"userId": "third", "accountId": "company"}},
+            "globals": {"local-projects": {"third": project("third")}, "thread-project-assignments": {"third-chat": {"projectKind": "local", "projectId": "third"}}},
+        }
+        result, catalog = module.synchronize(state, {}, "windows", "native-home", B, [A, owner], A)
+        self.assertIn("third", result["local-projects"])
+        self.assertIn("third-chat", catalog["shared"]["thread-project-assignments"])
+        self.assertIn("p", result[module.SCOPE]["inactive"][owner]["globals"]["local-projects"])
+
+    def test_first_prepare_without_seed_also_imports_enrolled_snapshots(self):
+        result, catalog = module.synchronize(fixture(), {}, "windows", "native-home", B, [A])
+        self.assertIn("p", result["local-projects"])
+        self.assertIn("t", catalog["shared"]["thread-project-assignments"])
+
     def test_cloud_ownership_and_preferences_are_not_copied(self):
         state = fixture()
         donor = state[module.SCOPE]["inactive"][A]["globals"]
@@ -162,6 +179,28 @@ class ProjectStateTests(unittest.TestCase):
         result, _ = module.synchronize(state, catalog, "windows", "native-home", B)
         self.assertNotIn("p", result["local-projects"])
         self.assertIn("new", result["local-projects"])
+
+    def test_active_regrouping_wins_over_inactive_projectless_marker(self):
+        state, catalog = self.seed()
+        inactive = state[module.SCOPE]["inactive"][A]["globals"]
+        inactive["thread-project-assignments"].pop("t")
+        inactive["projectless-thread-ids"].append("t")
+        state["local-projects"]["new"] = project("new")
+        state["thread-project-assignments"]["t"]["projectId"] = "new"
+        result, catalog = module.synchronize(state, catalog, "windows", "native-home", B)
+        self.assertEqual(result["thread-project-assignments"]["t"]["projectId"], "new")
+        self.assertNotIn("t", result["projectless-thread-ids"])
+
+    def test_active_ungrouping_wins_over_inactive_regrouping(self):
+        state, catalog = self.seed()
+        inactive = state[module.SCOPE]["inactive"][A]["globals"]
+        inactive["local-projects"]["new"] = project("new")
+        inactive["thread-project-assignments"]["t"]["projectId"] = "new"
+        state["thread-project-assignments"].pop("t")
+        state["projectless-thread-ids"].append("t")
+        result, catalog = module.synchronize(state, catalog, "windows", "native-home", B)
+        self.assertNotIn("t", result["thread-project-assignments"])
+        self.assertIn("t", result["projectless-thread-ids"])
 
     def test_destination_cloud_chat_membership_is_preserved(self):
         state = fixture()

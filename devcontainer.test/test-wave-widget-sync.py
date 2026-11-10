@@ -116,7 +116,9 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual(widgets['rustBench'], custom)
         self.assertEqual(widgets['custom'], {'label': 'Keep me'})
         self.assertEqual(widgets['defwidget@terminal']['blockdef']['meta']['term:fontsize'], 20)
-        self.assertEqual(widgets['projects']['blockdef']['meta']['file'], str(self.projects))
+        # The reconciler publishes the canonical path; macOS temp paths may
+        # start with the /var symlink rather than /private/var.
+        self.assertEqual(widgets['projects']['blockdef']['meta']['file'], str(self.projects.resolve()))
         self.assertEqual(widgets['pyBench']['blockdef']['meta']['cmd:cwd'], str(ROOT))
         self.assertEqual(json.loads(self.connections.read_text()), {
             CONNECTION: {'custom-setting': 1, 'conn:wshenabled': True},

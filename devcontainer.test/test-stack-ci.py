@@ -14,6 +14,10 @@ POLICY = runpy.run_path(str(GATE))
 HELPER_TEST = POLICY["HELPER_TEST"]
 HELPER = next(p.decode() for p in POLICY["HELPER_PATHS"] if p.decode() != HELPER_TEST)
 PROJECT_TEST = POLICY["PROJECT_TEST"]
+WAVE_TEST = "devcontainer.test/test-wave-widget-sync.py"
+WAVE_SCRIPT = "scripts/sync-wave-widgets.sh"
+WAVE_RECONCILER = "scripts/sync-wave-widgets.py"
+WAVE_SCOPE = "wave-widget-sync"
 REPO = "example/openbenches"
 
 
@@ -113,13 +117,17 @@ class StackCiTest(unittest.TestCase):
         self.assertIn("focused-helper-test", result.stdout)
         self.assertNotEqual(result.returncode, 0)
 
-    def scoped_batch(self, scope="helper"):
+    def scoped_batch(self, scope="helper", upper_path=None):
         _, prefix, approval = POLICY["STACK_SCOPES"][scope]
-        source, tests = (HELPER, HELPER_TEST) if scope == "helper" else ("scripts/project", PROJECT_TEST)
+        source, tests = {
+            "helper": (HELPER, HELPER_TEST),
+            "project": ("scripts/project", PROJECT_TEST),
+            WAVE_SCOPE: (WAVE_SCRIPT, WAVE_TEST),
+        }[scope]
         self.git("switch", "-qc", prefix + "lower")
         lower = self.commit(source, "# source update\n")
         self.git("switch", "-qc", prefix + "upper")
-        upper = self.commit(tests, "# regression test\n")
+        upper = self.commit(upper_path or tests, "# regression test\n")
         self.git("switch", "-qc", "candidate", self.base)
         self.git("merge", "-q", "--no-ff", lower, "-m", "Merge lower")
         self.git("merge", "-q", "--no-ff", upper, "-m", "Merge upper")
@@ -205,6 +213,67 @@ class StackCiTest(unittest.TestCase):
         result = self.gate("heavy")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("outside the canary path allowlist", result.stderr)
+
+    def test_wave_batch_requires_current_approval_and_exact_order(self):
+        candidate, upper, responses = self.scoped_batch(WAVE_SCOPE)
+        self.check_batch(candidate, responses, WAVE_SCOPE)
+        receipt = responses[f"commits/{upper}/status"]["statuses"][0]
+        current = receipt.copy()
+        receipt["context"] = "openbenches-project-reviewed"
+        with self.assertRaisesRegex(ValueError, "Missing successful wave-widget-sync approval"):
+            self.check_batch(candidate, responses, WAVE_SCOPE)
+        receipt.update(current)
+        receipt["description"] = f"base={self.base} stack=10,11"
+        with self.assertRaisesRegex(ValueError, "immediate base"):
+            self.check_batch(candidate, responses, WAVE_SCOPE)
+        receipt.update(current)
+        receipt["description"] = receipt["description"].replace("10,11", "11,10")
+        with self.assertRaisesRegex(ValueError, "exact batch"):
+            self.check_batch(candidate, responses, WAVE_SCOPE)
+
+    def test_wave_scope_rejects_the_launcher_even_in_a_reviewed_batch(self):
+        launcher = "scripts/wave-container-shell.sh"
+        candidate, _, responses = self.scoped_batch(WAVE_SCOPE, upper_path=launcher)
+        with self.assertRaisesRegex(ValueError, "path outside the pilot"):
+            self.check_batch(candidate, responses, WAVE_SCOPE)
+        self.assertEqual(
+            POLICY["candidate_scope"]({p.encode() for p in (WAVE_SCRIPT, WAVE_RECONCILER, WAVE_TEST)}),
+            WAVE_SCOPE,
+        )
+        result = self.gate("heavy")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("outside the canary path allowlist", result.stderr)
+
+    def test_wave_fast_propagates_focused_fixture_failure(self):
+        self.commit(WAVE_SCRIPT, "# widget entrypoint\n")
+        self.commit(WAVE_RECONCILER, "# reconciler\n")
+        base = self.commit(WAVE_TEST, "import sys\nprint(*sys.argv[1:])\nsys.exit(23)\n")
+        self.git("switch", "-qc", "wave")
+        head = self.commit(WAVE_RECONCILER, "# reconciler update\n")
+        self.git("switch", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "wave", "-m", "test merge")
+        result = self.gate("fast", PR_HEAD=head, PR_BASE=base)
+        self.assertIn("test_reconciles_owned_widgets_and_is_idempotent", result.stdout)
+        self.assertIn("test_invalid_or_symlinked_settings_are_preserved", result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_candidate_aggregate_fails_closed_for_incomplete_wave_matrix(self):
+        def result(event="push", scope=WAVE_SCOPE, verified="success", project="skipped", wave="success"):
+            return self.gate("gate", GITHUB_EVENT_NAME=event, SCOPE=scope,
+                             VERIFIED=verified, PROJECT=project, WAVE_WIDGET_SYNC=wave)
+
+        self.assertEqual(result().returncode, 0)
+        for status in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(status=status):
+                self.assertNotEqual(result(wave=status).returncode, 0)
+                self.assertNotEqual(result(event="pull_request", project="success", wave=status).returncode, 0)
+        self.assertNotEqual(result(verified="failure").returncode, 0)
+        self.assertNotEqual(result(project="success").returncode, 0)
+        self.assertEqual(result(event="pull_request", verified="skipped", project="success").returncode, 0)
+        for scope, project in (("docs", "skipped"), ("helper", "skipped"), ("project", "success")):
+            with self.subTest(scope=scope):
+                self.assertEqual(result(scope=scope, project=project, wave="skipped").returncode, 0)
+                self.assertNotEqual(result(scope=scope, project=project).returncode, 0)
 
     def test_fast_runs_focused_project_tests(self):
         base = self.commit(PROJECT_TEST, "import sys\nprint(*sys.argv[1:])\nsys.exit(23)\n")

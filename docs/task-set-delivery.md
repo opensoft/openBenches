@@ -155,3 +155,21 @@ same workflow run before the aggregate `openbenches-stack-heavy` can succeed.
 The config PR exercises those platform jobs and a differently named aggregate;
 it is not a queue candidate. The optional upstream-CLI test is not covered
 without its fixture source. Record the landed tree and stop on any mismatch.
+
+## Wave widget sync pilot
+
+For a separately approved live stack, use `ci/stack-wave-widget-sync/`
+branches and the same exact head/base and ordered-stack receipts as the
+project pilot, with the `openbenches-wave-widget-sync-reviewed` context and
+the `stack-ci-reviewed` label. The manual queue admits only
+`scripts/sync-wave-widgets.sh`, `scripts/sync-wave-widgets.py`, and
+`devcontainer.test/test-wave-widget-sync.py`. Keep the Wave launcher,
+workstation setup, and Windows/WSL host discovery changes out of this pilot.
+
+Require focused per-PR fixtures and existing CI before admission. The
+candidate verifier must approve the entire chain before the full widget
+fixture suite runs on Ubuntu and macOS. Both must pass within one workflow
+before `openbenches-stack-heavy` succeeds. These fixtures use disposable
+settings, not a running Wave app or a bench. A config PR uses the separately
+named `Stack config aggregate`; it cannot authorize a queue merge.
+Record the candidate, workflow, and matching landed tree in #250.

@@ -59,3 +59,22 @@ queue_rules:
       - check-success=openbenches-project-reviewed
     merge_conditions:
       - check-success=@github-actions/openbenches-stack-heavy
+
+  - name: openbenches-wave-widget-sync-pilot
+    batch_size: 3
+    batch_max_wait_time: 60 seconds
+    batch_max_failure_resolution_attempts: 0
+    max_checks_retries: 0
+    checks_timeout: 25 minutes
+    merge_method: merge
+    queue_conditions:
+      - -draft
+      - -from-fork
+      - label=stack-ci-reviewed
+      - head~=^ci/stack-wave-widget-sync/
+      - base~=^(main|ci/stack-wave-widget-sync/.+)$
+      - '-files~=^(?!(scripts/sync-wave-widgets[.](sh|py)|devcontainer[.]test/test-wave-widget-sync[.]py)$)'
+      - check-success=@github-actions/openbenches-pr-fast
+      - check-success=openbenches-wave-widget-sync-reviewed
+    merge_conditions:
+      - check-success=@github-actions/openbenches-stack-heavy

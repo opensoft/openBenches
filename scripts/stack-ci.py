@@ -15,9 +15,16 @@ HELPER_PATHS = {
 }
 PROJECT_TEST = "devcontainer.test/test-project-command.py"
 PROJECT_PATHS = {b"scripts/project", PROJECT_TEST.encode()}
+WAVE_SCRIPT = "scripts/sync-wave-widgets.sh"
+WAVE_RECONCILER = "scripts/sync-wave-widgets.py"
+WAVE_TEST = "devcontainer.test/test-wave-widget-sync.py"
+WAVE_PATHS = {path.encode() for path in (WAVE_SCRIPT, WAVE_RECONCILER, WAVE_TEST)}
 STACK_SCOPES = {
     "helper": (HELPER_PATHS, "ci/stack-helpers/", "openbenches-helper-reviewed"),
     "project": (PROJECT_PATHS, "ci/stack-project/", "openbenches-project-reviewed"),
+    "wave-widget-sync": (
+        WAVE_PATHS, "ci/stack-wave-widget-sync/", "openbenches-wave-widget-sync-reviewed",
+    ),
 }
 
 
@@ -151,12 +158,44 @@ def verify(mode, env):
             "InstallTests.test_forwarder_expands_tilde_and_rejects_relative_configuration",
             "InstallTests.test_checkout_forwarder_isolates_ownership_probe_from_pythonpath",
         ], check=True)
+    if paths & WAVE_PATHS:
+        subprocess.run(["bash", "-n", WAVE_SCRIPT], check=True)
+        subprocess.run([sys.executable, "-m", "py_compile", WAVE_RECONCILER, WAVE_TEST], check=True)
+        subprocess.run([
+            sys.executable, WAVE_TEST,
+            "WaveWidgetSyncTests.test_reconciles_owned_widgets_and_is_idempotent",
+            "WaveWidgetSyncTests.test_invalid_or_symlinked_settings_are_preserved",
+        ], check=True)
+
+
+def verify_results(env):
+    """Require exactly the platform jobs intended for this event and scope."""
+    event = env["GITHUB_EVENT_NAME"]
+    scope = env["SCOPE"]
+    actual = (env["PROJECT"], env["WAVE_WIDGET_SYNC"])
+    if event == "pull_request":
+        expected = ("success", "success")
+    elif event == "push" and env["VERIFIED"] == "success":
+        expected = {
+            "docs": ("skipped", "skipped"),
+            "helper": ("skipped", "skipped"),
+            "project": ("success", "skipped"),
+            "wave-widget-sync": ("skipped", "success"),
+        }[scope]
+    else:
+        raise ValueError("Expected config PR or successfully verified queue candidate")
+    if actual != expected:
+        raise ValueError(f"Expected platform results {expected}, got {actual}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("fast", "heavy"))
+    parser.add_argument("mode", choices=("fast", "heavy", "gate"))
+    mode = parser.parse_args().mode
     try:
-        verify(parser.parse_args().mode, os.environ)
+        if mode == "gate":
+            verify_results(os.environ)
+        else:
+            verify(mode, os.environ)
     except (KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:
         sys.exit(f"stack-ci: {exc}")

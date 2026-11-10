@@ -1,0 +1,36 @@
+name: OpenSpeckit legacy compatibility
+description: Preserved Git 2.34.1 and Bash 3.2 integration commands.
+inputs:
+  runtime:
+    description: Exact legacy environment to test.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate compatibility runtime
+      shell: bash
+      env:
+        OPENSPECKIT_COMPAT_RUNTIME: ${{ inputs.runtime }}
+      run: |
+        case "$OPENSPECKIT_COMPAT_RUNTIME" in
+          git-2-34-1|bash-3-2) ;;
+          *) echo "Unsupported compatibility runtime" >&2; exit 1 ;;
+        esac
+    - name: Run Git 2.34.1 feature and compatibility suites
+      if: inputs.runtime == 'git-2-34-1'
+      shell: bash
+      run: |
+        docker run --rm \
+          --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+          --workdir /workspace \
+          ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc \
+          bash -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends git=1:2.34.1-1ubuntu1 git-man=1:2.34.1-1ubuntu1 jq python3 zsh ca-certificates && git --version && test "$(git --version)" = "git version 2.34.1" && bash ./devBenches/devcontainer.test/test-speckit-git-feature.sh && bash ./devBenches/devcontainer.test/test-speckit-git-compat.sh'
+    - name: Run feature and compatibility suites with Bash 3.2
+      if: inputs.runtime == 'bash-3-2'
+      shell: bash
+      run: |
+        docker run --rm \
+          --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+          --workdir /workspace \
+          bash:3.2@sha256:241dd7ed99aa1f458b6a74cd200a49dca934d9e29d7a9b7636fe712db275a02b \
+          -c 'apk add --no-cache git python3 coreutils jq >/dev/null && bash --version | sed -n "1p" && jq --version && bash ./devBenches/devcontainer.test/test-speckit-git-feature.sh && bash ./devBenches/devcontainer.test/test-speckit-git-compat.sh'

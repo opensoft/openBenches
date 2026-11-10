@@ -307,6 +307,13 @@ def verify_results(env):
         raise ValueError("Expected config PR or successfully verified queue candidate")
     if actual != expected:
         raise ValueError(f"Expected platform results {expected}, got {actual}")
+    helper_results = tuple(env[name] for name in (
+        "HELPER_REGRESSION", "HELPER_GIT_2_34_1", "HELPER_BASH_3_2",
+        "HELPER_POWERSHELL_LINUX", "HELPER_POWERSHELL_WINDOWS",
+    ))
+    helper_expected = ("success" if event == "pull_request" or scope == "helper" else "skipped",) * 5
+    if helper_results != helper_expected:
+        raise ValueError(f"Expected helper results {helper_expected}, got {helper_results}")
 
 
 if __name__ == "__main__":

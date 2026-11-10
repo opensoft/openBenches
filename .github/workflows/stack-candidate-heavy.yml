@@ -12,6 +12,12 @@ on:
       - scripts/project-stack-ci.py
       - devcontainer.test/test-project-stack-ci.py
       - .github/workflows/project-command.yml
+      - .github/workflows/stack-pr-fast.yml
+      - .github/workflows/speckit-git-bash.yml
+      - .github/workflows/speckit-git-powershell.yml
+      - .github/actions/openspeckit-*/**
+      - devcontainer.test/helper-integration-baseline.json
+      - devcontainer.test/test-helper-coverage-parity.py
 
 permissions:
   contents: read
@@ -44,12 +50,129 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/stack-ci.py heavy
       - name: Run combined non-release integration
-        if: steps.candidate.outputs.scope == 'docs' || steps.candidate.outputs.scope == 'helper'
+        if: steps.candidate.outputs.scope == 'docs'
         run: |
           set -euo pipefail
           bash devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
           bash devBenches/devcontainer.test/test-speckit-git-feature.sh
           bash devBenches/devcontainer.test/test-speckit-git-compat.sh
+
+  helper-regression:
+    name: Helper full Bash regression
+    needs: verify
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' ||
+      (needs.verify.result == 'success' && needs.verify.outputs.scope == 'helper')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CT_FUNCTIONS_FILE: ${{ github.workspace }}/devBenches/base-image/files/ct/ct-functions.zsh
+      SPECKIT_WORKTREE_FALLBACK_FILE: ${{ github.workspace }}/devBenches/base-image/files/speckit-worktree/templates/specify/shell/worktrees.sh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact integration revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'Helper integration revision: %s\n' "$GITHUB_SHA"
+      - name: Run preserved integration suites
+        uses: ./.github/actions/openspeckit-bash
+
+  helper-git-2-34-1:
+    name: Helper Git 2.34.1 compatibility
+    needs: verify
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' ||
+      (needs.verify.result == 'success' && needs.verify.outputs.scope == 'helper')) }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact integration revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'Helper integration revision: %s\n' "$GITHUB_SHA"
+      - name: Run preserved integration suites
+        uses: ./.github/actions/openspeckit-compat
+        with:
+          runtime: git-2-34-1
+
+  helper-bash-3-2:
+    name: Helper Bash 3.2 compatibility
+    needs: verify
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' ||
+      (needs.verify.result == 'success' && needs.verify.outputs.scope == 'helper')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact integration revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'Helper integration revision: %s\n' "$GITHUB_SHA"
+      - name: Run preserved integration suites
+        uses: ./.github/actions/openspeckit-compat
+        with:
+          runtime: bash-3-2
+
+  helper-powershell-linux:
+    name: Helper PowerShell Linux
+    needs: verify
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' ||
+      (needs.verify.result == 'success' && needs.verify.outputs.scope == 'helper')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact integration revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'Helper integration revision: %s\n' "$GITHUB_SHA"
+      - name: Run preserved integration suites
+        uses: ./.github/actions/openspeckit-powershell
+
+  helper-powershell-windows:
+    name: Helper PowerShell Windows
+    needs: verify
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' ||
+      (needs.verify.result == 'success' && needs.verify.outputs.scope == 'helper')) }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact integration revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'Helper integration revision: %s\n' "$GITHUB_SHA"
+      - name: Run preserved integration suites
+        uses: ./.github/actions/openspeckit-powershell
 
   project:
     name: Project stack integration (${{ matrix.os }})
@@ -114,7 +237,7 @@ jobs:
 
   gate:
     name: ${{ github.event_name == 'push' && 'openbenches-stack-heavy' || 'Stack config aggregate' }}
-    needs: [verify, project, wave-widget-sync]
+    needs: [verify, helper-regression, helper-git-2-34-1, helper-bash-3-2, helper-powershell-linux, helper-powershell-windows, project, wave-widget-sync]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -129,4 +252,11 @@ jobs:
           VERIFIED: ${{ needs.verify.result }}
           PROJECT: ${{ needs.project.result }}
           WAVE_WIDGET_SYNC: ${{ needs.wave-widget-sync.result }}
-        run: python3 scripts/stack-ci.py gate
+          HELPER_REGRESSION: ${{ needs.helper-regression.result }}
+          HELPER_GIT_2_34_1: ${{ needs.helper-git-2-34-1.result }}
+          HELPER_BASH_3_2: ${{ needs.helper-bash-3-2.result }}
+          HELPER_POWERSHELL_LINUX: ${{ needs.helper-powershell-linux.result }}
+          HELPER_POWERSHELL_WINDOWS: ${{ needs.helper-powershell-windows.result }}
+        run: |
+          python3 devcontainer.test/test-helper-coverage-parity.py
+          python3 scripts/stack-ci.py gate

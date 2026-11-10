@@ -137,6 +137,27 @@ remove its admission labels. Recheck the new inputs and post fresh receipts
 before queueing again. For a partial landing, stop and verify the target before
 retrying. Do not manually merge past a failed heavy run.
 
+### Helper candidate coverage parity
+
+The helper heavy workflow requires five integration jobs: full Ubuntu Bash
+regression, Git 2.34.1 compatibility, Bash 3.2 compatibility, full Ubuntu
+PowerShell, and native Windows PowerShell state regressions. Every job checks
+out and verifies the exact candidate revision. Shared local actions preserve
+the ordinary workflow commands, environment overrides and pinned legacy images;
+`devcontainer.test/helper-integration-baseline.json` records their pre-extraction
+inventory at main `05dce7e` for offline parity checks.
+
+All five results must be successful before `openbenches-stack-heavy` can pass.
+Config PRs exercise the same five jobs and retain the distinct config aggregate.
+The docs queue keeps its existing inline integration; project and Wave routes
+remain unchanged. Helper integration is no longer duplicated inside verification.
+
+This is coverage parity only, not helper CI-efficiency rollout: ordinary Bash
+and PowerShell PR/push/manual checks remain fully enabled with their existing
+job identities, runners, timeouts and path coverage. No helper skip classifier
+or efficiency opt-in is enabled. A later config change and separately authorized
+live canary are required before omitting ordinary helper integration.
+
 ## Project wrapper pilot
 
 For a separately approved stack, use `ci/stack-project/` branches and the

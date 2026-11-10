@@ -38,6 +38,11 @@ assertions now verify unchanged content/status and the complete rerun passed.
 The shape validator passed both unchanged leg pins and all 11 shape digests.
 OpenSpec strict and diff whitespace checks passed.
 
+A final publication check reproduced permission widening of existing 0600
+metadata to 0644 under umask 022. Both publishers now restore the existing
+regular destination's permission bits on the owned temporary before writing.
+The focused manifest-and-selector permission case passed after correction.
+
 Current-main qualification, exact source/consumer heads, CI runs and landing
 readback are recorded separately on the PRs. No queue/ruleset, image activation,
 real operator handoff, identity operation, product pin or release is included.

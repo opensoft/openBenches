@@ -1118,6 +1118,7 @@ directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 name = "feature.json"
 temporary = ".feature.json.tmp"
 payload = {"feature_directory": sys.argv[2]}
+publication_mode = None
 serialized = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
 with ExitStack() as descriptors:
     root_fd = os.open(os.path.realpath(sys.argv[1]), directory_flags)
@@ -1135,8 +1136,10 @@ with ExitStack() as descriptors:
         pass
     else:
         with os.fdopen(previous_fd, "r", encoding="utf-8") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
                 raise ValueError("feature selector must be a regular file or missing")
+            publication_mode = stat.S_IMODE(metadata.st_mode)
             try:
                 previous = json.load(stream)
             except (ValueError, UnicodeError):
@@ -1149,6 +1152,8 @@ with ExitStack() as descriptors:
     identity = os.fstat(temporary_fd)
     try:
         with os.fdopen(temporary_fd, "wb") as stream:
+            if publication_mode is not None:
+                os.fchmod(stream.fileno(), publication_mode)
             stream.write(serialized)
         leaf = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
         if (leaf.st_dev, leaf.st_ino) != (identity.st_dev, identity.st_ino):

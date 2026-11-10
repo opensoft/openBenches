@@ -84,3 +84,7 @@ The writer SHALL exclusively create its temporary file, SHALL NOT follow or trun
 #### Scenario: Publication directory or selector is a symlink
 - WHEN a manifest directory component or active-feature selector points outside its intended checkout
 - THEN publication refuses without changing any unrelated target.
+
+#### Scenario: Existing metadata is private
+- WHEN a regular manifest or selector has restrictive permission bits
+- THEN atomic replacement preserves those permission bits.

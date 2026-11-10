@@ -1220,6 +1220,7 @@ for component in components[:-1]:
     directory_fd = child_fd
 atexit.register(os.close, directory_fd)
 manifest_name = components[-1]
+publication_mode = None
 try:
     existing_fd = os.open(manifest_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                           dir_fd=directory_fd)
@@ -1227,8 +1228,10 @@ except FileNotFoundError:
     existing = ""
 else:
     with os.fdopen(existing_fd, "r", encoding="utf-8") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("manifest must be a regular file or missing")
+        publication_mode = stat.S_IMODE(metadata.st_mode)
         existing = stream.read()
 
 blocks = []
@@ -1367,6 +1370,8 @@ temporary_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NO
 identity = os.fstat(temporary_fd)
 try:
     with os.fdopen(temporary_fd, "w", encoding="utf-8") as stream:
+        if publication_mode is not None:
+            os.fchmod(stream.fileno(), publication_mode)
         stream.write(rendered)
     leaf = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
     if (leaf.st_dev, leaf.st_ino) != (identity.st_dev, identity.st_ino):

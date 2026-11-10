@@ -413,6 +413,26 @@ class ParkHandoffTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn("branch: 001-one",self.manifest.read_text())
 
+    def test_publication_preserves_existing_private_permissions(self):
+        trees=self.feature("001-one")
+        first=self.park()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        self.manifest.chmod(0o600)
+        selector=self.root/".specify/feature.json"
+        selector.write_text(json.dumps({"feature_directory":"older-feature"}))
+        selector.chmod(0o600)
+        (trees["code"]/"new-work.txt").write_text("new feature work")
+        previous=os.umask(0o022)
+        try:
+            parked=self.park()
+            self.assertEqual(parked.returncode,0,parked.stdout+parked.stderr)
+            self.assertEqual(self.manifest.stat().st_mode & 0o777,0o600)
+            resumed=self.resume()
+            self.assertEqual(resumed.returncode,0,resumed.stdout+resumed.stderr)
+            self.assertEqual(selector.stat().st_mode & 0o777,0o600)
+        finally:
+            os.umask(previous)
+
     def receiver_workspace(self):
         receiver=self.base/"receiver-workspace"
         self.git(self.base,"clone","-q","-b","main",str(self.workspace_origin),str(receiver))

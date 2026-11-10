@@ -13,6 +13,7 @@ GATE = Path(__file__).resolve().parents[1] / "scripts" / "stack-ci.py"
 POLICY = runpy.run_path(str(GATE))
 HELPER_TEST = POLICY["HELPER_TEST"]
 HELPER = next(p.decode() for p in POLICY["HELPER_PATHS"] if p.decode() != HELPER_TEST)
+PROJECT_TEST = POLICY["PROJECT_TEST"]
 REPO = "example/openbenches"
 
 
@@ -112,11 +113,13 @@ class StackCiTest(unittest.TestCase):
         self.assertIn("focused-helper-test", result.stdout)
         self.assertNotEqual(result.returncode, 0)
 
-    def helper_batch(self):
-        self.git("switch", "-qc", "ci/stack-helpers/lower")
-        lower = self.commit(HELPER, "# helper update\n")
-        self.git("switch", "-qc", "ci/stack-helpers/upper")
-        upper = self.commit(HELPER_TEST, "# regression test\n")
+    def scoped_batch(self, scope="helper"):
+        _, prefix, approval = POLICY["STACK_SCOPES"][scope]
+        source, tests = (HELPER, HELPER_TEST) if scope == "helper" else ("scripts/project", PROJECT_TEST)
+        self.git("switch", "-qc", prefix + "lower")
+        lower = self.commit(source, "# source update\n")
+        self.git("switch", "-qc", prefix + "upper")
+        upper = self.commit(tests, "# regression test\n")
         self.git("switch", "-qc", "candidate", self.base)
         self.git("merge", "-q", "--no-ff", lower, "-m", "Merge lower")
         self.git("merge", "-q", "--no-ff", upper, "-m", "Merge upper")
@@ -127,7 +130,7 @@ class StackCiTest(unittest.TestCase):
 
         def status(base):
             return {"statuses": [{
-                "context": POLICY["HELPER_APPROVAL"], "state": "success",
+                "context": approval, "state": "success",
                 "description": f"base={base} stack=10,11",
             }]}
 
@@ -135,54 +138,83 @@ class StackCiTest(unittest.TestCase):
             f"commits/{lower}/status": status(self.base),
             f"commits/{upper}/status": status(lower),
             "pulls/10": {
-                "head": ref(lower, "ci/stack-helpers/lower"),
+                "head": ref(lower, prefix + "lower"),
                 "base": ref(self.base, "main"),
                 "state": "open", "draft": False, "body": "",
             },
             "pulls/11": {
-                "head": ref(upper, "ci/stack-helpers/upper"),
-                "base": ref(lower, "ci/stack-helpers/lower"),
+                "head": ref(upper, prefix + "upper"),
+                "base": ref(lower, prefix + "lower"),
                 "state": "open", "draft": False, "body": "Depends-On: #10",
             },
         }
         return candidate, upper, responses
 
-    def check_helper_batch(self, candidate, responses):
-        return POLICY["verify_helper_batch"](
-            self.base, candidate, REPO,
+    def check_batch(self, candidate, responses, scope="helper"):
+        return POLICY["verify_batch"](
+            self.base, candidate, REPO, scope,
             request=lambda _repo, endpoint: responses[endpoint],
             run_git=lambda *args: subprocess.check_output(["git", *args], cwd=self.repo),
         )
 
     def test_helper_batch_accepts_exact_reviewed_chain(self):
-        candidate, _, responses = self.helper_batch()
-        self.check_helper_batch(candidate, responses)
+        candidate, _, responses = self.scoped_batch()
+        self.check_batch(candidate, responses)
 
     def test_helper_batch_rejects_changed_head_or_base(self):
-        candidate, upper, responses = self.helper_batch()
+        candidate, upper, responses = self.scoped_batch()
         for ref in ("head", "base"):
             with self.subTest(ref=ref):
                 current = responses["pulls/11"][ref]["sha"]
                 responses["pulls/11"][ref]["sha"] = self.base
                 with self.assertRaisesRegex(ValueError, "reviewed head/base"):
-                    self.check_helper_batch(candidate, responses)
+                    self.check_batch(candidate, responses)
                 responses["pulls/11"][ref]["sha"] = current
 
         receipt = responses[f"commits/{upper}/status"]["statuses"][0]
         receipt["description"] = f"base={self.base} stack=10,11"
         with self.assertRaisesRegex(ValueError, "immediate base"):
-            self.check_helper_batch(candidate, responses)
+            self.check_batch(candidate, responses)
 
     def test_helper_batch_rejects_missing_approval_or_other_members(self):
-        candidate, upper, responses = self.helper_batch()
+        candidate, upper, responses = self.scoped_batch()
         statuses = responses[f"commits/{upper}/status"]["statuses"]
         receipt = statuses.pop()
         with self.assertRaisesRegex(ValueError, "Missing successful helper approval"):
-            self.check_helper_batch(candidate, responses)
+            self.check_batch(candidate, responses)
         statuses.append(receipt)
         receipt["description"] = receipt["description"].replace("10,11", "10,12")
         with self.assertRaisesRegex(ValueError, "exact batch"):
-            self.check_helper_batch(candidate, responses)
+            self.check_batch(candidate, responses)
+
+    def test_project_batch_requires_its_own_current_approval(self):
+        candidate, upper, responses = self.scoped_batch("project")
+        self.check_batch(candidate, responses, "project")
+        receipt = responses[f"commits/{upper}/status"]["statuses"][0]
+        receipt["context"] = "openbenches-helper-reviewed"
+        with self.assertRaisesRegex(ValueError, "Missing successful project approval"):
+            self.check_batch(candidate, responses, "project")
+        receipt["context"] = "openbenches-project-reviewed"
+        receipt["description"] = f"base={self.base} stack=10,11"
+        with self.assertRaisesRegex(ValueError, "immediate base"):
+            self.check_batch(candidate, responses, "project")
+
+    def test_heavy_rejects_mixed_project_and_helper_paths(self):
+        self.commit("scripts/project", "# project update\n")
+        self.commit(HELPER, "# helper update\n")
+        result = self.gate("heavy")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("outside the canary path allowlist", result.stderr)
+
+    def test_fast_runs_focused_project_tests(self):
+        base = self.commit(PROJECT_TEST, "import sys\nprint(*sys.argv[1:])\nsys.exit(23)\n")
+        self.git("switch", "-qc", "project")
+        head = self.commit("scripts/project", "# project update\n")
+        self.git("switch", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "project", "-m", "test merge")
+        result = self.gate("fast", PR_HEAD=head, PR_BASE=base)
+        self.assertIn("test_forwarders_preserve_legacy_argv_and_exit_code", result.stdout)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_heavy_rejects_mixed_helper_and_docs_paths(self):
         self.commit(HELPER, "# helper update\n")

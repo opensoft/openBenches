@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # workBenches owns discovery of its installation; openRepoProject owns the CLI.
 set -euo pipefail
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export WORKBENCHES_ROOT="${WORKBENCHES_ROOT:-$(dirname "$script_dir")}"
 installer="$script_dir/setup-project-command.py"
 candidate_dirs=()

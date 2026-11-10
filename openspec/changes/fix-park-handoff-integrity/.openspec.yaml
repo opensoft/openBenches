@@ -1,0 +1,8 @@
+schema: spec-driven
+origin:
+  kind: ad_hoc
+  id: workBenches:adhoc:2026-11-10-fix-park-handoff-integrity
+  reason: Fix the two park handoff blockers identified on openMFA PR 2 through shared tooling.
+  approved_by: Brett Heap, direct 2026-11-10 implementation instruction; this records commissioning, not ratification or queue admission.
+  approved_on: 2026-11-10
+created: 2026-11-10

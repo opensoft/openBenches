@@ -4423,6 +4423,12 @@ run_scenario "resume's rollback leaves another lane's unmounted registration alo
 run_scenario 'a per-org workspace override keeps that org out of the default repository' test_per_org_workspace_override
 run_scenario 'single-repository park and resume' test_single_repo_park_and_resume
 
+test_park_handoff_safety() {
+    SPECKIT_PARK_TEMPLATE_ROOT="$TEMPLATE_ROOT/specify" \
+        python3 "$SCRIPT_DIR/test-speckit-park-handoff.py"
+}
+run_scenario 'park validates handoff repository and branch identity' test_park_handoff_safety
+
 if [ "$failures" -ne 0 ]; then
     printf 'RED: Speckit Git feature behavior tests failed: %d scenario(s)\n' "$failures" >&2
     exit 1

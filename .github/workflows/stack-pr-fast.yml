@@ -27,3 +27,5 @@ jobs:
           python3 scripts/stack-ci.py fast
           python3 devcontainer.test/test-stack-ci.py
           python3 devcontainer.test/test-project-stack-ci.py
+          python3 devcontainer.test/test-helper-stack-ci.py
+          python3 devcontainer.test/test-helper-coverage-parity.py

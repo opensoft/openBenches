@@ -262,8 +262,13 @@ class StackCiTest(unittest.TestCase):
 
     def test_candidate_aggregate_fails_closed_for_incomplete_wave_matrix(self):
         def result(event="push", scope=WAVE_SCOPE, verified="success", project="skipped", wave="success"):
+            helper_result = "success" if event == "pull_request" or scope == "helper" else "skipped"
+            helpers = {name: helper_result for name in (
+                "HELPER_REGRESSION", "HELPER_GIT_2_34_1", "HELPER_BASH_3_2",
+                "HELPER_POWERSHELL_LINUX", "HELPER_POWERSHELL_WINDOWS",
+            )}
             return self.gate("gate", GITHUB_EVENT_NAME=event, SCOPE=scope,
-                             VERIFIED=verified, PROJECT=project, WAVE_WIDGET_SYNC=wave)
+                             VERIFIED=verified, PROJECT=project, WAVE_WIDGET_SYNC=wave, **helpers)
 
         self.assertEqual(result().returncode, 0)
         for status in ("failure", "cancelled", "skipped", ""):

@@ -907,6 +907,14 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertEqual(json.loads(result.stdout), ["new", "PastUnownedDiscovery"])
         self.assertFalse(executed.exists())
 
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "new", "NoOverrideFallback"],
+            env={**env, "OPENREPOPROJECT_BIN_DIR": str(unowned_bin)},
+            text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("project is not installed or is not owned", result.stderr)
+        self.assertFalse(executed.exists())
+
     def test_forwarder_expands_tilde_and_rejects_relative_configuration(self):
         home = self.base / "forwarder-home"
         tilde_bin = home / "commands"

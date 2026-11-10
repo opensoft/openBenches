@@ -142,5 +142,122 @@ class ParkHandoffTests(unittest.TestCase):
             self.assertIn("parked_commit: "+head,body)
 
 
+
+    def feature_record(self,body,branch):
+        start=body.index("      - branch: "+branch+"\n")
+        end=body.find("\n      - branch:",start)
+        return body[start:] if end<0 else body[start:end+1]
+
+    def test_subset_preserves_unselected_open_feature(self):
+        one=self.feature("001-one")
+        two=self.feature("002-two")
+        first=self.park()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        before=self.feature_record(self.manifest.read_text(),"002-two")
+        head=self.git(two["code"],"rev-parse","HEAD")
+        (one["code"]/"selected.txt").write_text("selected work")
+        (two["code"]/"unselected.txt").write_text("unselected work")
+        result=self.park("--feature","001-one")
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(self.feature_record(self.manifest.read_text(),"002-two"),before)
+        self.assertEqual(self.git(two["code"],"rev-parse","HEAD"),head)
+        self.assertEqual(self.git(self.origins["code"],"rev-parse","refs/heads/002-two"),head)
+        self.assertIn("?? unselected.txt",self.git(two["code"],"status","--porcelain"))
+        self.assertEqual(self.git(one["code"],"rev-parse","HEAD"),
+                         self.git(self.origins["code"],"rev-parse","refs/heads/001-one"))
+
+    def test_subset_retains_gone_record_but_full_park_reconciles_it(self):
+        self.feature("001-one")
+        two=self.feature("002-two")
+        first=self.park()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        before=self.feature_record(self.manifest.read_text(),"002-two")
+        for role,tree in two.items():
+            self.git(self.root/role,"worktree","remove",str(tree))
+        (self.root/"worktrees/002-two").rmdir()
+        subset=self.park("--feature","001-one")
+        self.assertEqual(subset.returncode,0,subset.stdout+subset.stderr)
+        self.assertEqual(self.feature_record(self.manifest.read_text(),"002-two"),before)
+        full=self.park()
+        self.assertEqual(full.returncode,0,full.stdout+full.stderr)
+        self.assertNotIn("      - branch: 002-two",self.manifest.read_text())
+
+    def test_partial_writer_replay_keeps_refreshed_unselected_values(self):
+        one=self.feature("001-one")
+        two=self.feature("002-two")
+        first=self.park()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        old=self.feature_record(self.manifest.read_text(),"002-two")
+        old_head=self.git(two["code"],"rev-parse","HEAD")
+        self.git(two["code"],"commit","--allow-empty","-qm","peer update")
+        new_head=self.git(two["code"],"rev-parse","HEAD")
+        refreshed=old.replace(old_head,new_head)
+        refreshed+="        fixture_note: preserve-newer-unselected\n"
+        current=self.manifest.read_text().replace(old,refreshed)
+        self.manifest.write_text(current)
+        record=self.base/"partial-record.txt"
+        lines=["project_id\tfixture-project","_shape\tthree-leg","_root\t.",
+               "_tracking_branch\tmain","_worktree_root\tworktrees",
+               "_selected_branches\t"+json.dumps(["001-one"]),
+               "[feature]","branch\t001-one",
+               "_feature_directory\tworktrees/001-one/spec/specs/001-one"]
+        for role,tree in one.items():
+            lines+=["[leg]","role\t"+role,"_remote\torigin",
+                    "parked_commit\t"+self.git(tree,"rev-parse","HEAD"),
+                    "wip\tfalse","wip_depth\t0","pushed\ttrue"]
+        record.write_text("\n".join(lines)+"\n")
+        scripts=self.root/".specify"/SCRIPTS
+        command='source "$1/git-common.sh"; source "$1/workspace-common.sh"; workspace_write_manifest "$2" "$3"'
+        self.run_command(self.root,"bash","-c",command,"fixture",str(scripts),str(self.manifest),str(record))
+        self.assertEqual(self.feature_record(self.manifest.read_text(),"002-two"),refreshed)
+
+
+
+    def test_subset_push_retry_keeps_peer_update(self):
+        one=self.feature("001-one")
+        two=self.feature("002-two")
+        first=self.park()
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        before=self.manifest.read_text()
+        old=self.feature_record(before,"002-two")
+        old_head=self.git(two["code"],"rev-parse","HEAD")
+        self.git(two["code"],"commit","--allow-empty","-qm","peer feature update")
+        new_head=self.git(two["code"],"rev-parse","HEAD")
+        self.git(two["code"],"push","-q","origin","002-two")
+        refreshed=old.replace(old_head,new_head)
+        peer=self.base/"peer-workspace"
+        self.git(self.base,"clone","-q","-b","main",str(self.workspace_origin),str(peer))
+        self.identity(peer)
+        peer_manifest=peer/"workspaces/dummy/fixture-project.yaml"
+        peer_manifest.write_text(before.replace(old,refreshed))
+        self.git(peer,"add",str(peer_manifest.relative_to(peer)))
+        self.git(peer,"commit","-qm","peer unselected record update")
+        peer_head=self.git(peer,"rev-parse","HEAD")
+        shim=self.base/"shim"
+        shim.mkdir()
+        real_git=shutil.which("git",path=self.env.get("PATH"))
+        (shim/"git").write_text(
+            '#!/bin/sh\n'
+            'if [ "$1" = -C ] && [ "$2" = "$HANDOFF_WORKSPACE" ] && '
+            '[ "$3" = push ] && [ ! -f "$HANDOFF_RACED" ]; then\n'
+            '  "$HANDOFF_REAL_GIT" -C "$HANDOFF_PEER" push -q origin main || exit 1\n'
+            '  : > "$HANDOFF_RACED"\n'
+            'fi\nexec "$HANDOFF_REAL_GIT" "$@"\n')
+        (shim/"git").chmod(0o755)
+        raced=self.base/"race-triggered"
+        self.env.update(PATH=str(shim)+os.pathsep+self.env.get("PATH",os.defpath),
+                        HANDOFF_REAL_GIT=real_git,HANDOFF_WORKSPACE=str(self.workspace),
+                        HANDOFF_PEER=str(peer),HANDOFF_RACED=str(raced))
+        (one["code"]/"selected.txt").write_text("selected work")
+        result=self.park("--feature","001-one")
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertTrue(raced.is_file())
+        self.assertEqual(self.feature_record(self.manifest.read_text(),"002-two"),refreshed)
+        self.git(self.workspace,"merge-base","--is-ancestor",peer_head,"HEAD")
+        remote=self.git(self.workspace_origin,"show","refs/heads/main:workspaces/dummy/fixture-project.yaml")
+        self.assertIn(new_head,remote)
+        self.assertIn(self.git(one["code"],"rev-parse","HEAD"),remote)
+
+
 if __name__=="__main__":
     unittest.main()

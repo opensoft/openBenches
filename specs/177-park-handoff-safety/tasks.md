@@ -11,11 +11,11 @@
 
 - [x] T001 [S] Capture commissioned scope, draft origin, decisions and the two-set delivery; files: openspec/changes/fix-park-handoff-integrity/**, specs/177-park-handoff-safety/**.
 - [x] T002 [O] Reproduce and fix wrong repository/branch preflight before either leg commits; files: shared park.sh, test-speckit-git-feature.sh and test-speckit-park-handoff.py; verify heads, dirty state and refs are preserved on refusal.
-- [ ] T003 [S] Validate SET-01 locally, publish its PR and request exact-head Codex review; files: feature evidence and PR.
+- [x] T003 [S] Validate SET-01 locally, publish its PR and request exact-head Codex review; files: feature evidence and PR. Shared PR #310 at 0fb4061a5a2357d81735a431cbf8cb206e55a8a2 has green CI and an exact-head Codex receipt with no findings.
 
 ## US2 and downstream reconciliation
 
-- [ ] T004 [O] Reproduce and fix selected-feature preservation using the current manifest on every write/retry; files: shared park.sh, workspace-common.sh and fixtures.
+- [x] T004 [O] Reproduce and fix selected-feature preservation using the current manifest on every write/retry; files: shared park.sh, workspace-common.sh and fixtures.
 - [ ] T005 [S] Run full source suites, publish dependent SET-02 and request exact-head Codex review; record heads/bases and CI separately.
 - [ ] T006 [S] Copy the tested shared corrections into openMFA PR #2, retain declared unrelated local deviations, rerun its tests/CI/Codex review and reconcile evidence. Upstream merge/fleet installation remain distinct unclaimed states.
 

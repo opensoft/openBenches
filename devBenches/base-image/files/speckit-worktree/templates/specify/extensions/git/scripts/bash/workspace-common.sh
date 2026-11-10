@@ -1053,6 +1053,7 @@ workspace_write_manifest() {
     local record="$2"
 
     python3 - "$manifest" "$record" <<'PY'
+import json
 import os
 import re
 import sys
@@ -1206,6 +1207,62 @@ def block_id(candidate):
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
         value = value[1:-1]
     return value
+
+
+def feature_blocks(candidate):
+    start = next((i for i, line in enumerate(candidate)
+                  if line.startswith("    features:")), None)
+    if start is None:
+        return []
+    result = []
+    for line in candidate[start + 1:]:
+        if line.startswith("      - branch:"):
+            result.append([line])
+        elif line.startswith("    ") and not line.startswith("      "):
+            break
+        elif result:
+            result[-1].append(line)
+    return result
+
+
+def feature_branch(candidate):
+    value = candidate[0].partition(":")[2].strip()
+    if value.startswith('"'):
+        return json.loads(value)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    return value
+
+
+# A partial park is replayed against the file read on THIS write, including
+# after a push race. Never re-emit an earlier shell snapshot of other features.
+if "_selected_branches" in top:
+    selected = json.loads(top["_selected_branches"])
+    if (not isinstance(selected, list) or not selected
+            or not all(isinstance(name, str) and name for name in selected)
+            or len(set(selected)) != len(selected)):
+        raise SystemExit("Error: invalid selected-branch scope; manifest not written.")
+    incoming = feature_blocks(block)
+    replacements = {feature_branch(item): item for item in incoming}
+    if len(replacements) != len(incoming) or not set(replacements).issubset(selected):
+        raise SystemExit("Error: ambiguous or unselected feature update; manifest not written.")
+    previous = next((item for item in blocks if block_id(item) == project_id), [])
+    retained = []
+    seen = set()
+    for item in feature_blocks(previous):
+        name = feature_branch(item)
+        if name in seen:
+            raise SystemExit("Error: duplicate parked feature; manifest not written.")
+        seen.add(name)
+        retained.append(replacements.pop(name, item))
+    retained.extend(replacements.values())
+    prefix = next(i for i, line in enumerate(block) if line.startswith("    features:"))
+    block = block[:prefix]
+    if retained:
+        block.append("    features:")
+        block.extend(line for item in retained for line in item)
+    else:
+        block.append("    features: []")
 
 
 def without_parked_at(candidate):

@@ -10,7 +10,7 @@ Repair the shared distribution first, with one implementation task list in featu
 
 All legs are preflighted before any commit. Resolve their real Git common directory and top-level path, compare with the expected leg repository, then require the recorded feature branch. Refuse mismatched, detached, foreign or unreadable state without committing either leg. Existing conflict/rebase checks and old-record retention remain intact. No branch switching or repair is automatic.
 
-A subset park carries an internal selected-branch scope into the existing writer. Merge selected feature blocks against the manifest currently read by that writer, retaining other blocks and unknown fields. The retry path reuses the same scope and reads the refreshed file, so newer unselected records are not overwritten by an old shell snapshot. No public manifest key or schema version changes. An ordinary full park retains its existing removal of gone features.
+A subset park carries an internal selected-branch scope into the existing writer. Merge selected feature blocks against the manifest currently read by that writer, retaining other blocks and unknown fields. A repeated write uses its refreshed input rather than an old shell snapshot. On a concurrent push, the existing three-way rebase/refusal path preserves the unselected lines because they are absent from the local change; an injected peer-push fixture verifies this actual retry. No public manifest key or schema version changes. An ordinary full park retains its existing removal of gone features.
 
 ## Validation
 

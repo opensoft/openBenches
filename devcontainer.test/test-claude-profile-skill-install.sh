@@ -347,7 +347,13 @@ grep -q 'aliases /swap, /lane-swap' "$HANDOFF_SOURCE" \
     || fail "text: the description does not name /swap and /lane-swap as its aliases (F-S5, Amendment 17(a))"; assertion
 grep -q 'PROMPTS TO THE PERSON: 1' "$HANDOFF_SOURCE" \
     || fail "text: the header does not state the prompt count (R-A8-7)"; assertion
-grep -q 'replace every ` — ` with `; `' "$HANDOFF_SOURCE" \
+# v1.1.0 (code 2a057a6d) wraps this sentence at SKILL.md:492-493, between
+# "with" and "`; `". A Markdown line break inside a paragraph is a space, so the
+# file is read with each newline as the space it renders as, and the sentence
+# must still be there byte for byte. Nothing else is loosened: an indent, a
+# changed word or a missing separator still fails. A here-string, not a pipe:
+# under `pipefail`, `grep -q` quitting early could SIGPIPE the writer.
+grep -Fq 'replace every ` — ` with `; `' <<<"$(tr '\n' ' ' <"$HANDOFF_SOURCE")" \
     || fail "text: nothing sanitises the separator Amendment 7(b)/R26 refuses (F-S6)"; assertion
 grep -q 'set-row-state "\$lane" "PAUSED · \$hs_line"' "$HANDOFF_SOURCE" \
     || fail "text: the row's state word is not derived from the row (F-S7)"; assertion
@@ -369,7 +375,18 @@ resume_mentions="$(grep -o 'claude --resume' "$HANDOFF_SOURCE" | wc -l)"
     || fail "text: 'claude --resume' appears somewhere other than the line that rules it out (R-A8-6)"; assertion
 grep -q 'are not lane surfaces' "$HANDOFF_SOURCE" \
     || fail "text: /resume is not ruled out as a lane surface (R-A8-6)"; assertion
-grep -q -- '--no-launch <repo> <n>' "$HANDOFF_SOURCE" \
+# KNOWN GAP in v1.1.0's skills/handoff/SKILL.md:327, filed upstream as
+# https://github.com/opensoft/openRepoTools/issues/353. Step 2's
+# NO SESSION RECORDED message falls back to
+# `uuid_fix='lane-start --no-launch <repo> <n>'` when the lane name has no
+# `-<n>`, and prints it as a command to run. ONE line is excepted, matched
+# whole, indent included, and only that one: any other line carrying
+# `--no-launch <repo> <n>` still fails. The exception goes once a skill with the
+# fix is vendored.
+uuid_fix_known_gap="  uuid_fix='lane-start --no-launch <repo> <n>'"
+grep -Fxq -- "$uuid_fix_known_gap" "$HANDOFF_SOURCE" \
+    && echo "KNOWN (opensoft/openRepoTools#353, not fixed here -- vendored byte-for-byte): skills/handoff/SKILL.md's uuid_fix fallback prints a literal <repo> <n>" >&2
+grep -q -- '--no-launch <repo> <n>' <<<"$(grep -Fxv -- "$uuid_fix_known_gap" "$HANDOFF_SOURCE" || true)" \
     && fail "text: a copy-pasteable command still carries literal <repo> <n>, which the shell reads as redirections"; assertion
 # RV-S2 (opensoft/workBenches#63 re-verification): step 4's row write must
 # have a refused-write branch.
@@ -442,9 +459,12 @@ grep -Fq 'SPEC §13.3 gives to the TOOLING PR' "$HANDOFF_SOURCE" \
 # back … recording that string would put a lie in an append-only log" — reaches
 # the `<session>:<index>` exactly as far, and only the id carried the check.
 # The ref's own shape check migrated from a `[[ =~ ]]` regex to the `case`
-# glob this skill uses for its other shape tests (`*:[0-9]*)`), read twice —
-# the live read and the env-var fallback — same as the id's regex form below.
-[[ "$(grep -Fc '*:[0-9]*)' "$HANDOFF_SOURCE")" -ge 2 ]] \
+# glob this skill uses for its other shape tests (`*:[0-9]*)`), and in v1.1.0
+# (code 2a057a6d, openRepoTools#80 item 4) back to a regex that holds the WHOLE
+# string, `^.+:[0-9]+$`, because the prefix glob passed `s:1junk`. It is still
+# read twice, the live read and the env-var fallback, each line exact, the same
+# as the id's regex form below.
+[[ "$(grep -Fxc '[[ "$win" =~ ^.+:[0-9]+$ ]] || win=""' "$HANDOFF_SOURCE")" -ge 2 ]] \
     || fail "the skill records a <session>:<index> without checking its shape, or checks it only once — the env fallback is another process's value and is unread too"; assertion
 grep -Fq '=~ ^@[0-9]+$' "$HANDOFF_SOURCE" \
     || fail "the skill records a window id without checking its shape"; assertion

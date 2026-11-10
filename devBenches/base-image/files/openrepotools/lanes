@@ -165,7 +165,11 @@ is running is never started a second time.
                    WITH it, the derived index's `worktrees` table — every
                    workstation syncing into that store, so Raven sees Eagle's
                    leftovers — and stderr says which, as for the listing. It
-                   takes none of the listing's narrowing flags.
+                   takes none of the listing's narrowing flags. A lane whose
+                   inventory could not be read is a NOT READ line, and a lane
+                   listing that could not be read whole a NOT WHOLE line
+                   (opensoft/openRepoTools#173): neither is a lane with no
+                   worktrees.
   --rename <old> <new>
                    REFUSED, and it names the word that does it:
                    `lane-rename <old> <new>`. This command writes nothing
@@ -313,8 +317,12 @@ if [ "$wt_mode" = 1 ]; then
 		out="$("$LANES_EDIT" worktrees ${idx_args[@]+"${idx_args[@]}"} "${wt_args[@]}" 2>"$wt_err_file")" || rc=$?
 		wt_err="$(cat -- "$wt_err_file" 2>/dev/null || printf '')"
 		# `-e` AND NO `--` AFTER THE PATTERN: BSD's `grep` stops at its first
-		# operand, so a `--` there is a FILE it cannot open on macOS.
-		command grep -v -e 'not fetching; reading origin/' "$wt_err_file" >&2 || :
+		# operand, so a `--` there is a FILE it cannot open on macOS. A BARE
+		# `grep`, NOT `command grep` (opensoft/openRepoTools#292): this one exits
+		# 1 whenever the helper said nothing else, and macOS's bash 3.2 ends a
+		# `set -e` script where a utility run through `command` fails, `|| :`
+		# or not, which left `lanes --worktrees` at exit 1 with no output.
+		grep -v -e 'not fetching; reading origin/' "$wt_err_file" >&2 || :
 		rm -f -- "$wt_err_file"
 	else
 		out="$("$LANES_EDIT" worktrees ${idx_args[@]+"${idx_args[@]}"} "${wt_args[@]}")" || rc=$?
@@ -341,9 +349,15 @@ if [ "$wt_mode" = 1 ]; then
 	esac
 	printf '%-11s %-26s %-16s %-13s %-7s %-34s %5s %8s  %-20s  %s\n' \
 		WORKSTATION LANE OWNER LIFECYCLE WRITER BRANCH DIRTY UNPUSHED "LAST SEEN" PATH
-	n=0; nl=0; nw=0; wt_unread=0; wt_lanes=" "; wt_wss=" "
+	n=0; nl=0; nw=0; wt_unread=0; wt_partial=0; wt_lanes=" "; wt_wss=" "
 	while IFS="$US" read -r w_kind w_ws w_lane w_owner w_path w_branch w_base w_life w_gen w_op w_live w_seen w_last w_dirty w_unp w_prov; do
 		case "${w_kind:-}" in
+		PARTIAL)
+			# `PARTIAL <ws> <why>` (#173 item c1): the LANE LISTING these rows
+			# were read through was not whole, and the second field — read
+			# into `w_lane` — says which read failed.
+			printf '%-11s %-26s lane listing NOT WHOLE: %s\n' "$w_ws" "(every lane)" "$w_lane"
+			wt_partial=$((wt_partial + 1)) ;;
 		TREE)
 			case "${w_live:-}" in 1) w_wr=live ;; 0) w_wr=none ;; *) w_wr=unknown ;; esac
 			printf '%-11s %-26s %-16s %-13s %-7s %-34s %5s %8s  %-20s  %s\n' \
@@ -365,7 +379,15 @@ EOF
 	if [ "$wt_unread" != 0 ]; then
 		say "$wt_unread lane(s) above have an inventory that is there and could not be read: that is NOT a lane with no worktrees."
 	fi
-	say "  the current truth of one lane:  lanes-edit.sh lane-reconcile <lane>   (it reads the disk; this listing decides nothing)"
+	if [ "$wt_partial" != 0 ]; then
+		say "the lane listing above is NOT WHOLE: a lane it could not name is missing from it, and that is NOT a lane with no worktrees."
+	fi
+	# THE ACT IS NAMED WITH WHERE IT RUNS (opensoft/openRepoTools#173, Copilot's
+	# fourth review of #171). An `--index` listing holds every workstation that
+	# syncs into the store, so Raven lists Eagle's rows, and `lane-reconcile`
+	# reads only the sidecars and the disk of the workstation it is run on. The
+	# line is the same on both reads, so the two stay the same bytes.
+	say "  the current truth of one lane:  lanes-edit.sh lane-reconcile <lane>, run ON THE WORKSTATION its rows name   (it reads that workstation's own sidecars and disk; this listing decides nothing)"
 	exit 0
 fi
 
@@ -565,15 +587,31 @@ case "$rc" in
 		# `--closed` read answers it directly, and it is made HERE — on the path
 		# that has already found nothing to show — and nowhere else.
 		e_hidden=0
-		# `command grep`, BECAUSE THE EXIT STATUS IS THE ANSWER (AGENTS.md, the
-		# measured defect of openRepoTools#51: under the harness `grep` is a
-		# shell function whose status is 1 when its stdout is `/dev/null`, which
-		# is exactly what `-q` makes it).
-		if "$LANES_EDIT" lanes --closed ${idx_args[@]+"${idx_args[@]}"} ${args[@]+"${args[@]}"} 2>/dev/null | command grep -q .; then e_hidden=1; fi
+		e_hrc=0
+		# THE WHOLE STREAM IS READ, AND THE STATUS DECIDES BEFORE THE TEXT DOES
+		# (#138 item 15, Copilot round 20 on #93, and the gap beside it). `grep
+		# -q .` exits on the first line, and past a pipe buffer's worth of rows
+		# the producer then takes SIGPIPE: under `pipefail` the pipeline answered
+		# 141, `e_hidden` stayed 0, and the listing said none was recorded about
+		# a repository with hidden rows. Reading the output into a variable
+		# closes nothing on the producer. And a read that FAILED, with rows or
+		# without, answered the same "none is recorded": the status is kept. `0`
+		# and `8` are answers, and rows it printed are rows (an `8` that printed
+		# some is a contradiction and fails towards showing them); anything
+		# else is a read that did not answer (Amendment 7(d)).
+		e_rows="$("$LANES_EDIT" lanes --closed ${idx_args[@]+"${idx_args[@]}"} ${args[@]+"${args[@]}"} 2>/dev/null)" || e_hrc=$?
+		case "$e_hrc" in
+		0 | 8) case "$e_rows" in *[![:space:]]*) e_hidden=1 ;; esac ;;
+		*) e_hidden=unread ;;
+		esac
 		if [ "$e_hidden" = 1 ]; then
 			say "no lane of $here_repo is LISTED — and that is not the same as none being recorded: closed and dormant lanes are left out (Amendment 19(b))."
 			say ""
 			say "  see them:            $prog --closed --prefix $here_repo"
+		elif [ "$e_hidden" = unread ]; then
+			say "no lane of $here_repo is LISTED — and whether closed or dormant lanes are recorded could not be read (\`lanes-edit.sh lanes --closed\` exited $e_hrc), so this listing does not say that none is (Amendment 7(d))."
+			say ""
+			say "  try it by hand:      $prog --closed --prefix $here_repo"
 		else
 			say "no lane of $here_repo is recorded."
 			say ""

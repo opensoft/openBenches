@@ -1,5 +1,9 @@
 # Task-set delivery
 
+For opt-in Claude/Codex installation and activation, see the
+[shared workflow preview](shared-task-set-workflow.md). Agent installation does
+not change the CI eligibility or queue admission rules below.
+
 Use one small PR for each task set in `tasks.md`. Keep the existing story phases,
 task IDs, and per-task verification; the set table groups those tasks into PRs.
 Start with one outcome and roughly two to five related tasks. Split when a

@@ -124,16 +124,24 @@ class HelperCoverageParityTests(unittest.TestCase):
             if kind == "powershell":
                 headers = {"regression": headers}
             for name, header in headers.items():
-                self.assertEqual(job_block(source, name).split("    steps:\n")[0], header)
+                actual = job_block(source, name).split("    steps:\n")[0]
+                guard = ("    needs: classify\n    if: >-\n"
+                         "      ${{ always() && !cancelled() &&\n"
+                         "      (needs.classify.result != 'success' || needs.classify.outputs.skip_helper != 'true') }}\n")
+                self.assertEqual(actual.count(guard), 1)
+                self.assertEqual(actual.replace(guard, ""), header)
             triggers = source.split("\npermissions:")[0]
             for line in BASELINE["trigger_sections"][kind].splitlines():
                 if line.strip().startswith("- ") or line.strip() in ("push:", "pull_request:", "workflow_dispatch:"):
                     self.assertIn(line, triggers)
-            self.assertNotIn("types:", triggers)
+            self.assertIn("types: [opened, reopened, synchronize, edited, ready_for_review]", triggers)
             self.assertNotIn("branches:", triggers)
-            self.assertNotIn("classify", source)
-            self.assertNotIn("skip_", source)
-            self.assertEqual(source.count(CHECKOUT), 3 if kind == "bash" else 1)
+            classify = job_block(source, "classify")
+            self.assertIn("ref: main", classify)
+            self.assertIn("persist-credentials: false", classify)
+            self.assertIn("python3 -I scripts/helper-stack-ci.py", classify)
+            self.assertIn("echo 'skip_helper=false'", classify)
+            self.assertEqual(source.count(CHECKOUT), 4 if kind == "bash" else 2)
             self.assertIn("permissions:\n  contents: read\n", source)
         bash = text(".github/workflows/speckit-git-bash.yml")
         self.assertIn("uses: ./.github/actions/openspeckit-bash", job_block(bash, "regression"))

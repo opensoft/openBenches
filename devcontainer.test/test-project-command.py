@@ -935,6 +935,25 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["FromDiscoveryTilde"])
 
+        fallback_bin = home / ".local/bin"
+        self.assertEqual(installer.main([
+            *self.args, "--bin-dir", str(fallback_bin), "--source", str(self.source),
+        ]), 0)
+        tilde_discovery.write_text("")
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "FromDefaultWithEmptyPointer"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["FromDefaultWithEmptyPointer"])
+
+        tilde_discovery.write_text("relative/bin\n")
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "unsafe"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("persisted project install directory must be an absolute path",
+                      result.stderr)
+
     def test_direct_project_launch_verifies_the_separate_payload(self):
         self.assertEqual(self.install(), 0)
         target = self.bin / "project"

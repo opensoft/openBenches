@@ -11,6 +11,8 @@ on:
       - devcontainer.test/test-stack-ci.py
       - scripts/project-stack-ci.py
       - devcontainer.test/test-project-stack-ci.py
+      - scripts/helper-stack-ci.py
+      - devcontainer.test/test-helper-stack-ci.py
       - .github/workflows/project-command.yml
       - .github/workflows/stack-pr-fast.yml
       - .github/workflows/speckit-git-bash.yml

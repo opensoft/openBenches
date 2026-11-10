@@ -152,11 +152,50 @@ Config PRs exercise the same five jobs and retain the distinct config aggregate.
 The docs queue keeps its existing inline integration; project and Wave routes
 remain unchanged. Helper integration is no longer duplicated inside verification.
 
-This is coverage parity only, not helper CI-efficiency rollout: ordinary Bash
-and PowerShell PR/push/manual checks remain fully enabled with their existing
-job identities, runners, timeouts and path coverage. No helper skip classifier
-or efficiency opt-in is enabled. A later config change and separately authorized
-live canary are required before omitting ordinary helper integration.
+### Helper-only CI efficiency
+
+Coverage parity landed in #309. The efficiency config is a separate qualification
+step, not live-canary acceptance; authorize and audit the first efficiency stack
+separately in #250. Do not admit a stack merely to test this configuration.
+
+For eligible `ci/stack-helpers/` members, put a standalone `Stack-CI: helper`
+line in both the PR body and source commit message before pushing. Preserve
+`Depends-On: #N`, the two-file allowlist above and existing manual exact-head
+review receipts. CI opt-in never grants queue admission.
+
+The trusted-main helper classifier uses the same event-proof engine as project
+CI, with explicit helper scope (never selected from event data or environment).
+It can omit only duplicate ordinary Bash and PowerShell integration:
+
+- Open author PRs require live same-repo, non-draft head/base, opt-in and an
+  unambiguous chain of at most three members rooted at current main, with
+  immediate and cumulative regular-content diffs inside the helper allowlist.
+- Source pushes require exact event SHA/ref/repository, the helper namespace,
+  head-bound commit opt-in, current-main ancestry and scoped regular-content diff.
+- Candidate pushes/PRs require Mergify origin and exact ordered-batch receipts.
+  Third-party candidate metadata edits still require exact live head/base proof;
+  other actions retain the Mergify actor guard. Closed/dequeued candidates need
+  completed successful exact-head evidence, not an actor/prefix exemption.
+- Landings require a successful first-attempt candidate run with verification,
+  aggregate and all five helper jobs; exact parents, heads, receipt chain, trees
+  and GitHub merge timing must match. Historical policy and shared command
+  actions must equal trusted main. Discovery remains bounded to 20 runs.
+- Delayed author `edited` metadata requires a verified same-head merged helper
+  PR, complete modified-file allowlist and a regular-content merge reachable
+  from main. Real open changes and other closed events are not exempted.
+
+Ordinary, mixed, empty, stale, renamed/deleted/mode/type-changed, fork, manual,
+unknown or unproven inputs keep full checks. Classifier errors or missing,
+non-successful, non-literal-`true` outputs also keep full checks. All existing
+integration job identities, runners, timeouts and original trigger paths remain.
+
+Qualified members retain focused `openbenches-pr-fast`, policy regressions,
+applicable CodeQL and exact-head review. One combined heavy workflow retains
+all five helper jobs and the fail-closed aggregate; skipped/missing/failed jobs
+cannot satisfy it. Config PRs run full ordinary and config integration using
+old trusted main. Mergify batching, admission, apps, rulesets and releases are
+unchanged. A later live canary must audit source/candidate/main pushes and late
+metadata, one heavy workflow and matching landed trees—not just initial PR CI.
 
 ## Project wrapper pilot
 

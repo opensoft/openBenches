@@ -3,12 +3,30 @@
 set -euo pipefail
 # speckit-overlay-shape: 1
 
+usage() {
+    printf '%s\n' 'Usage: get-last-worktree.sh [--json | --env | --help]' \
+        'Print the last Spec Kit worktree path, JSON metadata, or shell assignments.'
+}
+
 JSON_MODE=false
 ENV_MODE=false
-case "${1:-}" in
-    --json) JSON_MODE=true ;;
-    --env) ENV_MODE=true ;;
-esac
+if [ "$#" -gt 1 ]; then
+    printf '%s\n' 'Error: expected at most one option.' >&2
+    usage >&2
+    exit 2
+fi
+if [ "$#" -eq 1 ]; then
+    case "$1" in
+        --json) JSON_MODE=true ;;
+        --env) ENV_MODE=true ;;
+        --help) usage; exit 0 ;;
+        *)
+            printf 'Error: unrecognized option: %q\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+fi
 
 # Shape-dependent extras filled in before emit_result runs.
 EMIT_REPO_SHAPE=single
@@ -117,11 +135,7 @@ resolve_config_value() {
 }
 
 mtime_for_path() {
-    if stat -c %Y "$1" >/dev/null 2>&1; then
-        stat -c %Y "$1"
-    else
-        stat -f %m "$1"
-    fi
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
 }
 
 REGISTERED_WORKTREE_PATHS=()
@@ -137,12 +151,13 @@ insert_registered_worktree() {
     local detached="$6"
     local canonical_path mtime
     local candidate_count insert_at index previous_index
+    local LC_ALL=C
 
     verify_git_worktree_candidate "$main_root" "$root" "$path" "$head" "$branch" "$detached" || return 0
     canonical_path="$GIT_WORKTREE_VERIFIED_PATH"
     branch="$GIT_WORKTREE_VERIFIED_BRANCH_REF"
     mtime="$(mtime_for_path "$canonical_path" 2>/dev/null || true)"
-    [ -n "$mtime" ] || return 0
+    [[ "$mtime" =~ ^-?[0-9]+$ ]] || return 0
     branch="${branch#refs/heads/}"
     [ -n "$branch" ] || branch="(detached)"
 
@@ -150,7 +165,9 @@ insert_registered_worktree() {
     insert_at=$candidate_count
     index=0
     while [ "$index" -lt "$candidate_count" ]; do
-        if [ "$mtime" -gt "${REGISTERED_WORKTREE_MTIMES[$index]}" ]; then
+        if [ "$mtime" -gt "${REGISTERED_WORKTREE_MTIMES[$index]}" ] ||
+            { [ "$mtime" -eq "${REGISTERED_WORKTREE_MTIMES[$index]}" ] &&
+                [[ "$canonical_path" < "${REGISTERED_WORKTREE_PATHS[$index]}" ]]; }; then
             insert_at=$index
             break
         fi
@@ -199,7 +216,10 @@ read_state_worktree_path() {
     _git_worktree_create_temp_file || return 1
     output_file="$_GIT_WORKTREE_OUTPUT_FILE"
     if command -v jq >/dev/null 2>&1; then
-        if ! jq -jr 'if type == "object" and ((.WORKTREE_PATH // "") | type) == "string" then (.WORKTREE_PATH // "") else error("invalid state") end' \
+        if ! jq -jrs 'if length == 1 and (.[0] | type) == "object"
+            and ((.[0].WORKTREE_PATH // "") | type) == "string"
+            then (.[0].WORKTREE_PATH // "") else error("invalid state") end
+            | if index("\u0000") == null then . else error("invalid state path") end' \
             "$state_file" > "$output_file" 2>/dev/null; then
             _git_worktree_remove_temp_file "$output_file" || true
             return 1
@@ -212,7 +232,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as stream:
     payload = json.load(stream)
 path = payload.get("WORKTREE_PATH", "") if isinstance(payload, dict) else None
-if not isinstance(path, str):
+if not isinstance(path, str) or "\0" in path:
     raise ValueError("invalid state")
 sys.stdout.buffer.write(path.encode("utf-8"))
 PY

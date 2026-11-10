@@ -2941,46 +2941,90 @@ scenario
 # in the handoff" — it is the whole of how A8(a) step 4's "never left unwritten"
 # is preserved. Write (a), the object-log line, is refused there because that log
 # is append-only; write (b) is not.
+# SINCE v1.1.0 THIS HEAD IS NOT WHAT THE SUITE ASSERTS FOR (b): v1.1.0 skips
+# (b) with (a) where there is no uuid. Check 2 below holds that, as lane
+# openRepoTools-3 decided, and names the departure.
 #
-# KNOWN GAP, NOT THIS PR'S (opensoft/workBenches#93, filed upstream as
-# opensoft/openRepoTools#98): the skill supplies the uuid it has in hand
-# (`LANES_SESSION="$uuid"`, `R-A11-5`) but has no preemptive guard at all for a
-# lane that has never had a session recorded — no `[[ -z "$uuid" ]]` of any
-# spelling, no `session_field`, no message naming the gap, anywhere in the
-# file. `:507` and `:514` run unconditionally on `$uuid`, so an empty uuid
-# reaches the writer un-warned instead of the skill refusing first the way
-# `R-A11-5`'s "two guards rather than one" requires and the way `R-A11-14`'s
-# `ws_missing` flag already does for the analogous missing-workstation case.
-# Confirmed pre-existing against `git show 8a36eb3:skills/lane-swap/SKILL.md`'s
-# equivalent step too, independent of any pin move — this is a real shipped-code
-# gap against vendored bytes, not a test-methodology one, so it is skipped
-# pending opensoft/openRepoTools#98 rather than retargeted.
-#
-# FAIL-CLOSED (Copilot round 4 on opensoft/workBenches#93): the skip above was
-# unconditional -- it never checked that the gap it waives is still the gap
-# that is there. Gated on the exact known shape (no uuid-emptiness construct of
-# any spelling anywhere in the skill's shell); the moment one appears, #98 may
-# be fixed or may have changed shape, and this fails rather than keep waiving
-# silently, so a human restores or extends the five checks that stood here.
-#
-# WIDENED, NOT PROVEN (round 5, operator fixed round 6): a `grep` cannot
-# enumerate every bash spelling of "the uuid is empty" — round 4 covered
-# `-z`/`-n` on a quoted `$uuid`; this adds `-v uuid` and `"$uuid" =`/`==`/`!=`
-# `""`, the other common forms, and an unquoted `$uuid` after `-z`/`-n`.
-# `[=!]=` (round 5's own pattern) requires TWO operator characters and so
-# never matched bash's single-`=` string test despite the comment claiming to
-# — `[=!]?=` makes the first character optional, matching `=`, `==` and `!=`
-# alike. It still cannot see one split across a line break or an exotic
-# predicate this suite has never needed elsewhere, so the claim is bounded to
-# what is checked, not to every conceivable rewrite.
-uuid_guard_probe="$(grep -v '^[[:space:]]*#' "$HANDOFF_MD" \
-    | grep -E -- '-z "?\$\{?uuid|-n "?\$\{?uuid|-v uuid\b|"\$\{?uuid:?-?[^}]*\}?" *[=!]?= *""' || true)"
-if [[ -z "$uuid_guard_probe" ]]; then
-    echo "KNOWN (opensoft/openRepoTools#98, pre-existing since 8a36eb3, not fixed here -- vendored byte-for-byte): skills/handoff/SKILL.md has no preemptive uuid/session guard" >&2
-else
-    fail "RV-W1/R-A11-5: a uuid-emptiness construct now exists in the skill ($uuid_guard_probe) — opensoft/openRepoTools#98 may be fixed or may have changed shape; re-examine by hand and restore or extend the checks this skip replaced"
-fi
-assertion
+# FIXED UPSTREAM, SO THE CHECKS ARE BACK (opensoft/openRepoTools#98, vendored
+# at v1.1.0, code 2a057a6d). The KNOWN-gap skip that stood here waived the
+# missing preemptive guard and was fail-closed: once a uuid-emptiness construct
+# appeared, it failed so that a human would restore the five checks it had
+# replaced. v1.1.0 guards in TWO places, `R-A11-5`'s "two guards rather than
+# one":
+#   - step 2, `if [[ -n "$row" && -z "$uuid" ]]; then`, sets `$uuid_missing`
+#     where neither `$CLAUDE_CODE_SESSION_ID` nor the row names a session, and
+#     SAYS SO before anything is written, naming the act that supplies one;
+#   - step 4, `if [[ -z "$uuid_missing" ]]; then`, wraps the writes that name a
+#     session.
+# Each guard is located, and must close, before anything is said about what is
+# inside it. Each is read with its comments stripped, so prose ABOUT a write
+# never stands in for the write. `|| true` inside each substitution keeps
+# `pipefail` from ending the run before `fail` can name what is missing.
+s2_start="$(grep -Fnx -m 1 -- 'if [[ -n "$row" && -z "$uuid" ]]; then' "$HANDOFF_MD" | cut -d : -f 1 || true)"
+[[ -n "$s2_start" ]] \
+    || fail "RV-W1/R-A11-5: step 2's uuid guard is gone from the skill, so a lane with no session is not told so before step 4 writes"; assertion
+s2_end="$(awk -v start="$s2_start" 'NR > start && $0 == "fi" { print NR; exit }' "$HANDOFF_MD")"
+[[ -n "$s2_end" && "$s2_end" -gt "$s2_start" ]] \
+    || fail "RV-W1: step 2's uuid guard opened at line $s2_start never closes, so nothing can be said about what is inside it"; assertion
+s2_code="$(sed -n "${s2_start},${s2_end}p" "$HANDOFF_MD" | grep -v '^[[:space:]]*#' || true)"
+s4_start="$(grep -Fnx -m 1 -- 'if [[ -z "$uuid_missing" ]]; then' "$HANDOFF_MD" | cut -d : -f 1 || true)"
+[[ -n "$s4_start" ]] \
+    || fail "RV-W1/R-A11-5: step 4's uuid guard is gone from the skill, so the writes that name a session are attempted with no session to name"; assertion
+s4_end="$(awk -v start="$s4_start" 'NR > start && $0 == "fi" { print NR; exit }' "$HANDOFF_MD")"
+[[ -n "$s4_end" && "$s4_end" -gt "$s4_start" ]] \
+    || fail "RV-W1: step 4's uuid guard opened at line $s4_start never closes, so nothing can be said about what is inside it"; assertion
+s4_code="$(sed -n "${s4_start},${s4_end}p" "$HANDOFF_MD" | grep -v '^[[:space:]]*#' || true)"
+# 1. (a), the OBJECT-LOG write, is INSIDE step 4's guard. That log is
+# append-only, so a session id it cannot name is wrong there for ever. The write
+# also passes the uuid it has in hand (clause (e)).
+grep -Fq 'LANES_SESSION="$uuid" "$L" log PAUSED' <<<"$s4_code" \
+    || fail "SPEC §7/clause (e): the object-log write is not inside the uuid guard, or does not pass the uuid, so an unknown session id can still reach an append-only log"; assertion
+# 2. RETARGETED FOR v1.1.0. The check that stood here held (b), the register's
+# file-level PAUSED line, OUTSIDE the guard, so that a lane with no uuid still
+# got it (A8(a) step 4, `R-A11-11`: "never left unwritten"). Upstream's fix for
+# #98 chose otherwise, on purpose (SKILL.md:740-742): with no uuid, (b) would
+# read `session @<ws>`, the placeholder clause (e) keeps out of the log and
+# `R-A11-14` out of the register. So it skips (b) together with (a), and says so
+# in step 2's message, before step 4, and in the handoff. What stays of "never
+# left unwritten" is write (c), the row's state cell, which is checked below to
+# be outside the guard, and the handoff. This checks that (b) is skipped only
+# where (a) is, and never silently.
+# A DEPARTURE FROM SPEC §7 AS THIS SECTION'S HEAD QUOTES IT, ACCEPTED BY LANE
+# openRepoTools-3 (its decision, 2026-11-09, on opensoft/openBenches#257; not a
+# ruling of Brett's). SPEC §7 and clause (e) say a lane with no uuid recorded
+# still gets "the register's file-level PAUSED line and the row's state cell";
+# v1.1.0 writes the row's state cell and the handoff, but not the file-level
+# line. Lane 3 accepted the retarget because it holds what v1.1.0 ships, and a
+# line reading `session @<ws>` is the placeholder clause (e) and `R-A11-14`
+# forbid. Should SPEC §7 be held as written, this check and the skill must
+# change together, upstream first.
+grep -Fq 'append-line' <<<"$s4_code" \
+    || fail "RV-W1: the file-level PAUSED line is not under step 4's uuid guard, so with no uuid it is written as 'session @<ws>'"; assertion
+grep -Fq 'register-line writes are therefore NOT made' <<<"$s2_code" \
+    || fail "RV-W1/R-A11-5: the register's file-level PAUSED line is skipped where there is no uuid, and step 2 does not say so before step 4"; assertion
+# 3. ...and where (b) IS written, its session field carries a uuid. The exact
+# line, `session $uuid@$ws`, sits inside the guard. The round-14 check below
+# holds its format; this holds its place.
+grep -Fq '"$L" append-line "PAUSED — lane $lane, session $uuid@$ws, $(date -u' <<<"$s4_code" \
+    || fail "RV-W1: the file-level PAUSED line's 'session \$uuid@\$ws' is written outside the uuid guard, where \$uuid can be empty"; assertion
+# 4. ...and `$uuid` is a transcript uuid, whichever source gave it (`R-A11-14`,
+# clause (e)). This session's own id is held to a uuid's shape before it is
+# taken, and the row's is cut out by the same shape.
+skill_uuid_code="$(awk '/^```/ { fence = !fence; next } fence' "$HANDOFF_MD" | grep -v '^[[:space:]]*#' || true)"
+grep -Fxq "sid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\$'" <<<"$skill_uuid_code" \
+    && grep -Fxq '[[ "${CLAUDE_CODE_SESSION_ID:-}" =~ $sid_re ]] && uuid="$CLAUDE_CODE_SESSION_ID"' <<<"$skill_uuid_code" \
+    || fail "R-A11-14/clause (e): this session's id is taken as \$uuid without being held to a transcript uuid's shape"; assertion
+grep -Fq "grep -o '[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}' | tail -n 1)" <<<"$skill_uuid_code" \
+    || fail "R-A11-14: the row's session uuid is not cut out by a uuid's shape, so the session field can carry anything the cell holds"; assertion
+# 5. THE GAP IS NAMED, before anything is written and in the handoff. Step 2's
+# guard prints NO SESSION RECORDED with the act that supplies a session, and the
+# handoff is told to carry it.
+grep -Fq 'echo "NO SESSION RECORDED: ' <<<"$s2_code" \
+    || fail "RV-W1/R-A11-5: a lane with no recorded session is not told so before step 4 writes"; assertion
+grep -Fq 'run \`$uuid_fix\` in this lane' <<<"$s2_code" \
+    || fail "R-A11-5: step 2's message does not name the act that supplies a session"; assertion
+grep -Fq 'THE HANDOFF NAMES THAT GAP TOO' "$HANDOFF_MD" \
+    || fail "RV-W1: the handoff is not told to name a lane's missing session"; assertion
 # KEPT SEPARATE FROM THE GUARD SKIP (round 14): the missing PREEMPTIVE guard
 # (opensoft/openRepoTools#98, above) is one gap; the file-level PAUSED line's
 # session FIELD FORMAT — `session $uuid@$ws` — is a different, still-live
@@ -3020,11 +3064,16 @@ grep -Fq 'none recorded' <<<"$skill_write_code" \
 # removed, by name, so anything else stays visible to the check.
 grep -Fq 'unknown' <<<"$(sed -e 's/unknown subcommand//g' -e 's/kind="${kind:-unknown}"//g' -e 's/# in-process | respawn | unknown//g' -e 's/"$kind" == unknown//g' -e 's/kind unknown//g' <<<"$skill_write_code")" \
     && fail "R-A11-14: the skill still writes a placeholder workstation into a position 'swapped <ws>' keys on, which append-line does not validate"; assertion
-# ...and write (c), the row's state cell, must be outside any uuid guard too —
-# SPEC §7 names the two together. Moot on the shipped bytes (opensoft/
-# openRepoTools#98, above): there is no uuid guard at all for `replace-in-row`
-# to be inside or outside of, so nothing here can be asserted about its
-# position relative to one.
+# ...and write (c), the row's state cell, must be outside any uuid guard too.
+# SPEC §7 names the two together, and since v1.1.0 (check 2 above) it is what
+# keeps a lane with no session from being left unwritten. Amendment 13(a) made
+# it ONE `set-row-state` write, and that write must be there, outside step 4's
+# uuid guard.
+set_row_line="$(grep -Fn -m 1 -- '"$L" set-row-state "$lane" "PAUSED · $hs_line"' "$HANDOFF_MD" | cut -d : -f 1 || true)"
+[[ -n "$set_row_line" ]] && [[ "$set_row_line" -lt "$s4_start" || "$set_row_line" -gt "$s4_end" ]] \
+    || fail "RV-W1/R-A11-11: the row's state cell is flipped only where a uuid exists, and SPEC §7 says it survives the refusal beside the file-level line"; assertion
+grep -Fq 'set-row-state' <<<"$s4_code" \
+    && fail "RV-W1/R-A11-11: a set-row-state write sits inside step 4's uuid guard, so a lane with no session loses its row's state cell"; assertion
 
 # RV-W6 / R-A11-11 — THE `dir` THE SKILL RECORDS IS THE LANE'S CHECKOUT, NEVER A
 # WORKTREE. SPEC §4 and clause (c) name the writer's source as the live session's

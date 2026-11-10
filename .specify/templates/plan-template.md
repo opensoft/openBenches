@@ -42,6 +42,10 @@
 
 [Gates determined based on constitution file]
 
+- Identify safe intermediate boundaries for one task set per PR.
+- Identify fast verification for each set and the combined pre-merge suite.
+  Existing release qualification remains a separate gate.
+
 ## Project Structure
 
 ### Documentation (this feature)

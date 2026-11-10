@@ -116,7 +116,9 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual(widgets['rustBench'], custom)
         self.assertEqual(widgets['custom'], {'label': 'Keep me'})
         self.assertEqual(widgets['defwidget@terminal']['blockdef']['meta']['term:fontsize'], 20)
-        self.assertEqual(widgets['projects']['blockdef']['meta']['file'], str(self.projects))
+        # The reconciler publishes the canonical path; macOS temp paths may
+        # start with the /var symlink rather than /private/var.
+        self.assertEqual(widgets['projects']['blockdef']['meta']['file'], str(self.projects.resolve()))
         self.assertEqual(widgets['pyBench']['blockdef']['meta']['cmd:cwd'], str(ROOT))
         self.assertEqual(json.loads(self.connections.read_text()), {
             CONNECTION: {'custom-setting': 1, 'conn:wshenabled': True},
@@ -125,6 +127,16 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         inodes = (self.widgets.stat().st_ino, self.connections.stat().st_ino)
         self.assertEqual(self.sync().returncode, 0)
         self.assertEqual((self.widgets.stat().st_ino, self.connections.stat().st_ino), inodes)
+
+    def test_preserves_a_custom_projects_widget(self):
+        custom_projects = widget({'file': str(self.home / 'Personal projects')},
+                                 description='My own projects')
+        self.widgets.write_text(json.dumps({'projects': custom_projects}))
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        widgets = json.loads(self.widgets.read_text())
+        self.assertEqual(widgets['projects'], custom_projects)
+        self.assertIn('pyBench', widgets)
 
     def test_concurrent_edit_aborts_before_either_file_is_published(self):
         self.widgets.write_text('{}')
@@ -205,6 +217,44 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertTrue(lock.is_dir())
         self.assertEqual(self.widgets.read_text(), '{}')
         self.assertFalse(self.connections.exists())
+
+    def test_refuses_an_invalid_selected_connection_without_writes(self):
+        widgets = '{"custom": {"label": "Keep me"}}\n'
+        connections = json.dumps({CONNECTION: "not a settings object", 'ssh://custom': {}})
+        self.widgets.write_text(widgets)
+        self.connections.write_text(connections)
+        result = self.sync()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'Wave connection {CONNECTION} must contain a JSON object', result.stderr)
+        self.assertEqual(self.widgets.read_text(), widgets)
+        self.assertEqual(self.connections.read_text(), connections)
+
+    def test_refuses_non_object_settings_without_writes(self):
+        for name in ('widgets.json', 'connections.json'):
+            for content in ('[]\n', 'null\n', '"not an object"\n'):
+                with self.subTest(name=name, content=content):
+                    self.widgets.write_text('{}\n')
+                    self.connections.write_text('{}\n')
+                    path = self.config / name
+                    path.write_text(content)
+                    before = (self.widgets.read_bytes(), self.connections.read_bytes())
+                    result = self.sync()
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('must contain a JSON object', result.stderr)
+                    self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
+
+    def test_refuses_symlinked_connections_without_touching_the_target(self):
+        original = json.dumps({CONNECTION: {'custom-setting': True}}) + '\n'
+        target = self.home / 'external-connections.json'
+        target.write_text(original)
+        self.connections.symlink_to(target)
+        self.widgets.write_text('{"custom": true}\n')
+        result = self.sync()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Refusing to replace Wave settings', result.stderr)
+        self.assertTrue(self.connections.is_symlink())
+        self.assertEqual(target.read_text(), original)
+        self.assertEqual(self.widgets.read_text(), '{"custom": true}\n')
 
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')

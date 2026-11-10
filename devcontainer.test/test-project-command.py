@@ -916,7 +916,7 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertFalse(executed.exists())
 
     def test_forwarder_expands_tilde_and_rejects_relative_configuration(self):
-        home = self.base / "forwarder-home"
+        home = self.base / "forwarder home"
         tilde_bin = home / "commands"
         self.assertEqual(installer.main([
             *self.args, "--bin-dir", str(tilde_bin), "--source", str(self.source),

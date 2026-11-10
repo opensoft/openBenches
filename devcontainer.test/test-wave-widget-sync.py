@@ -256,6 +256,16 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertEqual(target.read_text(), original)
         self.assertEqual(self.widgets.read_text(), '{"custom": true}\n')
 
+    def test_explicit_skip_preserves_settings_without_creating_a_lock(self):
+        self.widgets.write_text('{"custom": true}\n')
+        self.connections.write_text('{"ssh://custom": {}}\n')
+        before = (self.widgets.read_bytes(), self.connections.read_bytes())
+        result = self.sync(WORKBENCHES_SKIP_WAVE_WIDGETS='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('skipped by WORKBENCHES_SKIP_WAVE_WIDGETS=1', result.stdout)
+        self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
+        self.assertFalse((self.config / '.openbenches-widget-sync.lock').exists())
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

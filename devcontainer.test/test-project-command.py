@@ -865,7 +865,9 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertEqual(result.returncode, 2)
         self.assertFalse(executed.exists())
 
-        target.unlink()
+        unowned_bin = self.base / "unowned-bin"
+        unowned_bin.mkdir()
+        target.rename(unowned_bin / "project")
         self.assertEqual(self.install(), 0)
         target.chmod(0o555)
         (self.bin / ".workbenches-project.json").chmod(0o444)
@@ -882,6 +884,14 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
             env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["new", "FromDiscovery"])
+
+        env["PATH"] = str(unowned_bin) + os.pathsep + env["PATH"]
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "new", "PastUnownedPathEntry"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["new", "PastUnownedPathEntry"])
+        self.assertFalse(executed.exists())
 
     def test_forwarder_expands_tilde_and_rejects_relative_configuration(self):
         home = self.base / "forwarder-home"

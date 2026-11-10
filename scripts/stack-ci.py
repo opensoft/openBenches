@@ -57,9 +57,24 @@ def github(repo, endpoint):
     ))
 
 
-def wave_pr_qualified(event, main, repo, request=github, run_git=git):
+def regular_scope_diff(base, head, allowed, run_git=git):
+    """Require nonempty, regular-file content edits, not modes/types/renames."""
+    raw = run_git("diff", "--raw", "--no-abbrev", "--no-renames", "-z", base, head)
+    fields = raw.split(b"\0")
+    if fields[-1] != b"" or len(fields) < 3 or len(fields) % 2 != 1:
+        return False
+    for header, path in zip(fields[0:-1:2], fields[1:-1:2]):
+        old_mode, new_mode, _old, _new, status = header.lstrip(b":").split()
+        if (path not in allowed or status != b"M"
+                or old_mode not in (b"100644", b"100755") or old_mode != new_mode):
+            return False
+    return True
+
+
+def scoped_pr_qualified(event, main, repo, scope, request=github, run_git=git):
     """Select the cheap path only from a current, explicitly opted-in chain."""
     try:
+        allowed, prefix, _context = STACK_SCOPES[scope]
         sha(main)
         number = event["number"]
         seen = set()
@@ -75,23 +90,16 @@ def wave_pr_qualified(event, main, repo, request=github, run_git=git):
                     or any(pr[ref]["sha"] != expected[ref]["sha"]
                            or pr[ref]["ref"] != expected[ref]["ref"]
                            for ref in ("head", "base"))
-                    or not re.fullmatch(r"ci/stack-wave-widget-sync/.+", pr["head"]["ref"])
-                    or not re.search(r"(?m)^Stack-CI: wave-widget-sync[ \t\r]*$", pr["body"] or "")):
+                    or not re.fullmatch(re.escape(prefix) + r".+", pr["head"]["ref"])
+                    or not re.search(rf"(?m)^Stack-CI: {re.escape(scope)}[ \t\r]*$", pr["body"] or "")):
                 return False
             head, base = sha(pr["head"]["sha"]), sha(pr["base"]["sha"])
             run_git("fetch", "--no-tags", "origin", head)
             run_git("merge-base", "--is-ancestor", main, head)
             run_git("merge-base", "--is-ancestor", base, head)
             for start in (main, base):
-                raw = run_git("diff", "--raw", "--no-abbrev", "--no-renames", "-z", start, head)
-                fields = raw.split(b"\0")
-                if fields[-1] != b"" or len(fields) < 3 or len(fields) % 2 != 1:
+                if not regular_scope_diff(start, head, allowed, run_git):
                     return False
-                for header, path in zip(fields[0:-1:2], fields[1:-1:2]):
-                    old_mode, new_mode, _old, _new, status = header.lstrip(b":").split()
-                    if (path not in WAVE_PATHS or status != b"M"
-                            or old_mode not in (b"100644", b"100755") or old_mode != new_mode):
-                        return False
             dependencies = re.findall(r"(?m)^Depends-On:[^\n]*", pr["body"] or "")
             if pr["base"]["ref"] == "main":
                 return (base == main and not dependencies
@@ -111,9 +119,14 @@ def wave_pr_qualified(event, main, repo, request=github, run_git=git):
         return False
 
 
-def merged_wave_metadata(event, repo, request=github):
-    """Ignore only delayed edits to an already-merged, opted-in Wave PR."""
+def wave_pr_qualified(event, main, repo, request=github, run_git=git):
+    return scoped_pr_qualified(event, main, repo, "wave-widget-sync", request, run_git)
+
+
+def merged_scoped_metadata(event, repo, scope, request=github):
+    """Ignore only delayed edits to an already-merged, opted-in scoped PR."""
     try:
+        allowed, prefix, _context = STACK_SCOPES[scope]
         number = event["number"]
         if event["action"] != "edited" or type(number) is not int or number < 1:
             return False
@@ -126,17 +139,21 @@ def merged_wave_metadata(event, repo, request=github):
                 or any(pr[ref]["repo"]["full_name"].lower() != repo.lower()
                        for ref in ("head", "base"))
                 or pr["base"]["ref"] != "main"
-                or not re.fullmatch(r"ci/stack-wave-widget-sync/.+", pr["head"]["ref"])
-                or not re.search(r"(?m)^Stack-CI: wave-widget-sync[ \t\r]*$", pr["body"] or "")):
+                or not re.fullmatch(re.escape(prefix) + r".+", pr["head"]["ref"])
+                or not re.search(rf"(?m)^Stack-CI: {re.escape(scope)}[ \t\r]*$", pr["body"] or "")):
             return False
         sha(pr["merge_commit_sha"])
         files = request(repo, f"pulls/{number}/files?per_page=100")
         return (type(pr["changed_files"]) is int
-                and 1 <= pr["changed_files"] == len(files) <= len(WAVE_PATHS)
-                and all(file["filename"].encode() in WAVE_PATHS
+                and 1 <= pr["changed_files"] == len(files) <= len(allowed)
+                and all(file["filename"].encode() in allowed
                         and file["status"] == "modified" for file in files))
     except (KeyError, TypeError, ValueError, AttributeError, OSError, subprocess.SubprocessError):
         return False
+
+
+def merged_wave_metadata(event, repo, request=github):
+    return merged_scoped_metadata(event, repo, "wave-widget-sync", request)
 
 
 def classify_wave(env):

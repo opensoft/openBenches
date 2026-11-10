@@ -1,5 +1,10 @@
 # Handoff repair evidence
 
+Historical pre-local-review snapshot. Superseded for current review, CI and
+source landing status by [landing-record.md](landing-record.md). The entries
+below preserve the earlier quota-blocked state; T013 is now complete under
+the user's subsequent local-review instruction.
+
 Snapshot: 2026-11-10. Implementation and CI are complete. Final Codex review
 acceptance is blocked by the review account's usage limit; T013 remains open.
 All source and consumer PRs are draft and unmerged. Governance remains draft;

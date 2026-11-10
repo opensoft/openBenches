@@ -43,7 +43,10 @@ metadata to 0644 under umask 022. Both publishers now restore the existing
 regular destination's permission bits on the owned temporary before writing.
 The focused manifest-and-selector permission case passed after correction.
 
+The final consumer suite passed 38 cases in 78.02 seconds locally and 25.19
+seconds in CI: 28 exact shared cases plus ten consumer-specific cases.
 Current-main qualification, exact source/consumer heads, CI runs and landing
-readback are recorded separately on the PRs. No queue/ruleset, image activation,
+readback are recorded in [landing-record.md](landing-record.md) and on the PRs.
+No queue/ruleset, image activation,
 real operator handoff, identity operation, product pin or release is included.
 OpenAI feedback remains deferred and neither blocked write was replayed.

@@ -3,15 +3,32 @@ name: Speckit Git PowerShell
 on:
   push:
     paths:
+      - scripts/stack-ci.py
+      - scripts/project-stack-ci.py
+      - scripts/helper-stack-ci.py
+      - devcontainer.test/test-project-stack-ci.py
+      - devcontainer.test/test-helper-stack-ci.py
       - .github/workflows/speckit-git-powershell.yml
+      - .github/actions/openspeckit-powershell/**
+      - devcontainer.test/helper-integration-baseline.json
+      - devcontainer.test/test-helper-coverage-parity.py
       - devBenches/devcontainer.test/test-speckit-git-powershell.ps1
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/config-template.yml
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/powershell/**
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/bash/**
       - base-image/files/claude/skills/speckit-clarify/SKILL.md
   pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
     paths:
+      - scripts/stack-ci.py
+      - scripts/project-stack-ci.py
+      - scripts/helper-stack-ci.py
+      - devcontainer.test/test-project-stack-ci.py
+      - devcontainer.test/test-helper-stack-ci.py
       - .github/workflows/speckit-git-powershell.yml
+      - .github/actions/openspeckit-powershell/**
+      - devcontainer.test/helper-integration-baseline.json
+      - devcontainer.test/test-helper-coverage-parity.py
       - devBenches/devcontainer.test/test-speckit-git-powershell.ps1
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/config-template.yml
       - devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/powershell/**
@@ -23,7 +40,37 @@ permissions:
   contents: read
 
 jobs:
+  classify:
+    name: Classify helper stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+      actions: read
+    outputs:
+      skip_helper: ${{ steps.scope.outputs.skip_helper }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify from trusted main; uncertainty retains full CI
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! python3 -I scripts/helper-stack-ci.py; then
+            echo 'skip_helper=false' >> "$GITHUB_OUTPUT"
+          fi
+
   regression:
+    needs: classify
+    if: >-
+      ${{ always() && !cancelled() &&
+      (needs.classify.result != 'success' || needs.classify.outputs.skip_helper != 'true') }}
     strategy:
       matrix:
         os:
@@ -35,15 +82,5 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Verify Git and PowerShell
-        run: |
-          git --version
-          pwsh --version
-
-      - name: Run full PowerShell regression suite
-        if: runner.os == 'Linux'
-        run: pwsh -NoLogo -NoProfile -File ./devBenches/devcontainer.test/test-speckit-git-powershell.ps1
-
-      - name: Run native Windows state regressions
-        if: runner.os == 'Windows'
-        run: pwsh -NoLogo -NoProfile -File ./devBenches/devcontainer.test/test-speckit-git-powershell.ps1 -WindowsStateOnly
+      - name: Run shared PowerShell integration suites
+        uses: ./.github/actions/openspeckit-powershell

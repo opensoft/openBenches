@@ -11,8 +11,12 @@ on:
       - setup.sh
       - config/openrepoproject-pin.json
       - devcontainer.test/test-project-command.py
+      - scripts/stack-ci.py
+      - scripts/project-stack-ci.py
+      - devcontainer.test/test-project-stack-ci.py
       - .github/workflows/project-command.yml
   pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
     paths:
       - scripts/setup-project-command.py
       - scripts/project
@@ -23,11 +27,44 @@ on:
       - setup.sh
       - config/openrepoproject-pin.json
       - devcontainer.test/test-project-command.py
+      - scripts/stack-ci.py
+      - scripts/project-stack-ci.py
+      - devcontainer.test/test-project-stack-ci.py
       - .github/workflows/project-command.yml
 permissions:
   contents: read
 jobs:
+  classify:
+    name: Classify project stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+      actions: read
+    outputs:
+      skip_project: ${{ steps.scope.outputs.skip_project }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify from trusted main; uncertainty retains full CI
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! python3 -I scripts/project-stack-ci.py; then
+            echo 'skip_project=false' >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: classify
+    if: >-
+      ${{ always() && !cancelled() &&
+      (needs.classify.result != 'success' || needs.classify.outputs.skip_project != 'true') }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]

@@ -9,6 +9,9 @@ on:
       - .mergify.yml
       - scripts/stack-ci.py
       - devcontainer.test/test-stack-ci.py
+      - scripts/project-stack-ci.py
+      - devcontainer.test/test-project-stack-ci.py
+      - .github/workflows/project-command.yml
 
 permissions:
   contents: read
@@ -57,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -78,7 +81,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           printf 'Project integration revision: %s\n' "$GITHUB_SHA"
-          bash -n scripts/project
+          bash -n scripts/project scripts/onp scripts/new-project.sh scripts/install-workbench-commands.sh scripts/setup-workbenches.sh setup.sh
           python3 devcontainer.test/test-project-command.py
 
   wave-widget-sync:

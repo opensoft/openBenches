@@ -150,11 +150,58 @@ the same ordered PR list in each receipt and require focused wrapper fast CI,
 applicable exact-head review, and the existing component checks.
 
 On a Mergify candidate, verify the exact approved stack before running the
-full project fixture suite on Ubuntu and macOS. Both jobs must pass in the
+full project fixture suite on Ubuntu latest, Ubuntu 24.04, and macOS, plus
+all syntax checks from the ordinary project workflow. Every matrix job must pass in the
 same workflow run before the aggregate `openbenches-stack-heavy` can succeed.
 The config PR exercises those platform jobs and a differently named aggregate;
 it is not a queue candidate. The optional upstream-CLI test is not covered
 without its fixture source. Record the landed tree and stop on any mismatch.
+
+### Project-only CI efficiency
+
+The config implementation is not live-canary acceptance. Authorize and audit
+the first efficiency stack separately in #250; do not widen helper or Wave scope.
+
+For each `ci/stack-project/` member, put a standalone `Stack-CI: project` line
+in both its PR body **and its source commit message** before pushing. The
+commit marker binds pre-PR push intent to the exact SHA; the PR footer alone
+cannot deduplicate the push that preceded PR creation. Keep `Depends-On: #N`
+and the existing exact-head review receipts. Neither opt-in grants admission.
+
+The trusted-main project classifier can omit only the duplicate
+`project-command` integration matrix:
+
+- Open PR: verify live same-repo, non-draft head/base, explicit opt-in, an
+  unambiguous chain of at most three members rooted at current main, and both
+  immediate and cumulative regular-content diffs in the two-file allowlist.
+- Source push: require the exact event SHA/ref/repository, project namespace,
+  head-bound commit marker, current-main ancestry, and regular-content scope.
+- Queue push or Mergify draft PR: verify the exact ordered batch, original
+  heads, bases and project receipts. A delayed draft metadata event can instead
+  use a completed successful run at that exact candidate, with matching policy
+  and all project platform jobs. Actor identity or a branch prefix is not proof.
+- Main landing push: find a recent successful candidate run and reconstruct
+  its ordered Git/receipt chain. Match every landed prefix's parents, original
+  heads and trees, and GitHub merge records after the heavy aggregate finished.
+  Candidate policy/workflows must equal trusted main. The lookup is bounded to
+  20 successful push runs and rejects incomplete jobs or rerun attempts.
+- Delayed `edited` metadata on a merged author PR: require the same live head,
+  complete modified-file allowlist, and a matching regular-content merge already
+  reachable from trusted main. Other closed events do not get this exception.
+
+Qualified author PRs keep focused `openbenches-pr-fast`, policy regressions,
+applicable CodeQL, and exact-head review. The **single** combined-candidate
+heavy workflow still verifies admission and runs every project platform job.
+The aggregate cannot pass a failed, cancelled, skipped, or missing matrix.
+Mergify batching, manual labels/receipts, rulesets, apps, and releases are unchanged.
+
+Mixed ancestors, empty diffs, renames/deletions/type/mode changes, stale heads,
+missing markers, unknown events, ordinary/tag pushes, failed or unavailable
+proof, classifier failure, and missing/non-`true` outputs retain full checks.
+The config PR itself uses old trusted-main policy, so it must exercise the
+full ordinary component matrix and the separately named config aggregate.
+An efficiency canary must also audit source/candidate/main pushes and late
+metadata, not merely the initial per-PR run.
 
 ## Wave widget sync pilot
 

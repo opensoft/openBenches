@@ -893,6 +893,20 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertEqual(json.loads(result.stdout), ["new", "PastUnownedPathEntry"])
         self.assertFalse(executed.exists())
 
+        home = self.base / "fallback-home"
+        fallback_bin = home / ".local/bin"
+        self.assertEqual(installer.main([
+            *self.args, "--bin-dir", str(fallback_bin), "--source", str(self.source),
+        ]), 0)
+        env.update(HOME=str(home), PATH=os.environ["PATH"])
+        self.discovery.write_text(str(unowned_bin) + "\n")
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "new", "PastUnownedDiscovery"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["new", "PastUnownedDiscovery"])
+        self.assertFalse(executed.exists())
+
     def test_forwarder_expands_tilde_and_rejects_relative_configuration(self):
         home = self.base / "forwarder-home"
         tilde_bin = home / "commands"

@@ -6,12 +6,47 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
-ROOT = Path(__file__).resolve().parents[2]
-SETUP = ROOT / "devBenches/base-image/files/openspeckit/setup-openspeckit"
-SOURCE = SETUP.parent / "task-set-delivery/SKILL.md"
+def resolve_assets(test_file):
+    """Support checkout, declared /test fixture mount and packaged Tools paths."""
+    candidates = [parent / "devBenches/base-image/files/openspeckit/setup-openspeckit"
+                  for parent in test_file.resolve().parents]
+    candidates.extend((Path("/test-fixtures/base-image/files/openspeckit/setup-openspeckit"),
+                       Path("/usr/local/bin/setup-openspeckit")))
+    setup = next((path for path in candidates if path.is_file()), None)
+    if setup is not None:
+        sources = (setup.resolve().parent / "task-set-delivery/SKILL.md",
+                   Path("/usr/local/share/openspeckit/task-set-delivery/SKILL.md"))
+        source = next((path for path in sources if path.is_file()), None)
+        if source is not None:
+            return setup, source
+    raise FileNotFoundError("Matching task-set delivery bootstrap/assets not found in checkout, /test-fixtures or installed Tools")
+
+
+SETUP, SOURCE = resolve_assets(Path(__file__))
 MARKER = "<!-- OPENSPEC-SPECKIT-TASK-SETS:START -->"
+
+
+class AssetResolutionTest(unittest.TestCase):
+    def test_shallow_test_path_uses_declared_fixture_before_installed_command(self):
+        setup = Path("/test-fixtures/base-image/files/openspeckit/setup-openspeckit")
+        source = setup.parent / "task-set-delivery/SKILL.md"
+        present = {setup, source, Path("/usr/local/bin/setup-openspeckit")}
+        with patch.object(Path, "is_file", lambda path: path in present):
+            self.assertEqual(resolve_assets(Path("/test/test-task-set-delivery.py")), (setup, source))
+
+    def test_installed_command_uses_packaged_skill_when_checkout_is_absent(self):
+        setup = Path("/usr/local/bin/setup-openspeckit")
+        source = Path("/usr/local/share/openspeckit/task-set-delivery/SKILL.md")
+        with patch.object(Path, "is_file", lambda path: path in (setup, source)):
+            self.assertEqual(resolve_assets(Path("/test/test-task-set-delivery.py")), (setup, source))
+
+    def test_missing_assets_fail_with_actionable_location_instead_of_index_error(self):
+        with patch.object(Path, "is_file", lambda _path: False):
+            with self.assertRaisesRegex(FileNotFoundError, "/test-fixtures or installed Tools"):
+                resolve_assets(Path("/test/test-task-set-delivery.py"))
 
 
 class TaskSetDeliveryTest(unittest.TestCase):

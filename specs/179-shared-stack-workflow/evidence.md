@@ -35,3 +35,21 @@ canary is authorized by this source PR. After review/merge approval, adopt in
 one selected current development project, start fresh agent sessions, verify
 skill provenance and small task-set output, and only then propose live stacks.
 PR #324's metadata fix must qualify before another efficiency canary.
+
+## PR stabilization after review
+
+Codex found the new test assumed a full checkout: running it at the declared
+`/test` mount raised `IndexError`. Reproduced before fixing asset discovery.
+The suite now finds checkout, `/test-fixtures/base-image`, or installed Tools
+assets. All 12 tests passed in checkout, declared bench-mount and packaged
+symlink layouts, in isolated containers without network access.
+
+Workstation Setup also correctly rejected the additional COPY layer: 115
+conservative layers exceeded the unchanged 114-layer budget. Bootstrap and skill
+assets now share the existing COPY layer under `/usr/local/share/openspeckit`,
+with the command symlinked into `/usr/local/bin` in the existing RUN layer.
+The unchanged layer-budget test passes; coverage parity and Dockerfile wiring
+tests also pass. No release configuration or validation thresholds were changed.
+
+Merged current main, including #324, into this branch before requesting fresh
+exact-head review. Hosted CI and review must pass again on the corrected head.

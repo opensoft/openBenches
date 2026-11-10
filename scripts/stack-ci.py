@@ -57,6 +57,77 @@ def github(repo, endpoint):
     ))
 
 
+def wave_pr_qualified(event, main, repo, request=github, run_git=git):
+    """Select the cheap path only from a current, explicitly opted-in chain."""
+    try:
+        sha(main)
+        number = event["number"]
+        seen = set()
+        expected = event["pull_request"]
+        for _ in range(3):
+            if type(number) is not int or number < 1 or number in seen:
+                return False
+            seen.add(number)
+            pr = request(repo, f"pulls/{number}")
+            if (pr["number"] != number or pr["state"] != "open" or pr["draft"]
+                    or any(pr[ref]["repo"]["full_name"].lower() != repo.lower()
+                           for ref in ("head", "base"))
+                    or any(pr[ref]["sha"] != expected[ref]["sha"]
+                           or pr[ref]["ref"] != expected[ref]["ref"]
+                           for ref in ("head", "base"))
+                    or not re.fullmatch(r"ci/stack-wave-widget-sync/.+", pr["head"]["ref"])
+                    or not re.search(r"(?m)^Stack-CI: wave-widget-sync[ \t\r]*$", pr["body"] or "")):
+                return False
+            head, base = sha(pr["head"]["sha"]), sha(pr["base"]["sha"])
+            run_git("fetch", "--no-tags", "origin", head)
+            run_git("merge-base", "--is-ancestor", main, head)
+            run_git("merge-base", "--is-ancestor", base, head)
+            for start in (main, base):
+                raw = run_git("diff", "--raw", "--no-abbrev", "--no-renames", "-z", start, head)
+                fields = raw.split(b"\0")
+                if fields[-1] != b"" or len(fields) < 3 or len(fields) % 2 != 1:
+                    return False
+                for header, path in zip(fields[0:-1:2], fields[1:-1:2]):
+                    old_mode, new_mode, _old, _new, status = header.lstrip(b":").split()
+                    if (path not in WAVE_PATHS or status != b"M"
+                            or old_mode not in (b"100644", b"100755") or old_mode != new_mode):
+                        return False
+            dependencies = re.findall(r"(?m)^Depends-On:[^\n]*", pr["body"] or "")
+            if pr["base"]["ref"] == "main":
+                return (base == main and not dependencies
+                        and request(repo, "branches/main")["commit"]["sha"] == main)
+            if len(dependencies) != 1:
+                return False
+            dependency = re.fullmatch(r"Depends-On: #([1-9]\d*)[ \t\r]*", dependencies[0])
+            if not dependency:
+                return False
+            number = int(dependency[1])
+            parent = request(repo, f"pulls/{number}")
+            if parent["head"]["sha"] != base or parent["head"]["ref"] != pr["base"]["ref"]:
+                return False
+            expected = parent
+        return False
+    except (KeyError, TypeError, ValueError, AttributeError, OSError, subprocess.SubprocessError):
+        return False
+
+
+def classify_wave(env):
+    """Write only an explicit true result; every uncertainty retains full CI."""
+    qualified = False
+    try:
+        if env["GITHUB_EVENT_NAME"] == "pull_request" and env["GITHUB_REPOSITORY"] == "opensoft/openBenches":
+            with open(env["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
+                event = json.load(source)
+            main = git("rev-parse", "HEAD").decode().strip()
+            qualified = wave_pr_qualified(event, main, env["GITHUB_REPOSITORY"])
+    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+        pass
+    value = "true" if qualified else "false"
+    with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+        print(f"wave_only={value}", file=output)
+    print(f"Wave-only efficiency: {value}; full workstation checks: {not qualified}")
+
+
 def candidate_scope(paths):
     for scope, (allowed, _, _) in STACK_SCOPES.items():
         if paths and paths <= allowed:
@@ -190,10 +261,12 @@ def verify_results(env):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("fast", "heavy", "gate"))
+    parser.add_argument("mode", choices=("fast", "heavy", "gate", "classify-wave"))
     mode = parser.parse_args().mode
     try:
-        if mode == "gate":
+        if mode == "classify-wave":
+            classify_wave(os.environ)
+        elif mode == "gate":
             verify_results(os.environ)
         else:
             verify(mode, os.environ)

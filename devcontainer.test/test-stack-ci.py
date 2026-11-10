@@ -1,12 +1,14 @@
 """Exercise stack CI against real commits in a disposable Git repository."""
 
 import os
+from copy import deepcopy
 from pathlib import Path
 import runpy
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 GATE = Path(__file__).resolve().parents[1] / "scripts" / "stack-ci.py"
@@ -291,6 +293,184 @@ class StackCiTest(unittest.TestCase):
         result = self.gate("heavy")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("outside the canary path allowlist", result.stderr)
+
+
+class WaveEfficiencyTest(unittest.TestCase):
+    setUp = StackCiTest.setUp
+    git = StackCiTest.git
+    commit = StackCiTest.commit
+
+    def chain(self, count=2, mixed_lower=False):
+        for path in (WAVE_SCRIPT, WAVE_RECONCILER, WAVE_TEST):
+            self.base = self.commit(path, "# original\n")
+        self.git("update-ref", "refs/remotes/origin/main", self.base)
+        responses = {"branches/main": {"commit": {"sha": self.base}}}
+        parent_sha, parent_ref = self.base, "main"
+        for index in range(count):
+            number = index + 10
+            branch = f"ci/stack-wave-widget-sync/{number}"
+            self.git("switch", "-qc", branch)
+            head = self.commit(
+                "bootstrap.sh" if mixed_lower and not index else WAVE_TEST,
+                f"# update {index}\n")
+            body = "Stack-CI: wave-widget-sync"
+            if index:
+                body += f"\nDepends-On: #{number - 1}"
+            pr = {
+                "number": number, "state": "open", "draft": False, "body": body,
+                "head": {"sha": head, "ref": branch, "repo": {"full_name": REPO}},
+                "base": {"sha": parent_sha, "ref": parent_ref, "repo": {"full_name": REPO}},
+            }
+            responses[f"pulls/{number}"] = pr
+            parent_sha, parent_ref = head, branch
+        event = {"number": number, "pull_request": deepcopy(pr)}
+        return event, responses
+
+    def qualified(self, event, responses):
+        def run_git(*args):
+            if args[0] == "fetch":
+                # The fixture commits already exist locally; no network.
+                return b""
+            return subprocess.check_output(["git", *args], cwd=self.repo)
+
+        return POLICY["wave_pr_qualified"](
+            event, self.base, REPO,
+            request=lambda _repo, endpoint: responses[endpoint],
+            run_git=run_git)
+
+    def test_qualified_bottom_two_and_three_member_chains(self):
+        event, responses = self.chain(3)
+        for number in (10, 11, 12):
+            with self.subTest(number=number):
+                member = {"number": number, "pull_request": deepcopy(responses[f"pulls/{number}"])}
+                self.assertTrue(self.qualified(member, responses))
+
+    def test_mixed_ancestor_retains_full_checks(self):
+        event, responses = self.chain(mixed_lower=True)
+        self.assertFalse(self.qualified(event, responses))
+
+    def test_opt_in_prefix_repo_state_and_dependency_are_not_guessed(self):
+        event, responses = self.chain()
+        for field, value in (
+            ("body", ""), ("body", "Stack-CI: wave-widget-sync\nDepends-On: #99"),
+            ("body", "Stack-CI: wave-widget-sync\nDepends-On: #10\nDepends-On: #10"),
+            ("draft", True), ("state", "closed"),
+        ):
+            with self.subTest(field=field, value=value):
+                changed = deepcopy(responses)
+                changed["pulls/11"][field] = value
+                self.assertFalse(self.qualified(event, changed))
+        for ref, field, value in (
+            ("head", "repo", {"full_name": "someone/fork"}),
+            ("base", "repo", {"full_name": "someone/fork"}),
+            ("head", "ref", "ordinary/wave"),
+            ("base", "ref", "ci/stack-wave-widget-sync/not-the-parent"),
+            ("base", "sha", self.base),
+        ):
+            with self.subTest(ref=ref, field=field):
+                changed = deepcopy(responses)
+                changed["pulls/11"][ref][field] = value
+                self.assertFalse(self.qualified(event, changed))
+        changed = deepcopy(responses)
+        changed["pulls/10"]["body"] = ""
+        self.assertFalse(self.qualified(event, changed))
+
+    def test_stale_event_or_main_retains_full_checks(self):
+        event, responses = self.chain()
+        for ref in ("head", "base"):
+            changed = deepcopy(event)
+            changed["pull_request"][ref]["sha"] = "f" * 40
+            self.assertFalse(self.qualified(changed, responses))
+        changed = deepcopy(responses)
+        changed["branches/main"]["commit"]["sha"] = "f" * 40
+        self.assertFalse(self.qualified(event, changed))
+        self.base = self.commit("README.md", "new main\n")
+        self.assertFalse(self.qualified(event, responses))
+
+    def test_rename_delete_and_type_or_mode_change_retain_full_checks(self):
+        event, responses = self.chain(1)
+        for operation in ("rename", "delete", "symlink", "mode"):
+            with self.subTest(operation=operation):
+                self.git("switch", "-q", "--detach", self.base)
+                path = self.repo / WAVE_TEST
+                if operation == "rename":
+                    self.git("mv", WAVE_TEST, "different.py")
+                elif operation == "delete":
+                    self.git("rm", WAVE_TEST)
+                elif operation == "symlink":
+                    path.unlink()
+                    path.symlink_to("elsewhere")
+                    self.git("add", WAVE_TEST)
+                else:
+                    self.git("update-index", "--chmod=+x", WAVE_TEST)
+                self.git("commit", "-qm", operation)
+                changed = deepcopy(responses)
+                changed["pulls/10"]["head"]["sha"] = self.git("rev-parse", "HEAD")
+                current = {"number": 10, "pull_request": deepcopy(changed["pulls/10"])}
+                self.assertFalse(self.qualified(current, changed))
+
+    def test_missing_api_or_git_data_and_too_long_chains_retain_full_checks(self):
+        event, responses = self.chain(4)
+        self.assertFalse(self.qualified(event, responses))
+        self.assertFalse(self.qualified(event, {}))
+        self.assertFalse(POLICY["wave_pr_qualified"](
+            event, self.base, REPO,
+            request=lambda *_args: responses["pulls/13"],
+            run_git=lambda *_args: (_ for _ in ()).throw(OSError("unavailable"))))
+
+    def test_workflow_keeps_full_fallback_and_fast_ci(self):
+        workflow = (GATE.parents[1] / ".github/workflows/credential-recovery.yml").read_text()
+        for job in ("regression", "tools-runtime", "credential-images", "component-lifecycle"):
+            # Include the whole job header before its first step.
+            header = workflow.split(f"  {job}:\n", 1)[1].split("    steps:", 1)[0]
+            self.assertIn("needs: classify", header)
+            self.assertIn("always() && !cancelled()", header)
+            self.assertIn("needs.classify.result != 'success' || needs.classify.outputs.wave_only != 'true'", header)
+        self.assertIn("ref: main", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn("classify-wave", workflow)
+        fast = (GATE.parents[1] / ".github/workflows/stack-pr-fast.yml").read_text()
+        self.assertIn("python3 scripts/stack-ci.py fast", fast)
+        self.assertNotIn("needs: classify", fast)
+
+    def test_classifier_output_defaults_full_for_non_pr_and_errors(self):
+        function = POLICY["classify_wave"]
+        output = self.repo / "outputs"
+        event_file = self.repo / "event.json"
+        event_file.write_text("not JSON")
+        environment = {
+            "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": "opensoft/openBenches",
+            "GITHUB_OUTPUT": str(output), "GITHUB_EVENT_PATH": str(event_file),
+        }
+        for event in ("push", "workflow_dispatch", "pull_request"):
+            with self.subTest(event=event):
+                output.write_text("")
+                function({**environment, "GITHUB_EVENT_NAME": event})
+                self.assertEqual(output.read_text(), "wave_only=false\n")
+        event_file.write_text("{}")
+        with patch.dict(function.__globals__, git=lambda *_: b"f" * 40,
+                        wave_pr_qualified=lambda *_: True):
+            output.write_text("")
+            function(environment)
+            self.assertEqual(output.read_text(), "wave_only=true\n")
+        for value in (False, None):
+            with patch.dict(function.__globals__, git=lambda *_: b"f" * 40,
+                            wave_pr_qualified=lambda *_: value):
+                output.write_text("")
+                function(environment)
+                self.assertEqual(output.read_text(), "wave_only=false\n")
+        with patch.dict(function.__globals__,
+                        git=lambda *_: (_ for _ in ()).throw(OSError("unavailable"))):
+            output.write_text("")
+            function(environment)
+            self.assertEqual(output.read_text(), "wave_only=false\n")
+
+    def test_only_explicit_successful_classification_can_skip_jobs(self):
+        # Matches the expression pinned in the workflow wiring test.
+        for result in ("success", "failure", "cancelled", "skipped", ""):
+            for output in ("true", "false", "", "True", "unknown"):
+                run_full = result != "success" or output != "true"
+                self.assertEqual(run_full, (result, output) != ("success", "true"))
 
 
 if __name__ == "__main__":

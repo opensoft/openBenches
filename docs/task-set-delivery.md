@@ -173,3 +173,26 @@ before `openbenches-stack-heavy` succeeds. These fixtures use disposable
 settings, not a running Wave app or a bench. A config PR uses the separately
 named `Stack config aggregate`; it cannot authorize a queue merge.
 Record the candidate, workflow, and matching landed tree in #250.
+
+### Wave-only per-PR CI efficiency
+
+To opt in, add a standalone `Stack-CI: wave-widget-sync` line to each PR body.
+The Workstation Setup classifier runs trusted code from `main`, checks live
+GitHub heads and bases, and reads PR commits only as Git data. Eligible members
+must be open, non-draft, same-repository PRs on `ci/stack-wave-widget-sync/`.
+Their `Depends-On` chain must be unambiguous, contain at most three members,
+and root at current `main`. The bottom member can opt in before its dependants
+exist; this is CI selection only, not queue admission.
+
+Only regular content modifications to the three Wave pilot files qualify.
+Both immediate member diffs and the cumulative main-to-head diff must stay
+within that scope. Renames, deletions, file-mode/type changes, mixed ancestors,
+stale event data, missing opt-in, API errors, and classification failures all
+retain the full workstation checks. Push, tag, and manual runs also stay full.
+
+An eligible PR keeps focused `openbenches-pr-fast` checks and applicable
+CodeQL/review, but omits Workstation Setup's `regression`, `tools-runtime`,
+`credential-images`, and `component-lifecycle` jobs. The existing manual
+admission receipts and full Ubuntu/macOS queue candidate gate are unchanged.
+Do not apply this opt-in to other components. The config PR is not a live
+efficiency canary; authorize and record that separately in #250.

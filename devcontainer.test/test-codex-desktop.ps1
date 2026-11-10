@@ -35,6 +35,8 @@ Path(os.environ['WB_CODEX_TEST_LOG']).write_text(json.dumps(sys.argv[1:]))
     $launcher = Join-Path $temporary 'codex-desktop.ps1'
     $homePath = Join-Path $temporary 'windows-home'
     $profiles = Join-Path $temporary 'profiles'
+    $inventory = Join-Path $temporary 'opensoft-identities.json'
+    '{"version":1,"identities":[]}' | Set-Content -LiteralPath $inventory
 
     # A running Beta must neither block nor be selected by the Windows wrapper.
     $global:WbTestProcesses = @([pscustomobject]@{ ExecutablePath = (Join-Path $temporary 'OpenAI.CodexBeta_fixture\app\ChatGPT.exe') })
@@ -44,6 +46,7 @@ Path(os.environ['WB_CODEX_TEST_LOG']).write_text(json.dumps(sys.argv[1:]))
     Assert-True ($arguments -contains $homePath) 'Windows home was not passed'
     Assert-True ($arguments -contains $profiles) 'Profile metadata root was not passed'
     Assert-True ($arguments -contains '--apply') 'Missing apply boundary'
+    Assert-True ($arguments -contains '--enroll-identities' -and $arguments -contains $inventory) 'Installed enrollment inventory was not routed'
     Assert-True ($global:WbTestLaunches.Count -eq 1) 'Regular desktop was not launched'
     Assert-True ($global:WbTestLaunches[0].StartsWith($global:WbTestPackage)) 'Another package was launched'
 

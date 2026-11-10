@@ -25,6 +25,10 @@ if (-not $Python) {
     if ($installedPython.Count -gt 0) { $Python = $installedPython[0].FullName }
     else { $Python = (Get-Command python -ErrorAction Stop).Source }
 }
+if (-not $EnrollIdentities) {
+    $installedInventory = Join-Path $PSScriptRoot 'opensoft-identities.json'
+    if (Test-Path -LiteralPath $installedInventory) { $EnrollIdentities = $installedInventory }
+}
 
 function Get-SelectedDesktopProcess {
     @(Get-CimInstance Win32_Process | Where-Object {

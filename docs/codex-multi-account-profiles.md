@@ -110,6 +110,8 @@ credential-free identity inventory (`version: 1`, `identities` array containing
 `owner`, `userId`, `accountId`, `email`, and `family: opensoft`). These bindings
 prepare profiles that have not previously opened this desktop. Never put login
 tokens in the inventory.
+An installed `opensoft-identities.json` beside the native launcher is used by
+default, so the normal Start menu launch also performs initial enrollment.
 
 The catalog preserves local project IDs, names, roots, ordering, appearance,
 and local chat grouping. Actual changes since each account's last preparation

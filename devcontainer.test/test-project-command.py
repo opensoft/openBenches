@@ -902,6 +902,12 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["FromTilde"])
 
+        result = subprocess.run(
+            ["bash", "scripts/project", "FromRelativeCheckout"],
+            cwd=ROOT, env={**env, "CDPATH": str(ROOT)}, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["FromRelativeCheckout"])
+
         env["OPENREPOPROJECT_BIN_DIR"] = "relative/bin"
         result = subprocess.run(
             ["bash", str(ROOT / "scripts/project"), "unsafe"],

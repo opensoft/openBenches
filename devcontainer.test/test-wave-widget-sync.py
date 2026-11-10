@@ -243,6 +243,19 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
                     self.assertIn('must contain a JSON object', result.stderr)
                     self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
 
+    def test_refuses_symlinked_connections_without_touching_the_target(self):
+        original = json.dumps({CONNECTION: {'custom-setting': True}}) + '\n'
+        target = self.home / 'external-connections.json'
+        target.write_text(original)
+        self.connections.symlink_to(target)
+        self.widgets.write_text('{"custom": true}\n')
+        result = self.sync()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Refusing to replace Wave settings', result.stderr)
+        self.assertTrue(self.connections.is_symlink())
+        self.assertEqual(target.read_text(), original)
+        self.assertEqual(self.widgets.read_text(), '{"custom": true}\n')
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

@@ -1,4 +1,4 @@
-"""Offline Git/API fixtures for the project-only CI efficiency policy."""
+"""Shared offline event-proof fixtures; project defaults, helper via explicit loader."""
 
 from copy import deepcopy
 import json
@@ -11,10 +11,17 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 OLD = runpy.run_path(str(ROOT / "devcontainer.test/test-stack-ci.py"))
-POLICY = runpy.run_path(str(ROOT / "scripts/project-stack-ci.py"))
+SCOPE = globals().get("SCOPE", "project")
+POLICY_FILE = f"scripts/{SCOPE}-stack-ci.py"
+POLICY = runpy.run_path(str(ROOT / POLICY_FILE))
+PRIMARY = "scripts/project" if SCOPE == "project" else OLD["POLICY"]["HELPER_TEST"]
+SECONDARY = ("devcontainer.test/test-project-command.py" if SCOPE == "project" else
+             "devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/bash/get-last-worktree.sh")
+PREFIX = POLICY["PREFIX"]
+MARKER = f"Stack-CI: {SCOPE}"
 REPO = "opensoft/openBenches"
 QUEUE = "mergify/merge-queue/0123456789"
-CONTEXT = "openbenches-project-reviewed"
+CONTEXT = f"openbenches-{SCOPE}-reviewed"
 
 
 class ProjectEfficiencyTests(unittest.TestCase):
@@ -32,7 +39,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         return self.responses[endpoint]
 
     def chain(self, count=3, mixed=False):
-        for path in ("scripts/project", "devcontainer.test/test-project-command.py"):
+        for path in (PRIMARY, SECONDARY):
             self.base = self.commit(path, "# original\n")
         self.responses = {"branches/main": {"commit": {"sha": self.base}}}
         self.heads, self.merges = [], []
@@ -40,15 +47,15 @@ class ProjectEfficiencyTests(unittest.TestCase):
         members = ",".join(str(10 + n) for n in range(count))
         for index in range(count):
             number = 10 + index
-            new_branch = f"ci/stack-project/{number}"
+            new_branch = f"{PREFIX}{number}"
             self.git("switch", "-qc", new_branch)
-            self.commit("README.md" if mixed and not index else "scripts/project", f"# member {index}\n")
-            self.git("commit", "--amend", "-qm", "project\n\nStack-CI: project")
+            self.commit("README.md" if mixed and not index else PRIMARY, f"# member {index}\n")
+            self.git("commit", "--amend", "-qm", f"{SCOPE}\n\n{MARKER}")
             head = self.git("rev-parse", "HEAD")
             self.heads.append(head)
             self.responses[f"pulls/{number}"] = {
                 "number": number, "state": "open", "draft": False,
-                "body": "Stack-CI: project" + (f"\nDepends-On: #{number - 1}" if index else ""),
+                "body": MARKER + (f"\nDepends-On: #{number - 1}" if index else ""),
                 "head": {"sha": head, "ref": new_branch, "repo": {"full_name": REPO}},
                 "base": {"sha": previous, "ref": branch, "repo": {"full_name": REPO}},
             }
@@ -117,7 +124,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         self.chain()
         for index in range(3):
             with self.subTest(index=index):
-                self.assertEqual(self.decide(self.event(index)), "project-pr")
+                self.assertEqual(self.decide(self.event(index)), f"{SCOPE}-pr")
 
     def test_mixed_ancestor_retains_full_checks(self):
         event = self.chain(mixed=True)
@@ -155,8 +162,8 @@ class ProjectEfficiencyTests(unittest.TestCase):
         self.responses["pulls/10"].update(state="closed", merged=True,
                                         merge_commit_sha=merge, changed_files=1)
         files = "pulls/10/files?per_page=100"
-        self.responses[files] = [{"filename": "scripts/project", "status": "modified"}]
-        self.assertEqual(self.decide(event, main=merge), "merged-project-metadata")
+        self.responses[files] = [{"filename": PRIMARY, "status": "modified"}]
+        self.assertEqual(self.decide(event, main=merge), f"merged-{SCOPE}-metadata")
         for field, value in (("merged", False), ("changed_files", 2)):
             original = deepcopy(self.responses)
             self.responses["pulls/10"][field] = value
@@ -165,7 +172,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         for action in ("synchronize", "opened", "reopened", "ready_for_review"):
             self.assertIsNone(self.decide({**event, "action": action}, main=merge))
         for file in ({"filename": "bootstrap.sh", "status": "modified"},
-                     {"filename": "scripts/project", "status": "renamed"}):
+                     {"filename": PRIMARY, "status": "renamed"}):
             self.responses[files] = [file]
             self.assertIsNone(self.decide(event, main=merge))
 
@@ -174,7 +181,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         merge = self.candidate()
         self.responses["pulls/10"].update(state="closed", merged=True,
                                         merge_commit_sha=merge, changed_files=1)
-        self.responses["pulls/10/files?per_page=100"] = [{"filename": "scripts/project", "status": "modified"}]
+        self.responses["pulls/10/files?per_page=100"] = [{"filename": PRIMARY, "status": "modified"}]
         event["action"] = "edited"
         self.assertIsNone(self.decide(event))  # Trusted main predates landing.
         event["pull_request"]["head"]["sha"] = "f" * 40
@@ -190,9 +197,9 @@ class ProjectEfficiencyTests(unittest.TestCase):
     def test_author_push_requires_exact_sha_namespace_marker_and_regular_diff(self):
         self.chain(1)
         head = self.heads[0]
-        ref = "refs/heads/ci/stack-project/10"
+        ref = f"refs/heads/{PREFIX}10"
         event = self.push(head, ref)
-        self.assertEqual(self.decide(event, "push", ref=ref, event_sha=head), "project-source-push")
+        self.assertEqual(self.decide(event, "push", ref=ref, event_sha=head), f"{SCOPE}-source-push")
         for changed in ({**event, "after": "f" * 40}, {**event, "deleted": True},
                         {**event, "ref": "refs/tags/v1"},
                         {**event, "repository": {"full_name": "other/fork"}}):
@@ -205,7 +212,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
 
     def test_source_push_empty_stale_or_diverged_main_stays_full(self):
         self.chain(1)
-        ref = "refs/heads/ci/stack-project/10"
+        ref = f"refs/heads/{PREFIX}10"
         head = self.heads[0]
         self.responses["branches/main"]["commit"]["sha"] = "f" * 40
         self.assertIsNone(self.decide(self.push(head, ref), "push", ref=ref, event_sha=head))
@@ -218,25 +225,25 @@ class ProjectEfficiencyTests(unittest.TestCase):
 
     def test_mixed_deleted_renamed_mode_and_symlink_source_pushes_fall_back(self):
         self.chain(1)
-        ref = "refs/heads/ci/stack-project/10"
+        ref = f"refs/heads/{PREFIX}10"
         for operation in ("mixed", "delete", "rename", "mode", "symlink"):
             with self.subTest(operation=operation):
                 self.git("switch", "-q", "--detach", self.base)
                 if operation == "mixed":
                     self.commit("README.md", "mixed\n")
                 elif operation == "delete":
-                    self.git("rm", "scripts/project")
+                    self.git("rm", PRIMARY)
                 elif operation == "rename":
-                    self.git("mv", "scripts/project", "scripts/other")
+                    self.git("mv", PRIMARY, PRIMARY + ".other")
                 elif operation == "mode":
-                    (self.repo / "scripts/project").chmod(0o755)
-                    self.git("update-index", "--chmod=+x", "scripts/project")
+                    (self.repo / PRIMARY).chmod(0o755)
+                    self.git("update-index", "--chmod=+x", PRIMARY)
                 else:
-                    path = self.repo / "scripts/project"
+                    path = self.repo / PRIMARY
                     path.unlink()
                     path.symlink_to("elsewhere")
-                    self.git("add", "scripts/project")
-                self.git("commit", "--allow-empty", "-qm", "change\n\nStack-CI: project")
+                    self.git("add", PRIMARY)
+                self.git("commit", "--allow-empty", "-qm", f"change\n\n{MARKER}")
                 head = self.git("rev-parse", "HEAD")
                 self.assertIsNone(self.decide(self.push(head, ref), "push", ref=ref, event_sha=head))
 
@@ -246,7 +253,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         ref = "refs/heads/" + QUEUE
         event = self.push(head, ref)
         self.assertEqual(self.decide(event, "push", ref=ref, event_sha=head,
-                                     actor="mergify[bot]"), "project-candidate-push")
+                                     actor="mergify[bot]"), f"{SCOPE}-candidate-push")
         self.assertIsNone(self.decide(event, "push", ref=ref, event_sha=head))
         self.responses[f"commits/{self.heads[0]}/status"]["statuses"][0]["state"] = "failure"
         self.assertIsNone(self.decide(event, "push", ref=ref, event_sha=head, actor="mergify[bot]"))
@@ -277,7 +284,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         event["action"] = "edited"
         for actor in ("sourcery-ai[bot]", "review-helper[bot]", "maintainer"):
             with self.subTest(actor=actor):
-                self.assertEqual(self.decide(event, actor=actor), "project-candidate-pr")
+                self.assertEqual(self.decide(event, actor=actor), f"{SCOPE}-candidate-pr")
         self.responses["pulls/10"]["body"] = "Stack-CI: wave-widget-sync"
         self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
 
@@ -329,11 +336,11 @@ class ProjectEfficiencyTests(unittest.TestCase):
         self.assertEqual(self.responses["pulls/10"]["state"], "open")
         for actor in ("mergify[bot]", "sourcery-ai[bot]", "maintainer"):
             with self.subTest(actor=actor):
-                self.assertEqual(self.decide(event, actor=actor), "project-candidate-pr")
+                self.assertEqual(self.decide(event, actor=actor), f"{SCOPE}-candidate-pr")
 
     def test_dequeued_candidate_requires_exact_success_and_complete_jobs(self):
         event = self.closed_candidate()
-        self.assertEqual(self.decide(event, actor="sourcery-ai[bot]"), "project-candidate-pr")
+        self.assertEqual(self.decide(event, actor="sourcery-ai[bot]"), f"{SCOPE}-candidate-pr")
         original = deepcopy(self.responses)
         endpoint = self.candidate_runs_endpoint()
         for field, value in (("head_sha", "f" * 40), ("head_branch", "mergify/merge-queue/ffffffffff"),
@@ -365,7 +372,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
         self.responses = original
         self.git("switch", "-q", "--detach", self.base)
-        new_main = self.commit("scripts/project-stack-ci.py", "# new policy\n")
+        new_main = self.commit(POLICY_FILE, "# new policy\n")
         self.assertIsNone(self.decide(event, main=new_main, actor="sourcery-ai[bot]"))
 
     def test_candidate_editor_exception_does_not_authorize_queue_or_main_push(self):
@@ -394,13 +401,13 @@ class ProjectEfficiencyTests(unittest.TestCase):
             with patch.dict(function.__globals__, git=lambda *_a: self.base.encode(),
                             decision=lambda *args: decide(*args, request=self.request, run_git=self.run_git)):
                 function(env)
-            self.assertEqual(output.read_text(), f"skip_project={'false' if missing else 'true'}\n")
+            self.assertEqual(output.read_text(), f"skip_{SCOPE}={'false' if missing else 'true'}\n")
 
     def test_candidate_draft_pr_checks_exact_batch_instead_of_branch_only_skip(self):
         self.chain()
         self.candidate()
         event = self.candidate_event()
-        self.assertEqual(self.decide(event, actor="mergify[bot]"), "project-candidate-pr")
+        self.assertEqual(self.decide(event, actor="mergify[bot]"), f"{SCOPE}-candidate-pr")
         self.assertIsNone(self.decide(event))
         self.responses["pulls/10"]["body"] = "Stack-CI: wave-widget-sync"
         self.assertIsNone(self.decide(event, actor="mergify[bot]"))
@@ -412,7 +419,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         landing = self.landed(3)
         self.responses["pulls/99"]["state"] = "closed"
         event["action"] = "edited"
-        self.assertEqual(self.decide(event, main=landing["after"], actor="mergify[bot]"), "project-candidate-pr")
+        self.assertEqual(self.decide(event, main=landing["after"], actor="mergify[bot]"), f"{SCOPE}-candidate-pr")
         self.responses[POLICY["RUNS_ENDPOINT"]]["workflow_runs"][0]["conclusion"] = "failure"
         self.assertIsNone(self.decide(event, main=landing["after"], actor="mergify[bot]"))
 
@@ -422,7 +429,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
         for count in range(1, 4):
             event = self.landed(count)
             with self.subTest(count=count):
-                self.assertEqual(self.landing_decision(event), "tested-project-landing")
+                self.assertEqual(self.landing_decision(event), f"tested-{SCOPE}-landing")
 
     def test_landing_requires_successful_exact_candidate_and_all_platforms(self):
         self.chain()
@@ -510,16 +517,21 @@ class ProjectEfficiencyTests(unittest.TestCase):
         self.evidence()
         event = self.landed(1)
         self.git("switch", "-q", "--detach", event["after"])
-        main = self.commit("scripts/project-stack-ci.py", "# changed policy\n")
+        main = self.commit(POLICY_FILE, "# changed policy\n")
         self.assertIsNone(self.decide(event, "push", main=main, actor="mergify[bot]",
                                      ref="refs/heads/main", event_sha=event["after"]))
 
     def test_all_incomplete_project_aggregate_results_fail(self):
         gate = POLICY["COMMON"]["verify_results"]
-        for result in ("failure", "cancelled", "skipped", ""):
-            with self.subTest(result=result), self.assertRaises(ValueError):
-                gate({"GITHUB_EVENT_NAME": "push", "SCOPE": "project", "VERIFIED": "success",
-                      "PROJECT": result, "WAVE_WIDGET_SYNC": "skipped"})
+        parity = runpy.run_path(str(ROOT / "devcontainer.test/test-helper-coverage-parity.py"))
+        variables = (["PROJECT"] if SCOPE == "project" else
+                     [job[2] for job in parity["JOBS"].values()])
+        for variable in variables:
+            for result in ("failure", "cancelled", "skipped", ""):
+                env = parity["gate_env"](scope=SCOPE)
+                env[variable] = result
+                with self.subTest(variable=variable, result=result), self.assertRaises(ValueError):
+                    gate(env)
 
     def test_missing_api_git_and_unknown_events_keep_full_checks(self):
         event = self.chain()
@@ -537,32 +549,34 @@ class ProjectEfficiencyTests(unittest.TestCase):
         env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": REPO,
                "GITHUB_EVENT_PATH": str(event_file), "GITHUB_OUTPUT": str(output)}
         function(env)
-        self.assertIn("skip_project=false\n", output.read_text())
+        self.assertIn(f"skip_{SCOPE}=false\n", output.read_text())
         event_file.write_text(json.dumps({}))
-        for reason in (None, "project-pr"):
+        for reason in (None, f"{SCOPE}-pr"):
             output.write_text("")
             with patch.dict(function.__globals__, git=lambda *_a: b"a" * 40,
                             decision=lambda *_a, **_k: reason):
                 function(env)
-            self.assertIn(f"skip_project={'true' if reason else 'false'}\n", output.read_text())
+            self.assertIn(f"skip_{SCOPE}={'true' if reason else 'false'}\n", output.read_text())
 
     def test_workflow_wiring_preserves_fail_safe_platforms_and_scope_isolation(self):
-        workflow = (ROOT / ".github/workflows/project-command.yml").read_text()
-        self.assertIn("ref: main", workflow)
-        self.assertIn("persist-credentials: false", workflow)
-        self.assertIn("python3 -I scripts/project-stack-ci.py", workflow)
-        self.assertIn("actions: read", workflow)
-        self.assertIn("needs: classify", workflow)
-        self.assertIn("needs.classify.result != 'success' || needs.classify.outputs.skip_project != 'true'", workflow)
-        self.assertIn("os: [ubuntu-latest, macos-latest]", workflow)
-        self.assertIn("types: [opened, reopened, synchronize, edited, ready_for_review]", workflow)
+        files = (["project-command.yml"] if SCOPE == "project" else
+                 ["speckit-git-bash.yml", "speckit-git-powershell.yml"])
+        for file in files:
+            workflow = (ROOT / ".github/workflows" / file).read_text()
+            if SCOPE == "project":
+                self.assertIn("os: [ubuntu-latest, macos-latest]", workflow)
+            for fragment in ("ref: main", "persist-credentials: false",
+                             f"python3 -I {POLICY_FILE}", "actions: read", "needs: classify",
+                             f"needs.classify.result != 'success' || needs.classify.outputs.skip_{SCOPE} != 'true'",
+                             "types: [opened, reopened, synchronize, edited, ready_for_review]"):
+                self.assertIn(fragment, workflow)
         heavy = (ROOT / ".github/workflows/stack-candidate-heavy.yml").read_text()
         self.assertIn("os: [ubuntu-latest, ubuntu-24.04, macos-latest]", heavy)
         self.assertIn("bash -n scripts/project scripts/onp scripts/new-project.sh scripts/install-workbench-commands.sh scripts/setup-workbenches.sh setup.sh", heavy)
         fast = (ROOT / ".github/workflows/stack-pr-fast.yml").read_text()
-        self.assertIn("python3 devcontainer.test/test-project-stack-ci.py", fast)
+        self.assertIn(f"python3 devcontainer.test/test-{SCOPE}-stack-ci.py", fast)
         wave = (ROOT / ".github/workflows/credential-recovery.yml").read_text()
-        self.assertNotIn("skip_project", wave)
+        self.assertNotIn(f"skip_{SCOPE}", wave)
         for result in ("success", "failure", "cancelled", "skipped", ""):
             for value in ("true", "false", "", "True", "unknown"):
                 self.assertEqual(result != "success" or value != "true",

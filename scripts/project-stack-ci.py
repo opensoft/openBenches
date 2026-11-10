@@ -163,8 +163,12 @@ def tested_landing(event, main, repo, request, run_git):
 
 def candidate_pr(event, main, repo, actor, request, run_git):
     """Mergify's draft PR is another duplicate event, not an author PR."""
-    if actor != "mergify[bot]" or type(event["number"]) is not int:
+    if (type(event["number"]) is not int or event["number"] < 1
+            or event["action"] not in ("opened", "reopened", "synchronize", "edited", "ready_for_review")
+            or (event["action"] != "edited" and actor != "mergify[bot]")):
         return False
+    # A metadata editor is not the creator. Prove live origin and the exact
+    # snapshot/batch below; do not grant an exception to other editor actions.
     expected = event["pull_request"]
     pr = request(repo, f"pulls/{event['number']}")
     if (pr["number"] != event["number"] or pr["state"] not in ("open", "closed")
@@ -184,7 +188,11 @@ def candidate_pr(event, main, repo, actor, request, run_git):
             pass  # A member might have just landed; try exact completed evidence.
     # A closed draft is not itself merged. Require its successful exact run,
     # not an unconditional prefix/actor exemption for late metadata.
-    for run in request(repo, RUNS_ENDPOINT)["workflow_runs"][:20]:
+    # The success-filtered global index can lag a completed run. This lookup
+    # binds discovery to the known candidate; successful_run still proves success.
+    endpoint = ("actions/workflows/stack-candidate-heavy.yml/runs?head_sha="
+                f"{candidate}&event=push&per_page=20")
+    for run in request(repo, endpoint)["workflow_runs"][:20]:
         if (successful_run(run, repo) and run["head_sha"] == candidate
                 and run["head_branch"] == pr["head"]["ref"]):
             run_git("diff", "--quiet", candidate, main, "--", *POLICY_PATHS)

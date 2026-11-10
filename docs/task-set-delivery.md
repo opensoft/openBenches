@@ -189,6 +189,16 @@ The trusted-main project classifier can omit only the duplicate
   complete modified-file allowlist, and a matching regular-content merge already
   reachable from trusted main. Other closed events do not get this exception.
 
+For candidate PR `edited` events, the metadata editor can be a maintainer or
+another bot: the live creator must still be Mergify, and exact head/base, repo,
+scope and batch proof must match. Non-metadata actions retain the Mergify actor
+requirement. A closed/dequeued draft uses an exact-head workflow lookup bounded
+to 20 push runs, without a server-side success filter; the policy itself still
+requires completed success, every expected job and unchanged policy. Dequeue
+alone is not an exemption. Missing or unsuccessful proof, closed-unmerged
+members and real or uncertain input changes retain full checks. This changes
+neither queue admission nor push/landing actor guards and never requeues work.
+
 Qualified author PRs keep focused `openbenches-pr-fast`, policy regressions,
 applicable CodeQL, and exact-head review. The **single** combined-candidate
 heavy workflow still verifies admission and runs every project platform job.

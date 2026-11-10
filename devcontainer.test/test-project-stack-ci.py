@@ -91,6 +91,7 @@ class ProjectEfficiencyTests(unittest.TestCase):
             "conclusion": "success",
         }
         self.responses[POLICY["RUNS_ENDPOINT"]] = {"workflow_runs": [run]}
+        self.responses[self.candidate_runs_endpoint()] = self.responses[POLICY["RUNS_ENDPOINT"]]
         jobs = [{"name": name, "status": "completed", "conclusion": "success",
                  "head_sha": self.candidate_sha, "completed_at": "2026-11-10T12:00:00Z"}
                 for name in POLICY["REQUIRED_JOBS"]]
@@ -257,6 +258,144 @@ class ProjectEfficiencyTests(unittest.TestCase):
         self.responses["pulls/99"] = pr
         return {"action": "opened", "number": 99, "pull_request": deepcopy(pr)}
 
+    def candidate_runs_endpoint(self):
+        return ("actions/workflows/stack-candidate-heavy.yml/runs?head_sha="
+                f"{self.candidate_sha}&event=push&per_page=20")
+
+    def closed_candidate(self):
+        self.chain()
+        self.evidence()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        self.responses["pulls/99"].update(state="closed", merged=False)
+        return event
+
+    def test_third_party_candidate_edits_use_origin_and_exact_batch_proof(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        for actor in ("sourcery-ai[bot]", "review-helper[bot]", "maintainer"):
+            with self.subTest(actor=actor):
+                self.assertEqual(self.decide(event, actor=actor), "project-candidate-pr")
+        self.responses["pulls/10"]["body"] = "Stack-CI: wave-widget-sync"
+        self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+
+    def test_third_party_non_metadata_events_keep_full_checks(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        for action in ("opened", "reopened", "synchronize", "ready_for_review", "closed", "labeled", ""):
+            with self.subTest(action=action):
+                self.assertIsNone(self.decide({**event, "action": action}, actor="sourcery-ai[bot]"))
+
+    def test_candidate_metadata_cannot_trust_editor_prefix_or_stale_snapshot(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        original = deepcopy(self.responses)
+        for field, value in (("user", {"login": "sourcery-ai[bot]"}), ("number", 98),
+                             ("state", "unknown")):
+            with self.subTest(field=field):
+                self.responses = deepcopy(original)
+                self.responses["pulls/99"][field] = value
+                self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+        self.responses = original
+        for ref, field, value in (("head", "sha", "f" * 40), ("base", "sha", "f" * 40),
+                                  ("head", "ref", "mergify/merge-queue/ffffffffff"),
+                                  ("base", "ref", "other"),
+                                  ("head", "repo", {"full_name": "other/fork"})):
+            with self.subTest(ref=ref, field=field):
+                changed = deepcopy(event)
+                changed["pull_request"][ref][field] = value
+                self.assertIsNone(self.decide(changed, actor="sourcery-ai[bot]"))
+        self.responses[f"commits/{self.heads[0]}/status"]["statuses"][0]["state"] = "failure"
+        self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+
+    def test_third_party_edit_of_mixed_candidate_stays_full(self):
+        self.chain(mixed=True)
+        self.candidate()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+
+    def test_dequeued_metadata_uses_exact_run_when_success_list_omits_it(self):
+        event = self.closed_candidate()
+        self.responses.pop(POLICY["RUNS_ENDPOINT"])
+        # The event snapshot was open, but live readback is closed/unmerged;
+        # the member PRs remain open. This must not imply anything landed.
+        self.assertEqual(event["pull_request"]["state"], "open")
+        self.assertEqual(self.responses["pulls/10"]["state"], "open")
+        for actor in ("mergify[bot]", "sourcery-ai[bot]", "maintainer"):
+            with self.subTest(actor=actor):
+                self.assertEqual(self.decide(event, actor=actor), "project-candidate-pr")
+
+    def test_dequeued_candidate_requires_exact_success_and_complete_jobs(self):
+        event = self.closed_candidate()
+        self.assertEqual(self.decide(event, actor="sourcery-ai[bot]"), "project-candidate-pr")
+        original = deepcopy(self.responses)
+        endpoint = self.candidate_runs_endpoint()
+        for field, value in (("head_sha", "f" * 40), ("head_branch", "mergify/merge-queue/ffffffffff"),
+                             ("conclusion", "failure"), ("status", "in_progress"), ("run_attempt", 2),
+                             ("path", ".github/workflows/other.yml"), ("event", "pull_request"),
+                             ("actor", {"login": "sourcery-ai[bot]"}),
+                             ("head_repository", {"full_name": "other/fork"})):
+            with self.subTest(field=field):
+                self.responses = deepcopy(original)
+                self.responses[endpoint]["workflow_runs"][0][field] = value
+                self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+        for state in ("failure", "cancelled", "skipped", ""):
+            for name in POLICY["REQUIRED_JOBS"]:
+                with self.subTest(state=state, job=name):
+                    self.responses = deepcopy(original)
+                    jobs = self.responses["actions/runs/123/jobs?per_page=100"]["jobs"]
+                    next(job for job in jobs if job["name"] == name)["conclusion"] = state
+                    self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+        for missing in (endpoint, "actions/runs/123/jobs?per_page=100", "pulls/10"):
+            with self.subTest(missing=missing):
+                self.responses = deepcopy(original)
+                self.responses.pop(missing)
+                self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+
+    def test_dequeued_policy_drift_or_unmerged_closed_member_stays_full(self):
+        event = self.closed_candidate()
+        original = deepcopy(self.responses)
+        self.responses["pulls/10"].update(state="closed", merged=False)
+        self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+        self.responses = original
+        self.git("switch", "-q", "--detach", self.base)
+        new_main = self.commit("scripts/project-stack-ci.py", "# new policy\n")
+        self.assertIsNone(self.decide(event, main=new_main, actor="sourcery-ai[bot]"))
+
+    def test_candidate_editor_exception_does_not_authorize_queue_or_main_push(self):
+        self.chain()
+        self.evidence()
+        for ref in ("refs/heads/" + QUEUE, "refs/heads/main"):
+            event = self.push(self.candidate_sha, ref)
+            self.assertIsNone(self.decide(event, "push", ref=ref, event_sha=self.candidate_sha,
+                                         actor="sourcery-ai[bot]"))
+
+    def test_real_classifier_outputs_skip_only_for_proven_candidate_edit(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        event_file, output = self.repo / "candidate-event.json", self.repo / "outputs"
+        event_file.write_text(json.dumps(event))
+        function, decide = POLICY["classify"], POLICY["decision"]
+        env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": REPO,
+               "GITHUB_ACTOR": "sourcery-ai[bot]", "GITHUB_EVENT_PATH": str(event_file),
+               "GITHUB_OUTPUT": str(output)}
+        for missing in (False, True):
+            output.write_text("")
+            if missing:
+                self.responses.pop("pulls/99")
+            with patch.dict(function.__globals__, git=lambda *_a: self.base.encode(),
+                            decision=lambda *args: decide(*args, request=self.request, run_git=self.run_git)):
+                function(env)
+            self.assertEqual(output.read_text(), f"skip_project={'false' if missing else 'true'}\n")
+
     def test_candidate_draft_pr_checks_exact_batch_instead_of_branch_only_skip(self):
         self.chain()
         self.candidate()
@@ -331,7 +470,14 @@ class ProjectEfficiencyTests(unittest.TestCase):
             wrong = self.git("commit-tree", self.git("rev-parse", tree + "^{tree}"),
                              "-p", parents[0], "-p", parents[1], "-m", "wrong landing")
             bad_event = self.push(wrong, "refs/heads/main", parents[0])
-            self.assertIsNone(self.landing_decision(bad_event))
+            pr = self.responses[f"pulls/{10 + self.heads.index(parents[1])}"]
+            original_merge = pr.get("merge_commit_sha")
+            pr["merge_commit_sha"] = wrong  # Do not reject before checking the tree.
+            with patch.object(self, "run_git", wraps=self.run_git) as run_git:
+                self.assertIsNone(self.landing_decision(bad_event))
+                if parents == [self.actual[0], self.heads[1]]:
+                    run_git.assert_any_call("rev-parse", wrong + "^{tree}")
+            pr["merge_commit_sha"] = original_merge
 
     def test_missing_duplicate_truncated_jobs_and_api_errors_retain_full_landing(self):
         self.chain()

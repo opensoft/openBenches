@@ -654,6 +654,8 @@ function Invoke-GitWorktreePorcelain {
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    # Classify only the known Git diagnostic, independently of the caller locale.
+    $startInfo.Environment['LC_ALL'] = 'C'
     $arguments = @('worktree', 'list', '--porcelain')
     if ($NullDelimited) {
         $arguments += '-z'
@@ -851,6 +853,22 @@ function Assert-WorktreeCandidateValid {
 function Find-WorktreePathForBranch {
     param([string]$BranchName)
 
+    function Read-WorktreeSnapshot {
+        param([switch]$NullDelimited)
+
+        # Git checks "locked" before reading it; another creator can remove the
+        # marker between those operations. Retry only that read race, never
+        # arbitrary Git failures or malformed successful output.
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            $snapshot = Invoke-GitWorktreePorcelain -NullDelimited:$NullDelimited
+            if ($attempt -eq 3 -or $snapshot.ExitCode -ne 128 -or
+                $snapshot.Stderr -cnotmatch '\Afatal: failed to read ''[^\r\n]+[/\\]worktrees[/\\][^/\\\r\n]+[/\\]locked'': No such file or directory\r?\n?\z') {
+                return $snapshot
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+
     $newRecord = {
         param([string]$Path)
         return [ordered]@{
@@ -900,7 +918,7 @@ function Find-WorktreePathForBranch {
     }
 
     $records = [System.Collections.Generic.List[object]]::new()
-    $result = Invoke-GitWorktreePorcelain -NullDelimited
+    $result = Read-WorktreeSnapshot -NullDelimited
     if ($result.ExitCode -eq 0) {
         if ($result.Stdout.Length -ne 0) {
             $recordTerminator = "{0}{0}" -f [char]0
@@ -938,7 +956,7 @@ function Find-WorktreePathForBranch {
             }
         }
     } elseif ($result.ExitCode -eq 129) {
-        $result = Invoke-GitWorktreePorcelain
+        $result = Read-WorktreeSnapshot
         if ($result.ExitCode -ne 0) {
             throw "Git worktree line-porcelain fallback failed with exit code $($result.ExitCode): $($result.Stderr.Trim())"
         }

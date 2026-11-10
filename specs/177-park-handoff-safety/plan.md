@@ -4,7 +4,7 @@ Status: draft commissioned implementation
 
 ## Summary
 
-Implement [the governed change](../../openspec/changes/fix-park-handoff-integrity/proposal.md) in four ordered task-set PRs, including fresh resume and pending-publication findings, preserving existing public formats and merge policy.
+Implement [the governed change](../../openspec/changes/fix-park-handoff-integrity/proposal.md) in five ordered task-set PRs, including fresh resume, pending-publication and stale receiving-workspace findings, preserving existing public formats and merge policy.
 
 ## Technical Context
 
@@ -12,7 +12,7 @@ Bash 3.2-compatible shared templates, Git 2.34.1-compatible commands, Python sta
 
 ## Constitution Check
 
-One set per PR, each with related tests and a focused command. SET-02 names SET-01 as predecessor and immediate base; SET-03 names SET-02; SET-04 names SET-03. CI/review bind exact heads; no queue bypass or pilot scope expansion. The merged candidate and release gates are distinct from source validation. Owner ratification/archive is not invented.
+One set per PR, each with related tests and a focused command. Each SET-02 through SET-05 names the preceding set as predecessor and immediate base. CI/review bind exact heads; no queue bypass or pilot scope expansion. The merged candidate and release gates are distinct from source validation. Owner ratification/archive is not invented.
 
 ## Design
 
@@ -20,7 +20,7 @@ One set per PR, each with related tests and a focused command. SET-02 names SET-
 
 ## Analysis and validation
 
-FR-001/002 map to SET-01 refusal and no-write fixtures. FR-003/004 map to SET-02 subset, gone-feature, retry, and full-reconciliation fixtures. FR-005 maps to SET-03 changed/unverifiable-origin refusals and repeat resume. FR-006 maps to SET-04 unavailable-origin retry and exhausted-push fixtures. The complete feature, compatibility and bootstrap suites catch shared regressions. Downstream openMFA compares exact copied shared bytes and reruns its fixture suite and CI. Follow the single [task list](tasks.md).
+FR-001/002 map to SET-01 refusal and no-write fixtures. FR-003/004 map to SET-02 subset, gone-feature, retry, and full-reconciliation fixtures. FR-005 maps to SET-03 changed/unverifiable-origin refusals and repeat resume. FR-006 maps to SET-04 unavailable-origin retry and exhausted-push fixtures. FR-007 maps to SET-05 receiving-clone, dirty/conflicting/unavailable refresh and dry-run fixtures. The complete feature, compatibility and bootstrap suites catch shared regressions. Downstream openMFA compares exact copied shared bytes and reruns its fixture suite and CI. Follow the single [task list](tasks.md).
 
 ## Delivery
 

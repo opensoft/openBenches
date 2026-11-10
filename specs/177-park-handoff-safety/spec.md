@@ -24,6 +24,10 @@ An existing worktree is not proof that the remote still matches the handoff. Ver
 
 A manifest committed locally but absent from origin is not a completed handoff. Retrying unchanged feature state must publish that pending commit or report failure again, without creating an empty commit.
 
+### US5 — Receive the published handoff (P1)
+
+A receiving workstation with an older workspace clone must read the latest published manifest. Refresh under the mutex before reading; refuse unavailable origin or unsafe synchronization while preserving local work. Dry-run remains a cached preview.
+
 ## Requirements
 
 - FR-001: Validate repository/worktree ownership and expected branch for every selected leg before any commit.
@@ -32,6 +36,7 @@ A manifest committed locally but absent from origin is not a completed handoff. 
 - FR-004: Full park retains its existing removal behavior, with unchanged manifest schema and delivery/authority boundaries.
 - FR-005: Resume verifies origin before existing-worktree acceptance or WIP reset, while unchanged-origin repeat calls preserve restored work.
 - FR-006: Park retries pending manifest publication independently of content changes and reports failed or exhausted publication as unsuccessful while retaining local evidence.
+- FR-007: Active resume refreshes the receiving workspace before reading its manifest, safely refusing unavailable/dirty/conflicting refreshes and releasing its mutex; dry-run leaves the clone unchanged.
 
 ## Key Entities
 

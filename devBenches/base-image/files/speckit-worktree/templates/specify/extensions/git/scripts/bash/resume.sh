@@ -198,6 +198,19 @@ fi
 MANIFEST_RELATIVE="workspaces/$MANIFEST_ORG/$MANIFEST_NAME.yaml"
 MANIFEST_PATH="$WORKSPACE_PATH/$MANIFEST_RELATIVE"
 
+# The receiving clone may predate the published handoff. Refresh before
+# reading, under the same mutex as park. Dry-run keeps its cached preview.
+if [ "$DRY_RUN" != true ]; then
+    if ! workspace_lock "$WORKSPACE_PATH"; then
+        >&2 echo "Error: another park or resume holds '$WORKSPACE_PATH/.workspaces.lock'; nothing was resumed."
+        exit 2
+    fi
+    trap workspace_unlock EXIT
+    if ! workspace_sync "$WORKSPACE_PATH" resume; then
+        exit 2
+    fi
+fi
+
 # RR7 — no entry for this project.
 if ! workspace_load_project "$MANIFEST_PATH" "$PROJECT_ID"; then
     >&2 echo "Error: $WORKSPACE_PATH/workspaces/$MANIFEST_ORG/ has no entry for project '$PROJECT_ID'; nothing was resumed."
@@ -367,6 +380,7 @@ _git_worktree_create_temp_file || {
 HEADER_FILE="$_GIT_WORKTREE_OUTPUT_FILE"
 # shellcheck disable=SC2329  # an EXIT trap handler
 cleanup() {
+    workspace_unlock
     [ -n "${RECORD_FILE:-}" ] && rm -f "$RECORD_FILE" 2>/dev/null || true
     [ -n "${HEADER_FILE:-}" ] && rm -f "$HEADER_FILE" 2>/dev/null || true
     return 0

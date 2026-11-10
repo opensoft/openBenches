@@ -294,9 +294,94 @@ class ParkHandoffTests(unittest.TestCase):
         self.assertEqual(self.git(self.workspace_origin,"rev-parse","refs/heads/main"),remote_before)
         self.assertIn("branch: 001-one",self.manifest.read_text())
 
-    def resume(self):
+    def receiver_workspace(self):
+        receiver=self.base/"receiver-workspace"
+        self.git(self.base,"clone","-q","-b","main",str(self.workspace_origin),str(receiver))
+        self.identity(receiver)
+        return receiver
+
+    def use_receiver(self,receiver):
+        self.workspace=receiver
+        self.manifest=receiver/"workspaces/dummy/fixture-project.yaml"
+
+    def test_receiving_workspace_refreshes_before_reading_manifest(self):
+        receiver=self.receiver_workspace()
+        branch,trees=self.parked_wip()
+        for role,tree in trees.items():
+            self.git(self.root/role,"worktree","remove",str(tree))
+        self.use_receiver(receiver)
+        self.assertFalse(self.manifest.exists())
+        result=self.resume()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(self.git(receiver,"rev-parse","HEAD"),
+                         self.git(self.workspace_origin,"rev-parse","refs/heads/main"))
+        for role,tree in trees.items():
+            self.assertEqual((tree/"pending.txt").read_text(),role+" work")
+        self.assertFalse((receiver/".workspaces.lock").exists())
+
+    def test_receiving_workspace_preserves_dirty_content_on_refresh_refusal(self):
+        receiver=self.receiver_workspace()
+        _,trees=self.parked_wip()
+        self.use_receiver(receiver)
+        before=self.git(receiver,"rev-parse","HEAD")
+        heads={role:self.git(tree,"rev-parse","HEAD") for role,tree in trees.items()}
+        (receiver/"README.md").write_text("unfinished receiver work")
+        result=self.resume()
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        self.assertIn("workspace-dirty",result.stderr)
+        self.assertEqual((receiver/"README.md").read_text(),"unfinished receiver work")
+        self.assertEqual(self.git(receiver,"rev-parse","HEAD"),before)
+        for role,tree in trees.items():
+            self.assertEqual(self.git(tree,"rev-parse","HEAD"),heads[role])
+        self.assertFalse((receiver/".workspaces.lock").exists())
+
+    def test_receiving_workspace_aborts_conflicting_refresh(self):
+        receiver=self.receiver_workspace()
+        _,trees=self.parked_wip()
+        self.use_receiver(receiver)
+        self.manifest.parent.mkdir(parents=True)
+        self.manifest.write_text("receiver conflicting record\n")
+        self.git(receiver,"add","workspaces")
+        self.git(receiver,"commit","-qm","receiver record")
+        before=self.git(receiver,"rev-parse","HEAD")
+        heads={role:self.git(tree,"rev-parse","HEAD") for role,tree in trees.items()}
+        result=self.resume()
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        self.assertIn("rebase was aborted",result.stderr)
+        self.assertEqual(self.git(receiver,"rev-parse","HEAD"),before)
+        self.assertEqual(self.manifest.read_text(),"receiver conflicting record\n")
+        self.assertEqual(self.git(receiver,"status","--porcelain"),"")
+        for role,tree in trees.items():
+            self.assertEqual(self.git(tree,"rev-parse","HEAD"),heads[role])
+        self.assertFalse((receiver/".git/rebase-merge").exists())
+        self.assertFalse((receiver/".workspaces.lock").exists())
+
+    def test_receiving_workspace_refuses_unavailable_origin(self):
+        _,trees=self.parked_wip()
+        before={role:self.git(tree,"rev-parse","HEAD") for role,tree in trees.items()}
+        self.git(self.workspace,"remote","set-url","origin",str(self.base/"missing-workspace.git"))
+        result=self.resume()
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        self.assertIn("could not refresh",result.stderr)
+        for role,tree in trees.items():
+            self.assertEqual(self.git(tree,"rev-parse","HEAD"),before[role])
+        self.assertFalse((self.workspace/".workspaces.lock").exists())
+
+    def test_receiving_workspace_dry_run_leaves_stale_clone_unchanged(self):
+        receiver=self.receiver_workspace()
+        self.parked_wip()
+        self.use_receiver(receiver)
+        before=self.git(receiver,"rev-parse","HEAD")
+        result=self.resume("--dry-run")
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        self.assertEqual(self.git(receiver,"rev-parse","HEAD"),before)
+        self.assertFalse(self.manifest.exists())
+        self.assertFalse((receiver/".git/FETCH_HEAD").exists())
+        self.assertFalse((receiver/".workspaces.lock").exists())
+
+    def resume(self,*args):
         return self.run_command(self.root,"bash",str(Path(".specify")/SCRIPTS/"resume.sh"),
-                                "--json","--workspace",str(self.workspace),check=False)
+                                "--json","--workspace",str(self.workspace),*args,check=False)
 
     def parked_wip(self):
         branch="001-one"

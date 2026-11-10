@@ -865,7 +865,9 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertEqual(result.returncode, 2)
         self.assertFalse(executed.exists())
 
-        target.unlink()
+        unowned_bin = self.base / "unowned-bin"
+        unowned_bin.mkdir()
+        target.rename(unowned_bin / "project")
         self.assertEqual(self.install(), 0)
         target.chmod(0o555)
         (self.bin / ".workbenches-project.json").chmod(0o444)
@@ -882,6 +884,36 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
             env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["new", "FromDiscovery"])
+
+        env["PATH"] = str(unowned_bin) + os.pathsep + env["PATH"]
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "new", "PastUnownedPathEntry"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["new", "PastUnownedPathEntry"])
+        self.assertFalse(executed.exists())
+
+        home = self.base / "fallback-home"
+        fallback_bin = home / ".local/bin"
+        self.assertEqual(installer.main([
+            *self.args, "--bin-dir", str(fallback_bin), "--source", str(self.source),
+        ]), 0)
+        env.update(HOME=str(home), PATH=os.environ["PATH"])
+        self.discovery.write_text(str(unowned_bin) + "\n")
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "new", "PastUnownedDiscovery"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["new", "PastUnownedDiscovery"])
+        self.assertFalse(executed.exists())
+
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "new", "NoOverrideFallback"],
+            env={**env, "OPENREPOPROJECT_BIN_DIR": str(unowned_bin)},
+            text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("project is not installed or is not owned", result.stderr)
+        self.assertFalse(executed.exists())
 
     def test_forwarder_expands_tilde_and_rejects_relative_configuration(self):
         home = self.base / "forwarder-home"
@@ -901,6 +933,12 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
             env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["FromTilde"])
+
+        result = subprocess.run(
+            ["bash", "scripts/project", "FromRelativeCheckout"],
+            cwd=ROOT, env={**env, "CDPATH": str(ROOT)}, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["FromRelativeCheckout"])
 
         env["OPENREPOPROJECT_BIN_DIR"] = "relative/bin"
         result = subprocess.run(
@@ -928,6 +966,43 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
             env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["FromDiscoveryTilde"])
+
+        tilde_discovery.write_text(str(tilde_bin))
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "FromUnterminatedPointer"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["FromUnterminatedPointer"])
+
+        fallback_bin = home / ".local/bin"
+        self.assertEqual(installer.main([
+            *self.args, "--bin-dir", str(fallback_bin), "--source", str(self.source),
+        ]), 0)
+        tilde_discovery.write_text("")
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "FromDefaultWithEmptyPointer"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["FromDefaultWithEmptyPointer"])
+
+        # A linked pointer must be ignored, not parsed as a real pointer.
+        tilde_discovery.unlink()
+        linked_pointer = home / "linked-pointer"
+        linked_pointer.write_text("relative/bin\n")
+        tilde_discovery.symlink_to(linked_pointer)
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "FromDefaultWithLinkedPointer"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["FromDefaultWithLinkedPointer"])
+        tilde_discovery.unlink()
+        tilde_discovery.write_text("relative/bin\n")
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "unsafe"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("persisted project install directory must be an absolute path",
+                      result.stderr)
 
     def test_direct_project_launch_verifies_the_separate_payload(self):
         self.assertEqual(self.install(), 0)

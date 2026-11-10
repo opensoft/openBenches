@@ -111,21 +111,54 @@ def wave_pr_qualified(event, main, repo, request=github, run_git=git):
         return False
 
 
+def merged_wave_metadata(event, repo, request=github):
+    """Ignore only delayed edits to an already-merged, opted-in Wave PR."""
+    try:
+        number = event["number"]
+        if event["action"] != "edited" or type(number) is not int or number < 1:
+            return False
+        expected = event["pull_request"]["head"]
+        pr = request(repo, f"pulls/{number}")
+        if (pr["number"] != number or pr["state"] != "closed" or pr["merged"] is not True
+                or pr["head"]["sha"] != sha(expected["sha"])
+                or pr["head"]["ref"] != expected["ref"]
+                or expected["repo"]["full_name"].lower() != repo.lower()
+                or any(pr[ref]["repo"]["full_name"].lower() != repo.lower()
+                       for ref in ("head", "base"))
+                or pr["base"]["ref"] != "main"
+                or not re.fullmatch(r"ci/stack-wave-widget-sync/.+", pr["head"]["ref"])
+                or not re.search(r"(?m)^Stack-CI: wave-widget-sync[ \t\r]*$", pr["body"] or "")):
+            return False
+        sha(pr["merge_commit_sha"])
+        files = request(repo, f"pulls/{number}/files?per_page=100")
+        return (type(pr["changed_files"]) is int
+                and 1 <= pr["changed_files"] == len(files) <= len(WAVE_PATHS)
+                and all(file["filename"].encode() in WAVE_PATHS
+                        and file["status"] == "modified" for file in files))
+    except (KeyError, TypeError, ValueError, AttributeError, OSError, subprocess.SubprocessError):
+        return False
+
+
 def classify_wave(env):
     """Write only an explicit true result; every uncertainty retains full CI."""
     qualified = False
+    merged_metadata = False
     try:
         if env["GITHUB_EVENT_NAME"] == "pull_request" and env["GITHUB_REPOSITORY"] == "opensoft/openBenches":
             with open(env["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
                 event = json.load(source)
-            main = git("rev-parse", "HEAD").decode().strip()
-            qualified = wave_pr_qualified(event, main, env["GITHUB_REPOSITORY"])
+            merged_metadata = merged_wave_metadata(event, env["GITHUB_REPOSITORY"])
+            if not merged_metadata:
+                main = git("rev-parse", "HEAD").decode().strip()
+                qualified = wave_pr_qualified(event, main, env["GITHUB_REPOSITORY"])
     except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
         pass
     value = "true" if qualified else "false"
     with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         print(f"wave_only={value}", file=output)
-    print(f"Wave-only efficiency: {value}; full workstation checks: {not qualified}")
+        print(f"merged_metadata={'true' if merged_metadata else 'false'}", file=output)
+    print(f"Wave-only efficiency: {value}; full workstation checks: {not (qualified or merged_metadata)}")
+    print(f"Merged Wave metadata: {merged_metadata}")
 
 
 def candidate_scope(paths):

@@ -28,3 +28,18 @@ A full park without explicit selection SHALL retain its existing reconciliation 
 #### Scenario: Full reconciliation
 - WHEN a full park no longer discovers a previously recorded feature
 - THEN the existing full-park removal behavior remains in effect.
+
+### Requirement: Verify origin before every active resume path
+Resume SHALL verify that each origin branch is still at its recorded parked commit before accepting an existing worktree or resetting any parked WIP. Failed origin verification SHALL refuse without trusting a cached ref. An unchanged origin SHALL retain safe idempotent handling of already-resumed WIP.
+
+#### Scenario: Existing worktrees and a moved origin
+- WHEN either origin branch has moved after parking while both worktrees still exist
+- THEN resume refuses without resetting either leg or changing its dirty state.
+
+#### Scenario: Existing worktrees with unavailable origin
+- WHEN origin cannot be verified
+- THEN resume refuses without using the old tracking ref.
+
+#### Scenario: Already-resumed work and unchanged origin
+- WHEN the same workspace resumes twice against the unchanged parked remote
+- THEN the second call preserves the already-restored work without another reset.

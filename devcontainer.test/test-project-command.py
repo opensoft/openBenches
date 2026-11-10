@@ -935,6 +935,13 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["FromDiscoveryTilde"])
 
+        tilde_discovery.write_text(str(tilde_bin))
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/project"), "FromUnterminatedPointer"],
+            env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["FromUnterminatedPointer"])
+
         fallback_bin = home / ".local/bin"
         self.assertEqual(installer.main([
             *self.args, "--bin-dir", str(fallback_bin), "--source", str(self.source),

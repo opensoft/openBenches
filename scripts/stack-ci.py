@@ -13,8 +13,12 @@ HELPER_PATHS = {
     b"devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/bash/get-last-worktree.sh",
     HELPER_TEST.encode(),
 }
-HELPER_BRANCH = "ci/stack-helpers/"
-HELPER_APPROVAL = "openbenches-helper-reviewed"
+PROJECT_TEST = "devcontainer.test/test-project-command.py"
+PROJECT_PATHS = {b"scripts/project", PROJECT_TEST.encode()}
+STACK_SCOPES = {
+    "helper": (HELPER_PATHS, "ci/stack-helpers/", "openbenches-helper-reviewed"),
+    "project": (PROJECT_PATHS, "ci/stack-project/", "openbenches-project-reviewed"),
+}
 
 
 def git(*args):
@@ -46,34 +50,45 @@ def github(repo, endpoint):
     ))
 
 
-def verify_helper_batch(base, candidate, repo, request=github, run_git=git):
+def candidate_scope(paths):
+    for scope, (allowed, _, _) in STACK_SCOPES.items():
+        if paths and paths <= allowed:
+            return scope
+    if docs_paths(paths):
+        return "docs"
+    raise ValueError("Combined candidate is empty or outside the canary path allowlist")
+
+
+def verify_batch(base, candidate, repo, scope, request=github, run_git=git):
     """Match the candidate's ordered merge parents to one exact reviewed stack."""
+    allowed, branch_prefix, approval_context = STACK_SCOPES[scope]
+    label = scope.capitalize()
     commits = run_git("rev-list", "--first-parent", "--reverse", f"{base}..{candidate}")
     merges = commits.decode().splitlines()
     if not 2 <= len(merges) <= 3:
-        raise ValueError("Helper batch must contain two or three merge commits")
+        raise ValueError(f"{label} batch must contain two or three merge commits")
 
     previous, immediate_base, base_ref = base, base, "main"
     approved_stack = None
     for index, merge in enumerate(merges):
         parents = run_git("show", "-s", "--format=%P", merge).decode().split()
         if len(parents) != 2 or parents[0] != previous:
-            raise ValueError("Helper batch does not have the expected merge chain")
+            raise ValueError(f"{label} batch does not have the expected merge chain")
         head = sha(parents[1])
         statuses = request(repo, f"commits/{head}/status")["statuses"]
-        receipts = [s for s in statuses if s["context"] == HELPER_APPROVAL]
+        receipts = [s for s in statuses if s["context"] == approval_context]
         if len(receipts) != 1 or receipts[0]["state"] != "success":
-            raise ValueError(f"Missing successful helper approval for {head}")
+            raise ValueError(f"Missing successful {scope} approval for {head}")
         receipt = re.fullmatch(
             r"base=([0-9a-f]{40}) stack=([1-9]\d*(?:,[1-9]\d*){1,2})",
             receipts[0]["description"] or "",
         )
         if not receipt or receipt[1] != immediate_base:
-            raise ValueError(f"Helper approval does not match the immediate base for {head}")
+            raise ValueError(f"{label} approval does not match the immediate base for {head}")
         members = receipt[2].split(",")
         if (len(members) != len(merges) or len(set(members)) != len(members)
                 or (approved_stack is not None and members != approved_stack)):
-            raise ValueError("Helper approvals do not identify this exact batch")
+            raise ValueError(f"{label} approvals do not identify this exact batch")
         approved_stack = members
 
         number = members[index]
@@ -83,18 +98,18 @@ def verify_helper_batch(base, candidate, repo, request=github, run_git=git):
                 pr["base"]["repo"]["full_name"].lower() != repo.lower() or
                 pr["head"]["sha"] != head or pr["base"]["sha"] != immediate_base or
                 pr["base"]["ref"] != base_ref or
-                not pr["head"]["ref"].startswith(HELPER_BRANCH)):
-            raise ValueError(f"Helper PR #{number} no longer matches its reviewed head/base")
+                not pr["head"]["ref"].startswith(branch_prefix)):
+            raise ValueError(f"{label} PR #{number} no longer matches its reviewed head/base")
         if index and not re.search(
             rf"(?m)^Depends-On: #{members[index - 1]}[ \t\r]*$", pr["body"] or ""
         ):
-            raise ValueError(f"Helper PR #{number} is missing its predecessor")
+            raise ValueError(f"{label} PR #{number} is missing its predecessor")
         run_git("merge-base", "--is-ancestor", immediate_base, head)
         paths = changed_paths(immediate_base, head, run_git)
-        if not paths or not paths <= HELPER_PATHS:
-            raise ValueError(f"Helper PR #{number} touches a path outside the pilot")
+        if not paths or not paths <= allowed:
+            raise ValueError(f"{label} PR #{number} touches a path outside the pilot")
         previous, immediate_base, base_ref = merge, head, pr["head"]["ref"]
-    print(f"Verified helper batch: {', '.join('#' + n for n in approved_stack)}")
+    print(f"Verified {scope} batch: {', '.join('#' + n for n in approved_stack)}")
 
 
 def verify(mode, env):
@@ -113,16 +128,29 @@ def verify(mode, env):
     else:
         base = sha(git("rev-parse", "refs/remotes/origin/main").decode().strip())
         git("merge-base", "--is-ancestor", base, candidate)
-        paths = changed_paths(base, candidate)
-        if paths and paths <= HELPER_PATHS:
-            verify_helper_batch(base, candidate, env["GITHUB_REPOSITORY"])
-        elif not docs_paths(paths):
-            raise ValueError("Combined candidate is empty or outside the canary path allowlist")
+        scope = candidate_scope(changed_paths(base, candidate))
+        if scope in STACK_SCOPES:
+            verify_batch(base, candidate, env["GITHUB_REPOSITORY"], scope)
         tree = git("rev-parse", f"{candidate}^{{tree}}").decode().strip()
         print(f"Queue candidate: {candidate}; main: {base}; tested tree: {tree}")
     git("diff", "--check", base, candidate)
-    if mode == "fast" and changed_paths(base, candidate) & HELPER_PATHS:
+    if mode == "heavy":
+        if env.get("GITHUB_OUTPUT"):
+            with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                print(f"scope={scope}", file=output)
+        return
+    paths = changed_paths(base, candidate)
+    if paths & HELPER_PATHS:
         subprocess.run(["bash", HELPER_TEST], check=True)
+    if paths & PROJECT_PATHS:
+        subprocess.run(["bash", "-n", "scripts/project"], check=True)
+        subprocess.run([
+            sys.executable, PROJECT_TEST,
+            "InstallTests.test_forwarders_preserve_legacy_argv_and_exit_code",
+            "InstallTests.test_forwarder_refuses_unowned_command_and_finds_owned_path_entry",
+            "InstallTests.test_forwarder_expands_tilde_and_rejects_relative_configuration",
+            "InstallTests.test_checkout_forwarder_isolates_ownership_probe_from_pythonpath",
+        ], check=True)
 
 
 if __name__ == "__main__":

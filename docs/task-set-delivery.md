@@ -136,3 +136,22 @@ before testing the combined tree. If an input changes, dequeue the stack and
 remove its admission labels. Recheck the new inputs and post fresh receipts
 before queueing again. For a partial landing, stop and verify the target before
 retrying. Do not manually merge past a failed heavy run.
+
+## Project wrapper pilot
+
+For a separately approved stack, use `ci/stack-project/` branches and the
+ordinary same-repo dependency chain described above. Only `scripts/project`
+and `devcontainer.test/test-project-command.py` are eligible. Installer, setup,
+pin, and other component paths stay out of this queue.
+
+Use the same head/base evidence and `stack-ci-reviewed` label as the helper
+pilot, but post the exact-head status as `openbenches-project-reviewed`. Keep
+the same ordered PR list in each receipt and require focused wrapper fast CI,
+applicable exact-head review, and the existing component checks.
+
+On a Mergify candidate, verify the exact approved stack before running the
+full project fixture suite on Ubuntu and macOS. Both jobs must pass in the
+same workflow run before the aggregate `openbenches-stack-heavy` can succeed.
+The config PR exercises those platform jobs and a differently named aggregate;
+it is not a queue candidate. The optional upstream-CLI test is not covered
+without its fixture source. Record the landed tree and stop on any mismatch.

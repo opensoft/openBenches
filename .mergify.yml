@@ -1,4 +1,4 @@
-# Both queues are manual-only; admit one reviewed stack at a time.
+# Queues are manual-only; admit one reviewed stack at a time.
 merge_queue:
   mode: serial
   max_parallel_checks: 1
@@ -38,5 +38,24 @@ queue_rules:
       - '-files~=^(?!(devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/bash/get-last-worktree[.]sh|devBenches/devcontainer[.]test/test-speckit-git-feature[.]sh)$)'
       - check-success=@github-actions/openbenches-pr-fast
       - check-success=openbenches-helper-reviewed
+    merge_conditions:
+      - check-success=@github-actions/openbenches-stack-heavy
+
+  - name: openbenches-project-pilot
+    batch_size: 3
+    batch_max_wait_time: 60 seconds
+    batch_max_failure_resolution_attempts: 0
+    max_checks_retries: 0
+    checks_timeout: 25 minutes
+    merge_method: merge
+    queue_conditions:
+      - -draft
+      - -from-fork
+      - label=stack-ci-reviewed
+      - head~=^ci/stack-project/
+      - base~=^(main|ci/stack-project/.+)$
+      - '-files~=^(?!(scripts/project|devcontainer[.]test/test-project-command[.]py)$)'
+      - check-success=@github-actions/openbenches-pr-fast
+      - check-success=openbenches-project-reviewed
     merge_conditions:
       - check-success=@github-actions/openbenches-stack-heavy

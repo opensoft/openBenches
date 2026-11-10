@@ -102,6 +102,40 @@ def merge_initial(base, incoming):
     return merged
 
 
+def normalize(shared):
+    projects = shared["local-projects"]
+    unassigned = set(shared["projectless-thread-ids"])
+    shared["thread-project-assignments"] = {
+        t: value for t, value in shared["thread-project-assignments"].items()
+        if value["projectId"] in projects and t not in unassigned
+    }
+    shared["project-order"] = list(dict.fromkeys([p for p in shared["project-order"] if p in projects] + list(projects)))
+    shared["projectless-thread-ids"] = sorted(unassigned)
+    for key in PROJECT_MAPS:
+        shared[key] = {p: value for p, value in shared[key].items() if p in projects}
+    for host, mapping in shared[HOST_MAPS[0]].items():
+        shared[HOST_MAPS[0]][host] = {p: value for p, value in mapping.items() if p in projects}
+    return shared
+
+
+def merge_changes(shared, before, after):
+    """Apply only actual edits since this account's last preparation."""
+    shared = deepcopy(shared)
+    for key in ("local-projects", "thread-project-assignments", *PROJECT_MAPS, *HOST_MAPS):
+        for item in before[key].keys() - after[key].keys():
+            shared[key].pop(item, None)
+        for item, value in after[key].items():
+            if item not in before[key] or before[key][item] != value:
+                shared[key][item] = deepcopy(value)
+    unassigned = set(shared["projectless-thread-ids"])
+    unassigned -= set(before["projectless-thread-ids"]) - set(after["projectless-thread-ids"])
+    unassigned |= set(after["projectless-thread-ids"]) - set(before["projectless-thread-ids"])
+    shared["projectless-thread-ids"] = sorted(unassigned)
+    if before["project-order"] != after["project-order"]:
+        shared["project-order"] = after["project-order"]
+    return normalize(shared)
+
+
 def apply_project_state(globals_, shared, known_project_ids=()):
     previous = native_projects(globals_)
     local = globals_.setdefault("local-projects", {})
@@ -116,8 +150,8 @@ def apply_project_state(globals_, shared, known_project_ids=()):
     for thread, value in list(assignments.items()):
         if value.get("projectKind") == "local" and value.get("projectId") in native_ids and value.get("projectOrigin") != "chatgpt":
             del assignments[thread]
-    assignments.update(deepcopy(shared["thread-project-assignments"]))
-    globals_["projectless-thread-ids"] = deepcopy(shared["projectless-thread-ids"])
+    assignments.update({thread: deepcopy(value) for thread, value in shared["thread-project-assignments"].items() if assignments.get(thread, {}).get("projectOrigin") != "chatgpt"})
+    globals_["projectless-thread-ids"] = [thread for thread in shared["projectless-thread-ids"] if assignments.get(thread, {}).get("projectOrigin") != "chatgpt"]
     for thread in globals_["projectless-thread-ids"]:
         if assignments.get(thread, {}).get("projectOrigin") != "chatgpt":
             assignments.pop(thread, None)
@@ -177,21 +211,26 @@ def synchronize(state, catalog, runtime, home, active_owner, enrolled=(), seed_o
             raise ValueError("refusing an empty seed project set")
         shared = merge_initial(shared, project_state(state, host_key))
     elif catalog:
-        current = project_state(state, host_key)
-        baseline = catalog.get("baselines", {}).get(active_owner)
-        if baseline is None:
-            shared = merge_initial(catalog["shared"], current)
-        elif digest(current) != baseline:
-            shared = current
-        else:
-            shared = catalog["shared"]
+        shared = catalog["shared"]
+        # In-app rotation can leave real edits in an inactive account. Compare
+        # every prepared snapshot to its own baseline; unchanged stale copies
+        # contribute nothing. The active account wins simultaneous conflicts.
+        for owner in sorted(snapshots, key=lambda value: (value == active_owner, value)):
+            current = project_state(snapshots[owner], host_key)
+            baseline = catalog.get("baselines", {}).get(owner)
+            if baseline is None:
+                shared = merge_initial(shared, current)
+            elif digest(current) != baseline["digest"]:
+                shared = merge_changes(shared, baseline["state"], current)
     else:
         shared = project_state(state, host_key)
+    shared = normalize(shared)
     baselines = dict(catalog.get("baselines", {}))
     known_project_ids = set(catalog.get("shared", {}).get("local-projects", {}))
     for owner, globals_ in snapshots.items():
         apply_project_state(globals_, shared, known_project_ids)
-        baselines[owner] = digest(project_state(globals_, host_key))
+        projected = project_state(globals_, host_key)
+        baselines[owner] = {"digest": digest(projected), "state": projected}
         atoms = state.setdefault(ATOMS, {}) if owner == active_owner else scope["inactive"][owner].setdefault("atoms", {})
         preferences = atoms.setdefault("flat-project-sidebar-preferences-v1", {})
         preferences.update(mode="project", initialized=True)

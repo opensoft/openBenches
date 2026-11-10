@@ -112,8 +112,11 @@ prepare profiles that have not previously opened this desktop. Never put login
 tokens in the inventory.
 
 The catalog preserves local project IDs, names, roots, ordering, appearance,
-and local chat grouping. Changes made by a synchronized active account become
-the next shared set, including removals and projectless chats. Account-specific
+and local chat grouping. Actual changes since each account's last preparation
+are merged into the next shared set, including edits saved before an in-app
+account rotation, removals, and projectless chats. Unchanged older snapshots do
+not revive deleted projects. The active account wins simultaneous conflicts.
+Account-specific
 cloud ownership fields, credentials, and other preferences are preserved in
 their destination accounts rather than copied from another account.
 

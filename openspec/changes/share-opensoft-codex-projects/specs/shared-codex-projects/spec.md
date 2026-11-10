@@ -29,7 +29,7 @@ Restoration MUST preserve original state backups, reject changed input, and avoi
 - **THEN** restoration refuses until the desktop has exited cleanly
 
 ### Requirement: Changes persist across profiles
-Project additions, renames, deletion, explicit projectless chats, and membership changes SHALL propagate from the last synchronized active account without reviving stale inactive copies.
+Project additions, renames, deletion, explicit projectless chats, and membership changes SHALL propagate from enrolled accounts' actual changes since their last preparation, including changes saved in inactive accounts, without reviving unchanged stale copies. The active account SHALL win simultaneous conflicting edits.
 
 #### Scenario: Remove a shared project
 - **WHEN** a synchronized account removes a project and its state is captured

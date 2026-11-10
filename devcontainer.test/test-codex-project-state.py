@@ -145,6 +145,33 @@ class ProjectStateTests(unittest.TestCase):
         result, _ = module.synchronize(rotated, catalog, "windows", "native-home", A)
         self.assertEqual(result[module.SCOPE]["inactive"][B]["globals"]["local-projects"]["p"]["name"], "From Alice")
 
+    def test_edits_before_in_app_rotation_are_captured_from_inactive_account(self):
+        state, catalog = self.seed()
+        inactive = state[module.SCOPE]["inactive"][A]["globals"]
+        inactive["local-projects"]["new"] = project("new", "Added before switching")
+        inactive["thread-project-assignments"]["t"]["projectId"] = "new"
+        result, catalog = module.synchronize(state, catalog, "windows", "native-home", B)
+        self.assertEqual(result["local-projects"]["new"]["name"], "Added before switching")
+        self.assertEqual(result["thread-project-assignments"]["t"]["projectId"], "new")
+
+    def test_stale_snapshot_does_not_restore_another_accounts_deletion(self):
+        state, catalog = self.seed()
+        state["local-projects"].pop("p")
+        inactive = state[module.SCOPE]["inactive"][A]["globals"]
+        inactive["local-projects"]["new"] = project("new")
+        result, _ = module.synchronize(state, catalog, "windows", "native-home", B)
+        self.assertNotIn("p", result["local-projects"])
+        self.assertIn("new", result["local-projects"])
+
+    def test_destination_cloud_chat_membership_is_preserved(self):
+        state = fixture()
+        cloud = {"projectKind": "local", "projectId": "g-p-cloud", "projectOrigin": "chatgpt"}
+        state["thread-project-assignments"] = {"t": cloud}
+        result, catalog = module.synchronize(state, {}, "windows", "native-home", B, [A], A)
+        self.assertEqual(result["thread-project-assignments"]["t"], cloud)
+        result, catalog = module.synchronize(result, catalog, "windows", "native-home", B)
+        self.assertIn("t", catalog["shared"]["thread-project-assignments"])
+
     def test_offline_restore_backups_and_live_process_refusal(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

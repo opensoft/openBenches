@@ -2,7 +2,7 @@
 
 ## Automated checks
 
-- 17 Python fixtures passed in the declared `py-bench` and native Windows Python.
+- 20 Python fixtures passed in the declared `py-bench` and native Windows Python, including edits saved in inactive accounts and preservation of destination cloud chat memberships.
 - Native Windows PowerShell fixtures passed: exact regular-package selection, argument routing, live-process refusal, and refusal of WSL-bound Windows homes.
 - Both PowerShell source files parsed successfully in native PowerShell.
 - `openspec validate share-opensoft-codex-projects --strict` passed.

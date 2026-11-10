@@ -43,3 +43,14 @@ Resume SHALL verify that each origin branch is still at its recorded parked comm
 #### Scenario: Already-resumed work and unchanged origin
 - WHEN the same workspace resumes twice against the unchanged parked remote
 - THEN the second call preserves the already-restored work without another reset.
+
+### Requirement: Retry pending handoff publication
+Park SHALL retry publication of an existing pending workspace-manifest commit even when the writer reports unchanged content. Failed publication SHALL return unsuccessful without discarding that commit. Exhausted race retries SHALL NOT be reported as success.
+
+#### Scenario: Retry after origin access returns
+- WHEN the previous manifest commit could not be pushed and the feature state has not changed
+- THEN a retry publishes that pending commit without creating an empty commit.
+
+#### Scenario: Publication still fails
+- WHEN origin is still unavailable or all push retries are rejected
+- THEN park refuses success and retains the local manifest commit.

@@ -1123,18 +1123,20 @@ if [ "$DRY_RUN" != true ]; then
             exit 3
         fi
         MANIFEST_COMMIT="$(git -C "$WORKSPACE_PATH" rev-parse --short HEAD)"
-        if workspace_push_manifest "$WORKSPACE_PATH"; then
-            PUSH_STATE="$WORKSPACE_PUSH_RESULT"
-        else
-            PUSH_STATE="$WORKSPACE_PUSH_RESULT"
-            if [ "$PUSH_STATE" = "dirty" ]; then
-                workspace_refuse_dirty "$WORKSPACE_PATH" parked
-                workspace_unlock
-                exit 2
-            fi
+    fi
+    # An unchanged file can still have a pending commit from a failed park.
+    # Retry publication independently; do not manufacture an empty commit.
+    if workspace_push_manifest "$WORKSPACE_PATH"; then
+        PUSH_STATE="$WORKSPACE_PUSH_RESULT"
+    else
+        PUSH_STATE="$WORKSPACE_PUSH_RESULT"
+        if [ "$PUSH_STATE" = "dirty" ]; then
+            workspace_refuse_dirty "$WORKSPACE_PATH" parked
             workspace_unlock
-            exit 3
+            exit 2
         fi
+        workspace_unlock
+        exit 3
     fi
     workspace_unlock
 fi

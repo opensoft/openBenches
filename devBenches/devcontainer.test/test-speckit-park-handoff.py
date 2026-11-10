@@ -260,6 +260,40 @@ class ParkHandoffTests(unittest.TestCase):
 
 
 
+    def test_pending_manifest_publication_retries_unchanged_content(self):
+        self.feature("001-one")
+        remote_before=self.git(self.workspace_origin,"rev-parse","refs/heads/main")
+        self.git(self.workspace,"remote","set-url","origin",str(self.base/"missing-workspace.git"))
+        first=self.park()
+        self.assertEqual(first.returncode,3,first.stdout+first.stderr)
+        pending=self.git(self.workspace,"rev-parse","HEAD")
+        manifest=self.manifest.read_bytes()
+        self.assertNotEqual(pending,remote_before)
+        again=self.park()
+        self.assertEqual(again.returncode,3,again.stdout+again.stderr)
+        self.assertEqual(self.git(self.workspace,"rev-parse","HEAD"),pending)
+        self.assertEqual(self.manifest.read_bytes(),manifest)
+        self.assertEqual(self.git(self.workspace_origin,"rev-parse","refs/heads/main"),remote_before)
+        self.git(self.workspace,"remote","set-url","origin",str(self.workspace_origin))
+        restored=self.park()
+        self.assertEqual(restored.returncode,0,restored.stdout+restored.stderr)
+        self.assertEqual(self.git(self.workspace,"rev-parse","HEAD"),pending)
+        self.assertEqual(self.git(self.workspace_origin,"rev-parse","refs/heads/main"),pending)
+        self.assertEqual(self.git(self.workspace_origin,"show","main:workspaces/dummy/fixture-project.yaml"),
+                         manifest.decode().strip())
+
+    def test_pending_manifest_publication_refuses_exhausted_retries(self):
+        self.feature("001-one")
+        remote_before=self.git(self.workspace_origin,"rev-parse","refs/heads/main")
+        hook=self.workspace_origin/"hooks/pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        result=self.park()
+        self.assertEqual(result.returncode,3,result.stdout+result.stderr)
+        self.assertNotEqual(self.git(self.workspace,"rev-parse","HEAD"),remote_before)
+        self.assertEqual(self.git(self.workspace_origin,"rev-parse","refs/heads/main"),remote_before)
+        self.assertIn("branch: 001-one",self.manifest.read_text())
+
     def resume(self):
         return self.run_command(self.root,"bash",str(Path(".specify")/SCRIPTS/"resume.sh"),
                                 "--json","--workspace",str(self.workspace),check=False)

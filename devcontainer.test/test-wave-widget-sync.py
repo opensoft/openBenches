@@ -318,6 +318,15 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
         self.assertIn('Wave installer did not supply widget pyBench', result.stderr)
         self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
 
+    def test_duplicate_connection_keys_preserve_both_settings(self):
+        self.widgets.write_text('{"custom": true}\n')
+        self.connections.write_text('{"ssh://custom": {}, "ssh://custom": {"keep": true}}\n')
+        before = (self.widgets.read_bytes(), self.connections.read_bytes())
+        result = self.sync()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('duplicate JSON key: ssh://custom', result.stderr)
+        self.assertEqual((self.widgets.read_bytes(), self.connections.read_bytes()), before)
+
     def test_invalid_or_symlinked_settings_are_preserved(self):
         self.widgets.write_text('{"custom": 1, "custom": 2}')
         self.assertNotEqual(self.sync().returncode, 0)

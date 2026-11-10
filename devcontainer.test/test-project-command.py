@@ -956,10 +956,10 @@ raise SystemExit(module.main({[*self.args, "--remove"]!r}))
         self.assertIn("WORKBENCHES_PROJECT_DISCOVERY_FILE must be an absolute path",
                       result.stderr)
 
-        tilde_discovery = home / ".state/project-bin"
+        tilde_discovery = home / ".state with spaces/project-bin"
         tilde_discovery.parent.mkdir(parents=True)
         tilde_discovery.write_text(str(tilde_bin) + "\n")
-        env["WORKBENCHES_PROJECT_DISCOVERY_FILE"] = "~/.state/project-bin"
+        env["WORKBENCHES_PROJECT_DISCOVERY_FILE"] = "~/.state with spaces/project-bin"
         env["PATH"] = os.environ["PATH"]
         result = subprocess.run(
             ["bash", str(ROOT / "scripts/project"), "FromDiscoveryTilde"],

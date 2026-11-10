@@ -81,29 +81,49 @@ jobs:
           bash -n scripts/project
           python3 devcontainer.test/test-project-command.py
 
+  wave-widget-sync:
+    name: Wave widget sync integration (${{ matrix.os }})
+    needs: verify
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' ||
+      (needs.verify.result == 'success' && needs.verify.outputs.scope == 'wave-widget-sync')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.10'
+      - name: Verify the exact revision and run the full Wave widget fixture suite
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'Wave widget sync integration revision: %s\n' "$GITHUB_SHA"
+          bash -n scripts/sync-wave-widgets.sh
+          python3 devcontainer.test/test-wave-widget-sync.py
+
   gate:
-    name: ${{ github.event_name == 'push' && 'openbenches-stack-heavy' || 'Project config aggregate' }}
-    needs: [verify, project]
+    name: ${{ github.event_name == 'push' && 'openbenches-stack-heavy' || 'Stack config aggregate' }}
+    needs: [verify, project, wave-widget-sync]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Require the full expected result
         env:
-          EVENT: ${{ github.event_name }}
           SCOPE: ${{ needs.verify.outputs.scope }}
           VERIFIED: ${{ needs.verify.result }}
           PROJECT: ${{ needs.project.result }}
-        run: |
-          set -euo pipefail
-          if [[ "$EVENT" == pull_request ]]; then
-            test "$PROJECT" = success
-            exit
-          fi
-          test "$EVENT" = push
-          test "$VERIFIED" = success
-          case "$SCOPE" in
-            docs|helper) test "$PROJECT" = skipped ;;
-            project) test "$PROJECT" = success ;;
-            *) exit 1 ;;
-          esac
+          WAVE_WIDGET_SYNC: ${{ needs.wave-widget-sync.result }}
+        run: python3 scripts/stack-ci.py gate

@@ -1,0 +1,32 @@
+# Feature Specification: Park handoff safety
+
+**Feature Branch**: `177-park-handoff-safety`
+**Created**: 2026-11-10
+**Status**: Draft commissioned repair
+
+## User Scenarios & Testing
+
+### US1 — Trust the parked branch (P1)
+An operator expects both legs of a parked feature to be recoverable from the branch named in its manifest.
+
+Independent test: switch the code worktree to another branch or substitute a foreign repository; park must refuse before either leg commit/push, retaining dirty files and existing records.
+
+### US2 — Park only the selected feature (P1)
+An operator selecting one feature expects other parked features to remain recoverable, including ones absent from the current workstation.
+
+Independent test: park two features, select one, and compare the unselected record. Repeat after a refreshed unselected record and for a gone worktree; full park keeps its existing reconciliation semantics.
+
+## Requirements
+
+- FR-001: Validate repository/worktree ownership and expected branch for every selected leg before any commit.
+- FR-002: Refusal preserves heads, indexes, dirty content, remote refs and earlier manifest evidence.
+- FR-003: Explicit selection updates only selected feature records using the writer's current file, including on push retry.
+- FR-004: Full park retains its existing removal behavior, with unchanged manifest schema and delivery/authority boundaries.
+
+## Key Entities
+
+Expected leg repository, actual Git worktree/common directory, expected branch, selected branch set, current workspace project block and per-feature record.
+
+## Success Criteria
+
+Both reproduced defects refuse or preserve state as specified; full shared regression/compatibility checks pass; downstream source bytes and exact CI/review heads are recorded. No real workspace handoff or release is claimed from fixtures.

@@ -1077,9 +1077,12 @@ workspace_write_manifest() {
     local record="$2"
 
     python3 - "$manifest" "$record" <<'PY'
+import atexit
+import errno
 import json
 import os
 import re
+import stat
 import sys
 
 manifest_path, record_path = sys.argv[1], sys.argv[2]
@@ -1196,11 +1199,37 @@ else:
                 block.append("%s%s: %s" % (prefix, out_key, scalar(value)))
                 first = False
 
+# Resolve the explicitly selected workspace once, then never follow symlink
+# components beneath it. Direct helper callers use the standard manifest layout.
+lexical_root = os.path.abspath(top.get("workspace_path") or os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(manifest_path)))))
+components = os.path.relpath(os.path.abspath(manifest_path), lexical_root).split(os.sep)
+if len(components) != 3 or components[0] != "workspaces" or any(
+    part in ("", ".", "..") for part in components
+):
+    raise ValueError("manifest path must be workspaces/<org>/<manifest> within its workspace")
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+directory_fd = os.open(os.path.realpath(lexical_root), directory_flags)
+for component in components[:-1]:
+    try:
+        os.mkdir(component, dir_fd=directory_fd)
+    except FileExistsError:
+        pass
+    child_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+    os.close(directory_fd)
+    directory_fd = child_fd
+atexit.register(os.close, directory_fd)
+manifest_name = components[-1]
 try:
-    with open(manifest_path, "r", encoding="utf-8") as stream:
-        existing = stream.read()
-except OSError:
+    existing_fd = os.open(manifest_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                          dir_fd=directory_fd)
+except FileNotFoundError:
     existing = ""
+else:
+    with os.fdopen(existing_fd, "r", encoding="utf-8") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("manifest must be a regular file or missing")
+        existing = stream.read()
 
 blocks = []
 lines = existing.splitlines()
@@ -1332,12 +1361,30 @@ if rendered == existing:
     sys.stdout.write("unchanged\n")
     raise SystemExit(0)
 
-directory = os.path.dirname(manifest_path) or "."
-os.makedirs(directory, exist_ok=True)
-temporary = os.path.join(directory, ".%s.tmp" % os.path.basename(manifest_path))
-with open(temporary, "w", encoding="utf-8") as stream:
-    stream.write(rendered)
-os.replace(temporary, manifest_path)
+temporary = ".%s.tmp" % manifest_name
+temporary_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                       0o666, dir_fd=directory_fd)
+identity = os.fstat(temporary_fd)
+try:
+    with os.fdopen(temporary_fd, "w", encoding="utf-8") as stream:
+        stream.write(rendered)
+    leaf = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+    if (leaf.st_dev, leaf.st_ino) != (identity.st_dev, identity.st_ino):
+        raise OSError(errno.EPERM, "manifest temporary was replaced before publication")
+    try:
+        destination = os.stat(manifest_name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        destination = None
+    if destination is not None and not stat.S_ISREG(destination.st_mode):
+        raise ValueError("manifest must be a regular file or missing")
+    os.replace(temporary, manifest_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+finally:
+    try:
+        leaf = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        leaf = None
+    if leaf is not None and (leaf.st_dev, leaf.st_ino) == (identity.st_dev, identity.st_ino):
+        os.unlink(temporary, dir_fd=directory_fd)
 sys.stdout.write("changed\n")
 PY
 }

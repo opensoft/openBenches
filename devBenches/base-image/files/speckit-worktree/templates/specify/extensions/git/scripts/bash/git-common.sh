@@ -1100,31 +1100,76 @@ shape_add_leg_worktree() {
 
 # Record the resolved feature directory in the ROOT's .specify/feature.json so
 # core check-prerequisites.sh resolves FEATURE_DIR without any change to core.
-shape_persist_feature_json() {
-    local relative_dir="$1"
-    local feature_json="$REPO_ROOT/.specify/feature.json"
-
-    if [ "$(type -t _persist_feature_json 2>/dev/null || true)" = "function" ]; then
-        _persist_feature_json "$REPO_ROOT" "$relative_dir"
-        return 0
-    fi
-
-    mkdir -p "$REPO_ROOT/.specify"
-    if command -v jq >/dev/null 2>&1; then
-        jq -cn --arg fd "$relative_dir" '{feature_directory:$fd}' > "$feature_json"
-    elif [ "$(type -t json_escape 2>/dev/null || true)" = "function" ]; then
-        printf '{"feature_directory":"%s"}\n' "$(json_escape "$relative_dir")" > "$feature_json"
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 - "$feature_json" "$relative_dir" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "w", encoding="utf-8") as stream:
-    json.dump({"feature_directory": sys.argv[2]}, stream)
-    stream.write("\n")
-PY
-    else
-        >&2 echo "Error: Writing .specify/feature.json requires jq or Python 3."
+# Publish through anchored directory descriptors, never a redirected leaf.
+publish_feature_selector() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        >&2 echo "Error: Safe feature selector publication requires Python 3."
         return 1
     fi
+    python3 - "$1" "$2" <<'PY'
+import errno
+import json
+import os
+import stat
+import sys
+from contextlib import ExitStack
+
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+name = "feature.json"
+temporary = ".feature.json.tmp"
+payload = {"feature_directory": sys.argv[2]}
+serialized = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+with ExitStack() as descriptors:
+    root_fd = os.open(os.path.realpath(sys.argv[1]), directory_flags)
+    descriptors.callback(os.close, root_fd)
+    try:
+        os.mkdir(".specify", dir_fd=root_fd)
+    except FileExistsError:
+        pass
+    directory_fd = os.open(".specify", directory_flags, dir_fd=root_fd)
+    descriptors.callback(os.close, directory_fd)
+    try:
+        previous_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                              dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
+    else:
+        with os.fdopen(previous_fd, "r", encoding="utf-8") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("feature selector must be a regular file or missing")
+            try:
+                previous = json.load(stream)
+            except (ValueError, UnicodeError):
+                previous = None
+            if isinstance(previous, dict) and previous.get("feature_directory") == sys.argv[2]:
+                raise SystemExit(0)
+
+    temporary_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                           0o666, dir_fd=directory_fd)
+    identity = os.fstat(temporary_fd)
+    try:
+        with os.fdopen(temporary_fd, "wb") as stream:
+            stream.write(serialized)
+        leaf = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+        if (leaf.st_dev, leaf.st_ino) != (identity.st_dev, identity.st_ino):
+            raise OSError(errno.EPERM, "selector temporary was replaced before publication")
+        try:
+            destination = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            destination = None
+        if destination is not None and not stat.S_ISREG(destination.st_mode):
+            raise ValueError("feature selector must be a regular file or missing")
+        os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    finally:
+        try:
+            leaf = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            leaf = None
+        if leaf is not None and (leaf.st_dev, leaf.st_ino) == (identity.st_dev, identity.st_ino):
+            os.unlink(temporary, dir_fd=directory_fd)
+PY
+}
+
+shape_persist_feature_json() {
+    publish_feature_selector "$REPO_ROOT" "$1"
 }

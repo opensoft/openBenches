@@ -69,3 +69,18 @@ An active resume SHALL synchronize a configured workspace origin before loading 
 #### Scenario: Dry-run on a stale clone
 - WHEN a stale receiving clone is used with dry-run
 - THEN its files, refs and lock state remain unchanged.
+
+### Requirement: Publish the manifest without clobbering existing temporary paths
+The writer SHALL exclusively create its temporary file, SHALL NOT follow or truncate a pre-existing temporary leaf, and SHALL preserve the existing manifest on refusal. It SHALL atomically replace the manifest only after a successful write and clean up only temporary files created by that invocation.
+
+#### Scenario: Temporary path is a symlink
+- WHEN the predictable manifest temporary path points to an unrelated file
+- THEN park refuses publication without changing that target, the symlink or the existing manifest.
+
+#### Scenario: Temporary path is an ordinary file
+- WHEN an existing file occupies the temporary name
+- THEN publication refuses without truncating or deleting that file.
+
+#### Scenario: Publication directory or selector is a symlink
+- WHEN a manifest directory component or active-feature selector points outside its intended checkout
+- THEN publication refuses without changing any unrelated target.

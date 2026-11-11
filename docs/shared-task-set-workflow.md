@@ -5,6 +5,20 @@ Claude Code and Codex CLI workflows. It is not a product release or a grant of
 GitHub App access. No model login, profile token, launcher, hook or permission
 bypass is added.
 
+## OpenBenches source adoption
+
+OpenBenches tracks the identical skill under `.agents/skills/task-set-delivery`
+for Codex and `.claude/skills/task-set-delivery` for Claude. Its AGENTS.md points
+to that skill; a thin CLAUDE.md imports AGENTS.md. Clean checkouts therefore have
+the delivery instructions without a workstation-local bootstrap. The existing
+active-plan block and planning templates are unchanged.
+
+The packaged skill remains the source of truth. Update both tracked copies
+together; `python3 devcontainer.test/test-workflow-adoption.py` rejects drift or
+missing pointers and verifies that delivery refresh preserves the active plan.
+Other repositories still opt in using the bootstrap below. Source adoption does
+not install gh-stack, select a model/account, grant a queue, or qualify a runtime.
+
 ## Adopt in a selected project
 
 On a Linux workstation or inside the owning developer bench, use the matching

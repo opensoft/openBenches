@@ -22,6 +22,8 @@ Records contain allowlisted metrics, identity/state metadata, separate process-l
 
 External probes have an eight-second deadline by default. Only the owned diagnostic client can be terminated, never an entire process tree. A timeout or interrupted probe persists a circuit latch so automatic process replacement cannot continually spawn guest work into a wedged kernel. Other independent evidence can continue. Missing data is not a successful probe.
 
+Both redirected streams are drained through fixed buffers, with at most 64 KiB of stdout retained transiently and no stderr retained. Excess output is `output-limit`; incomplete reads are `output-incomplete`. Missing required guest metrics are `metrics-unavailable`, even after exit zero. Probe cleanup does not depend on successful disk writes; a persistence failure stops further client submission (`collection-stopped`) and retains the interrupted-probe marker. Guest commands use each distribution/container's configured identity, not a host-specific username.
+
 The recorder first enumerates already-running WSL distributions. It skips a stopped Ubuntu rather than starting it. For a fully quiet offline maintenance window, stop this recorder too using the command below, alongside the existing watchdog/CI drain procedure. No live shutdown was used to test this guard; stopped-name and Windows encoding fixtures cover it without interrupting workloads.
 
 ```powershell

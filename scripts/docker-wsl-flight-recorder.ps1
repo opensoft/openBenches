@@ -15,9 +15,37 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:OpenCircuits = @{}
 $script:UnkillableClient = $false
+$script:PersistenceFailure = $false
 $script:BenchCursor = 0
 $script:BenchCache = @{}
 $script:RuntimeStateDirectory = $null
+
+# Fixed buffers drain both pipes without retaining unlimited diagnostic output.
+if (-not ('RecorderBoundedText' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
+public sealed class RecorderBoundedText {
+    public string Text { get; private set; }
+    public bool LimitExceeded { get; private set; }
+    public static async Task<RecorderBoundedText> ReadAsync(StreamReader reader, int limit, bool retain) {
+        var result = new RecorderBoundedText();
+        var buffer = new char[4096];
+        var text = retain ? new StringBuilder() : null;
+        int total = 0, count;
+        while ((count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0) {
+            int remaining = limit - total;
+            if (retain && remaining > 0) text.Append(buffer, 0, System.Math.Min(count, remaining));
+            if (count > remaining) result.LimitExceeded = true;
+            total = System.Math.Min(limit, total + count);
+        }
+        result.Text = retain ? text.ToString() : "";
+        return result;
+    }
+}
+'@
+}
 
 function Save-RecorderCircuits {
     if ($script:RuntimeStateDirectory) { Write-RecorderJson (Join-Path $script:RuntimeStateDirectory 'circuits.json') $script:OpenCircuits }
@@ -62,7 +90,19 @@ function Write-RecorderJson([string]$Path, [object]$Value) {
     $temporaryPath = Join-Path (Split-Path $Path -Parent) ('recording-' + [guid]::NewGuid().ToString('N') + '.tmp')
     try {
         [IO.File]::WriteAllText($temporaryPath, ($Value | ConvertTo-Json -Depth 16), [Text.UTF8Encoding]::new($false))
-        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+        # Same-directory File.Move(overwrite) uses a replacing rename, unlike
+        # Move-Item -Force / ReplaceFile's observed Windows missing-path gaps.
+        # Preserve the previous good record on a sharing/access conflict.
+        for ($attempt=0; ; $attempt++) {
+            try {
+                [IO.File]::Move($temporaryPath,$Path,$true)
+                break
+            } catch {
+                $nativeError=$_.Exception.GetBaseException().HResult -band 0xFFFF
+                if ($nativeError -notin @(5,32,33) -or $attempt -ge 19) {throw}
+                Start-Sleep -Milliseconds 10
+            }
+        }
     } finally { if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force } }
 }
 
@@ -103,6 +143,7 @@ function Get-RecorderFreshness($Record, [int]$MaxAgeSeconds) {
 function Invoke-RecorderClient {
     param([string]$Program, [string[]]$Arguments, [string]$Circuit, [int]$TimeoutSeconds = 8)
     $result = [ordered]@{outcome='exception';latency_ms=0;exit_code=$null;process_id=$null;owned_client_terminated=$false;stdout=''}
+    if ($script:UnkillableClient -or $script:PersistenceFailure) { $result.outcome='collection-stopped'; return $result }
     if ($script:OpenCircuits.ContainsKey($Circuit)) { $result.outcome='circuit-open'; return $result }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $client = $null
@@ -116,16 +157,21 @@ function Invoke-RecorderClient {
         $client = [Diagnostics.Process]::new(); $client.StartInfo=$start
         [void]$client.Start(); $result.process_id=$client.Id
         if ($inflightPath) { Write-RecorderJson $inflightPath @{circuit=$Circuit;timestamp=[DateTimeOffset]::UtcNow.ToString('o');stage='running';process_id=$client.Id} }
-        $outputRead=$client.StandardOutput.ReadToEndAsync(); $errorRead=$client.StandardError.ReadToEndAsync()
-        if (-not $client.WaitForExit($TimeoutSeconds * 1000)) {
-            $result.outcome='timeout'; $script:OpenCircuits[$Circuit]=$true; Save-RecorderCircuits
-            try { $client.Kill(); $result.owned_client_terminated=$client.WaitForExit(1500) } catch {}
-            if (-not $result.owned_client_terminated) { $script:UnkillableClient=$true }
+        $outputRead=[RecorderBoundedText]::ReadAsync($client.StandardOutput,65536,$true)
+        $errorRead=[RecorderBoundedText]::ReadAsync($client.StandardError,65536,$false)
+        if (-not $client.WaitForExit([int][math]::Max(0,$TimeoutSeconds*1000-$clock.ElapsedMilliseconds))) {
+            $result.outcome='timeout'; $script:OpenCircuits[$Circuit]=$true
         } else {
             $result.exit_code=$client.ExitCode
             $result.outcome=if ($client.ExitCode -eq 0) { 'success' } else { 'exit-error' }
-            if ($outputRead.IsCompletedSuccessfully -and $outputRead.Result.Length -le 65536) { $result.stdout=$outputRead.Result }
-            elseif ($outputRead.IsCompletedSuccessfully) { $result.outcome='output-limit'; $script:OpenCircuits[$Circuit]=$true; Save-RecorderCircuits }
+            # A descendant holding a pipe open must not create an unbounded wait.
+            [void]$outputRead.Wait([int][math]::Max(0,$TimeoutSeconds*1000-$clock.ElapsedMilliseconds))
+            [void]$errorRead.Wait([int][math]::Max(0,$TimeoutSeconds*1000-$clock.ElapsedMilliseconds))
+            if (-not $outputRead.IsCompletedSuccessfully -or -not $errorRead.IsCompletedSuccessfully) {
+                $result.outcome='output-incomplete'; $script:OpenCircuits[$Circuit]=$true
+            } elseif ($outputRead.Result.LimitExceeded -or $errorRead.Result.LimitExceeded) {
+                $result.outcome='output-limit'; $script:OpenCircuits[$Circuit]=$true
+            } else { $result.stdout=$outputRead.Result.Text }
         }
         # stderr is intentionally consumed but never returned or persisted.
         [void]$errorRead
@@ -134,17 +180,28 @@ function Invoke-RecorderClient {
         if ($null -ne $client -and $result.process_id) {
             try {
                 if (-not $client.HasExited) {
-                    $script:OpenCircuits[$Circuit]=$true; Save-RecorderCircuits
-                    $client.Kill(); $result.owned_client_terminated=$client.WaitForExit(1500)
-                    if (-not $result.owned_client_terminated) {$script:UnkillableClient=$true}
+                    $script:OpenCircuits[$Circuit]=$true
                 }
             } catch {$script:UnkillableClient=$true}
         }
     }
     finally {
+        # Cleanup is independent of disk writes: full/unavailable storage cannot
+        # prevent terminating the exact diagnostic process owned by this call.
+        if ($null -ne $client -and $result.process_id) {
+            try {
+                if (-not $client.HasExited) {
+                    $client.Kill(); $result.owned_client_terminated=$client.WaitForExit(1500)
+                    if (-not $result.owned_client_terminated) {$script:UnkillableClient=$true}
+                }
+            } catch {$script:UnkillableClient=$true}
+        }
+        if ($script:OpenCircuits.ContainsKey($Circuit)) {
+            try {Save-RecorderCircuits} catch {$script:PersistenceFailure=$true}
+        }
         $result.latency_ms=[int]$clock.ElapsedMilliseconds
         if ($null -ne $client) { $client.Dispose() }
-        if ($inflightPath -and -not $script:UnkillableClient -and (Test-Path -LiteralPath $inflightPath)) { Remove-Item -LiteralPath $inflightPath -Force }
+        if ($inflightPath -and -not $script:UnkillableClient -and -not $script:PersistenceFailure -and (Test-Path -LiteralPath $inflightPath)) { Remove-Item -LiteralPath $inflightPath -Force }
     }
     return $result
 }
@@ -173,6 +230,11 @@ function ConvertFrom-RecorderLines([string]$Text) {
         }
     }
     return $values
+}
+
+function Test-RecorderMetrics($Metrics, [string[]]$Required) {
+    foreach ($name in $Required) {if (-not $Metrics.Contains($name)) {return $false}}
+    return $true
 }
 
 function Measure-RecorderPolling([string[]]$Lines, [Nullable[DateTimeOffset]]$NotBefore = $null) {
@@ -271,6 +333,11 @@ function Get-ExternalWatchdogFreshness {
     } catch { return @{freshness='unavailable'} }
 }
 
+function Get-ExternalWatchdogIssues($Observation) {
+    if ($Observation.freshness -ne 'current') {return 'external-watchdog-'+$Observation.freshness}
+    if ($Observation.reported_health -ne 'healthy') {return 'external-watchdog-unhealthy'}
+}
+
 $script:WslPayload=@'
 set -e
 awk '{print "uptime_seconds "int($1)}' /proc/uptime
@@ -315,10 +382,16 @@ function New-RecorderSample([string]$DockerExecutable, [string]$WslExecutable) {
     elseif (-not (Test-RecorderDistroRunning $runningDistros.stdout $Distribution)) {
         $guest=@{outcome='distro-stopped';latency_ms=0;exit_code=$null;process_id=$null;owned_client_terminated=$false;stdout=''}
     } else {
-        $guest=Invoke-RecorderClient $WslExecutable @('-d',$Distribution,'-u','brett','-e','timeout',"$ProbeTimeoutSeconds",'sh','-c',$script:WslPayload) wsl $ProbeTimeoutSeconds
+        $guest=Invoke-RecorderClient $WslExecutable @('-d',$Distribution,'-e','timeout',"$ProbeTimeoutSeconds",'sh','-c',$script:WslPayload) wsl $ProbeTimeoutSeconds
+    }
+    if ($guest.outcome -eq 'success') {
+        $sample.wsl=ConvertFrom-RecorderLines $guest.stdout
+        if (-not (Test-RecorderMetrics $sample.wsl @('MemTotal_kib','MemAvailable_kib','SwapTotal_kib','SwapFree_kib','uptime_seconds','zombie_leaders'))) {
+            $guest.outcome='metrics-unavailable'
+        }
     }
     $sample.wsl_probe=Get-RecorderProbeSummary $guest
-    if ($guest.outcome -eq 'success') {$sample.wsl=ConvertFrom-RecorderLines $guest.stdout} else {$sample.issues+='wsl-'+$guest.outcome}
+    if ($guest.outcome -ne 'success') {$sample.issues+='wsl-'+$guest.outcome}
     if ($docker.outcome -eq 'success' -and -not $script:UnkillableClient) {
         $template='{{.Name}}|{{.State.Status}}|{{.State.OOMKilled}}|{{.RestartCount}}|{{index .HostConfig "Init"}}|{{.Id}}'
         $inventory=Invoke-RecorderClient $DockerExecutable (@('inspect','--format',$template)+$Containers) docker $ProbeTimeoutSeconds
@@ -331,8 +404,12 @@ function New-RecorderSample([string]$DockerExecutable, [string]$WslExecutable) {
         $chosen=$Containers[$script:BenchCursor % $Containers.Count]; $script:BenchCursor++
         if (@($sample.bench_states | Where-Object {$_.name -eq $chosen -and $_.state -eq 'running'}).Count) {
             if (-not $script:OpenCircuits.ContainsKey('docker')) {
-                $bench=Invoke-RecorderClient $DockerExecutable @('exec','--user','brett',$chosen,'timeout',"$ProbeTimeoutSeconds",'sh','-c',$script:BenchPayload) bench $ProbeTimeoutSeconds
-                $script:BenchCache[$chosen]=@{timestamp=[DateTimeOffset]::UtcNow.ToString('o');probe=Get-RecorderProbeSummary $bench;metrics=ConvertFrom-RecorderLines $bench.stdout}
+                $bench=Invoke-RecorderClient $DockerExecutable @('exec',$chosen,'timeout',"$ProbeTimeoutSeconds",'sh','-c',$script:BenchPayload) bench $ProbeTimeoutSeconds
+                $metrics=ConvertFrom-RecorderLines $bench.stdout
+                if ($bench.outcome -eq 'success' -and -not (Test-RecorderMetrics $metrics @('memory_current','anon','file','kernel','event_oom','event_oom_kill','zombie_leaders','blocked_threads'))) {
+                    $bench.outcome='metrics-unavailable'
+                }
+                $script:BenchCache[$chosen]=@{timestamp=[DateTimeOffset]::UtcNow.ToString('o');probe=Get-RecorderProbeSummary $bench;metrics=$metrics}
                 if ($bench.outcome -ne 'success') {$sample.issues+='bench-'+$bench.outcome}
                 elseif ($script:BenchCache[$chosen].metrics.Contains('zombie_leaders') -and $script:BenchCache[$chosen].metrics.zombie_leaders -gt 0) {$sample.issues+='zombies-'+$chosen}
             }
@@ -341,13 +418,15 @@ function New-RecorderSample([string]$DockerExecutable, [string]$WslExecutable) {
     $sample.benches=$script:BenchCache.Clone()
     $sample.issues+=@(Get-RecorderBenchIssues $script:BenchCache $Containers ($IntervalSeconds*($Containers.Count+1)))
     foreach ($task in $sample.tasks) {if ($task.state -ne 'Running') {$sample.issues+='task-not-running-'+($task.name -replace ' ','-')}}
-    if ($sample.external_watchdog.freshness -ne 'current') {$sample.issues+='external-watchdog-'+$sample.external_watchdog.freshness}
+    $sample.issues+=@(Get-ExternalWatchdogIssues $sample.external_watchdog)
     $guestMetrics=if($sample.Contains('wsl')){$sample.wsl}else{[ordered]@{}}
     $sample.issues+=@(Get-RecorderResourceIssues $sample.windows $guestMetrics)
     foreach ($circuitName in $script:OpenCircuits.Keys) {$sample.issues+='latched-'+$circuitName}
     if ($script:UnkillableClient) {$sample.issues+='unkillable-owned-client'}
+    if ($script:PersistenceFailure) {$sample.issues+='probe-state-persistence-failed'}
     $notBefore=if($sample.Contains('phase_started_at')){[DateTimeOffset]$sample.phase_started_at}else{$null}
     $sample.polling=Get-RecorderPolling $notBefore
+    $sample.issues=@($sample.issues | Sort-Object -Unique)
     $sample.health=if ($sample.issues.Count) {'degraded'} else {'healthy'}
     return $sample
 }
@@ -389,7 +468,7 @@ try {
         $issueKey=($snapshot.issues | Sort-Object) -join '|'
         if ($issueKey -ne $previousIssues) {Add-RecorderIncident $StateDirectory $snapshot; $previousIssues=$issueKey}
         if ($Mode -eq 'Once') {$snapshot|ConvertTo-Json -Depth 16; break}
-        if ($script:UnkillableClient) {throw 'Owned probe could not be terminated; stopping recorder to prevent overlap.'}
+        if ($script:UnkillableClient -or $script:PersistenceFailure) {throw 'Probe cleanup or state persistence failed; stopping recorder to prevent overlap.'}
         $remaining=[math]::Max(0,$IntervalSeconds*1000-$cycle.ElapsedMilliseconds)
         if ($remaining -gt 0) {Start-Sleep -Milliseconds $remaining}
     } while ($true)

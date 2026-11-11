@@ -1,0 +1,32 @@
+name: Docker WSL Diagnostics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/docker-wsl-flight-recorder.ps1
+      - scripts/install-docker-wsl-flight-recorder.ps1
+      - scripts/tests/test-docker-wsl-flight-recorder.ps1
+      - .github/workflows/docker-wsl-diagnostics.yml
+  pull_request:
+    paths:
+      - scripts/docker-wsl-flight-recorder.ps1
+      - scripts/install-docker-wsl-flight-recorder.ps1
+      - scripts/tests/test-docker-wsl-flight-recorder.ps1
+      - .github/workflows/docker-wsl-diagnostics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    name: Windows recorder fixtures
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Run isolated fixtures without Docker or task installation
+        shell: pwsh
+        run: ./scripts/tests/test-docker-wsl-flight-recorder.ps1

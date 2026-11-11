@@ -1,0 +1,49 @@
+name: Stack PR fast CI
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  fast:
+    name: openbenches-pr-fast
+    if: ${{ !startsWith(github.head_ref, 'mergify/merge-queue/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Read metadata policy from trusted main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Recognize only verified already-merged metadata
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # During this config PR, trusted main may not have the new mode yet.
+          # A missing classifier or API failure must retain normal validation.
+          if ! python3 scripts/stack-ci.py classify-fast-metadata; then
+            echo 'merged_metadata=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: steps.metadata.outputs.merged_metadata != 'true'
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the PR against its immediate base
+        if: steps.metadata.outputs.merged_metadata != 'true'
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 scripts/stack-ci.py fast
+          python3 devcontainer.test/test-stack-ci.py
+          python3 devcontainer.test/test-project-stack-ci.py
+          python3 devcontainer.test/test-helper-stack-ci.py
+          python3 devcontainer.test/test-helper-coverage-parity.py

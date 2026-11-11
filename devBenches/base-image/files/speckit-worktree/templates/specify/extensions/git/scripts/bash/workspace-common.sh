@@ -927,13 +927,37 @@ workspace_refuse_dirty() {
 # the caller can refuse by name instead of misreporting a conflict.
 workspace_sync() {
     local workspace="$1"
-    local branch conflict
+    local mode="${2:-park}"
+    local branch conflict fetch_ref
 
     git -C "$workspace" remote get-url origin >/dev/null 2>&1 || return 0
     branch="$(git -C "$workspace" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    [ -n "$branch" ] && [ "$branch" != "HEAD" ] || return 0
-    git -C "$workspace" fetch -q origin "$branch" >/dev/null 2>&1 || return 0
+    if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+        if [ "$mode" = resume ]; then
+            >&2 echo "Error: could not refresh workspace '$workspace': its origin is configured but it is not on a branch; nothing was resumed."
+            return 1
+        fi
+        return 0
+    fi
+    fetch_ref="$branch"
+    if [ "$mode" = resume ]; then
+        fetch_ref="+refs/heads/$branch:refs/remotes/origin/$branch"
+    fi
+    if ! git -C "$workspace" fetch -q origin "$fetch_ref" >/dev/null 2>&1; then
+        if [ "$mode" = resume ]; then
+            >&2 echo "Error: could not refresh workspace '$workspace' from origin/$branch; cached manifest data is insufficient; nothing was resumed."
+            return 1
+        fi
+        return 0
+    fi
     git -C "$workspace" merge-base --is-ancestor "refs/remotes/origin/$branch" HEAD 2>/dev/null && return 0
+    # Resume does not commit or stash the receiving workstation's edits.
+    if [ "$mode" = resume ] \
+        && [ -n "$(git -C "$workspace" status --porcelain --untracked-files=all 2>/dev/null)" ]; then
+        >&2 echo "Error: workspace-dirty: '$workspace' has uncommitted changes and cannot be refreshed; nothing was resumed."
+        >&2 echo "Commit or stash those paths, then re-run resume."
+        return 2
+    fi
     # A rebase is actually needed, so the working tree has to be clean for it.
     if workspace_dirty_outside_manifests "$workspace"; then
         return 2
@@ -1006,7 +1030,7 @@ workspace_push_manifest() {
         attempt=$((attempt + 1))
     done
     echo "[specify] Warning: could not push the manifest commit to origin/$branch after 6 attempts; it is committed locally." >&2
-    return 0
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -1053,8 +1077,12 @@ workspace_write_manifest() {
     local record="$2"
 
     python3 - "$manifest" "$record" <<'PY'
+import atexit
+import errno
+import json
 import os
 import re
+import stat
 import sys
 
 manifest_path, record_path = sys.argv[1], sys.argv[2]
@@ -1171,11 +1199,40 @@ else:
                 block.append("%s%s: %s" % (prefix, out_key, scalar(value)))
                 first = False
 
+# Resolve the explicitly selected workspace once, then never follow symlink
+# components beneath it. Direct helper callers use the standard manifest layout.
+lexical_root = os.path.abspath(top.get("workspace_path") or os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(manifest_path)))))
+components = os.path.relpath(os.path.abspath(manifest_path), lexical_root).split(os.sep)
+if len(components) != 3 or components[0] != "workspaces" or any(
+    part in ("", ".", "..") for part in components
+):
+    raise ValueError("manifest path must be workspaces/<org>/<manifest> within its workspace")
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+directory_fd = os.open(os.path.realpath(lexical_root), directory_flags)
+for component in components[:-1]:
+    try:
+        os.mkdir(component, dir_fd=directory_fd)
+    except FileExistsError:
+        pass
+    child_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+    os.close(directory_fd)
+    directory_fd = child_fd
+atexit.register(os.close, directory_fd)
+manifest_name = components[-1]
+publication_mode = None
 try:
-    with open(manifest_path, "r", encoding="utf-8") as stream:
-        existing = stream.read()
-except OSError:
+    existing_fd = os.open(manifest_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                          dir_fd=directory_fd)
+except FileNotFoundError:
     existing = ""
+else:
+    with os.fdopen(existing_fd, "r", encoding="utf-8") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("manifest must be a regular file or missing")
+        publication_mode = stat.S_IMODE(metadata.st_mode)
+        existing = stream.read()
 
 blocks = []
 lines = existing.splitlines()
@@ -1206,6 +1263,62 @@ def block_id(candidate):
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
         value = value[1:-1]
     return value
+
+
+def feature_blocks(candidate):
+    start = next((i for i, line in enumerate(candidate)
+                  if line.startswith("    features:")), None)
+    if start is None:
+        return []
+    result = []
+    for line in candidate[start + 1:]:
+        if line.startswith("      - branch:"):
+            result.append([line])
+        elif line.startswith("    ") and not line.startswith("      "):
+            break
+        elif result:
+            result[-1].append(line)
+    return result
+
+
+def feature_branch(candidate):
+    value = candidate[0].partition(":")[2].strip()
+    if value.startswith('"'):
+        return json.loads(value)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    return value
+
+
+# A partial park is replayed against the file read on THIS write, including
+# after a push race. Never re-emit an earlier shell snapshot of other features.
+if "_selected_branches" in top:
+    selected = json.loads(top["_selected_branches"])
+    if (not isinstance(selected, list) or not selected
+            or not all(isinstance(name, str) and name for name in selected)
+            or len(set(selected)) != len(selected)):
+        raise SystemExit("Error: invalid selected-branch scope; manifest not written.")
+    incoming = feature_blocks(block)
+    replacements = {feature_branch(item): item for item in incoming}
+    if len(replacements) != len(incoming) or not set(replacements).issubset(selected):
+        raise SystemExit("Error: ambiguous or unselected feature update; manifest not written.")
+    previous = next((item for item in blocks if block_id(item) == project_id), [])
+    retained = []
+    seen = set()
+    for item in feature_blocks(previous):
+        name = feature_branch(item)
+        if name in seen:
+            raise SystemExit("Error: duplicate parked feature; manifest not written.")
+        seen.add(name)
+        retained.append(replacements.pop(name, item))
+    retained.extend(replacements.values())
+    prefix = next(i for i, line in enumerate(block) if line.startswith("    features:"))
+    block = block[:prefix]
+    if retained:
+        block.append("    features:")
+        block.extend(line for item in retained for line in item)
+    else:
+        block.append("    features: []")
 
 
 def without_parked_at(candidate):
@@ -1251,12 +1364,32 @@ if rendered == existing:
     sys.stdout.write("unchanged\n")
     raise SystemExit(0)
 
-directory = os.path.dirname(manifest_path) or "."
-os.makedirs(directory, exist_ok=True)
-temporary = os.path.join(directory, ".%s.tmp" % os.path.basename(manifest_path))
-with open(temporary, "w", encoding="utf-8") as stream:
-    stream.write(rendered)
-os.replace(temporary, manifest_path)
+temporary = ".%s.tmp" % manifest_name
+temporary_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                       0o666, dir_fd=directory_fd)
+identity = os.fstat(temporary_fd)
+try:
+    with os.fdopen(temporary_fd, "w", encoding="utf-8") as stream:
+        if publication_mode is not None:
+            os.fchmod(stream.fileno(), publication_mode)
+        stream.write(rendered)
+    leaf = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+    if (leaf.st_dev, leaf.st_ino) != (identity.st_dev, identity.st_ino):
+        raise OSError(errno.EPERM, "manifest temporary was replaced before publication")
+    try:
+        destination = os.stat(manifest_name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        destination = None
+    if destination is not None and not stat.S_ISREG(destination.st_mode):
+        raise ValueError("manifest must be a regular file or missing")
+    os.replace(temporary, manifest_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+finally:
+    try:
+        leaf = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        leaf = None
+    if leaf is not None and (leaf.st_dev, leaf.st_ino) == (identity.st_dev, identity.st_ino):
+        os.unlink(temporary, dir_fd=directory_fd)
 sys.stdout.write("changed\n")
 PY
 }

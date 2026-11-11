@@ -1,0 +1,587 @@
+"""Shared offline event-proof fixtures; project defaults, helper via explicit loader."""
+
+from copy import deepcopy
+import json
+from pathlib import Path
+import runpy
+import subprocess
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+OLD = runpy.run_path(str(ROOT / "devcontainer.test/test-stack-ci.py"))
+SCOPE = globals().get("SCOPE", "project")
+POLICY_FILE = f"scripts/{SCOPE}-stack-ci.py"
+POLICY = runpy.run_path(str(ROOT / POLICY_FILE))
+PRIMARY = "scripts/project" if SCOPE == "project" else OLD["POLICY"]["HELPER_TEST"]
+SECONDARY = ("devcontainer.test/test-project-command.py" if SCOPE == "project" else
+             "devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/bash/get-last-worktree.sh")
+PREFIX = POLICY["PREFIX"]
+MARKER = f"Stack-CI: {SCOPE}"
+REPO = "opensoft/openBenches"
+QUEUE = "mergify/merge-queue/0123456789"
+CONTEXT = f"openbenches-{SCOPE}-reviewed"
+
+
+class ProjectEfficiencyTests(unittest.TestCase):
+    setUp = OLD["StackCiTest"].setUp
+    git = OLD["StackCiTest"].git
+    commit = OLD["StackCiTest"].commit
+
+    def run_git(self, *args):
+        if args[0] == "fetch":
+            return b""  # All fixture objects are local; no network.
+        return subprocess.check_output(["git", *args], cwd=self.repo)
+
+    def request(self, repo, endpoint):
+        self.assertEqual(repo, REPO)
+        return self.responses[endpoint]
+
+    def chain(self, count=3, mixed=False):
+        for path in (PRIMARY, SECONDARY):
+            self.base = self.commit(path, "# original\n")
+        self.responses = {"branches/main": {"commit": {"sha": self.base}}}
+        self.heads, self.merges = [], []
+        previous, branch = self.base, "main"
+        members = ",".join(str(10 + n) for n in range(count))
+        for index in range(count):
+            number = 10 + index
+            new_branch = f"{PREFIX}{number}"
+            self.git("switch", "-qc", new_branch)
+            self.commit("README.md" if mixed and not index else PRIMARY, f"# member {index}\n")
+            self.git("commit", "--amend", "-qm", f"{SCOPE}\n\n{MARKER}")
+            head = self.git("rev-parse", "HEAD")
+            self.heads.append(head)
+            self.responses[f"pulls/{number}"] = {
+                "number": number, "state": "open", "draft": False,
+                "body": MARKER + (f"\nDepends-On: #{number - 1}" if index else ""),
+                "head": {"sha": head, "ref": new_branch, "repo": {"full_name": REPO}},
+                "base": {"sha": previous, "ref": branch, "repo": {"full_name": REPO}},
+            }
+            self.responses[f"commits/{head}/status"] = {"statuses": [{
+                "context": CONTEXT, "state": "success", "description": f"base={previous} stack={members}",
+            }]}
+            previous, branch = head, new_branch
+        return self.event(count - 1)
+
+    def event(self, index=0, action="synchronize"):
+        pr = deepcopy(self.responses[f"pulls/{index + 10}"])
+        return {"action": action, "number": index + 10, "pull_request": pr}
+
+    def decide(self, event, kind="pull_request", main=None, actor="author", ref="", event_sha=""):
+        return POLICY["decision"](
+            kind, event, main or self.base, REPO, actor, ref, event_sha,
+            request=self.request, run_git=self.run_git)
+
+    def push(self, head, ref, before=None):
+        return {
+            "after": head, "before": before or self.base, "deleted": False,
+            "repository": {"full_name": REPO}, "ref": ref,
+        }
+
+    def candidate(self):
+        self.git("switch", "-qc", QUEUE, self.base)
+        for head in self.heads:
+            self.git("merge", "-q", "--no-ff", head, "-m", "candidate")
+            self.merges.append(self.git("rev-parse", "HEAD"))
+        self.candidate_sha = self.merges[-1]
+        return self.candidate_sha
+
+    def evidence(self):
+        self.candidate()
+        run = {
+            "id": 123, "head_sha": self.candidate_sha, "head_branch": QUEUE,
+            "event": "push", "actor": {"login": "mergify[bot]"},
+            "head_repository": {"full_name": REPO}, "run_attempt": 1,
+            "path": ".github/workflows/stack-candidate-heavy.yml", "status": "completed",
+            "conclusion": "success",
+        }
+        self.responses[POLICY["RUNS_ENDPOINT"]] = {"workflow_runs": [run]}
+        self.responses[self.candidate_runs_endpoint()] = self.responses[POLICY["RUNS_ENDPOINT"]]
+        jobs = [{"name": name, "status": "completed", "conclusion": "success",
+                 "head_sha": self.candidate_sha, "completed_at": "2026-11-10T12:00:00Z"}
+                for name in POLICY["REQUIRED_JOBS"]]
+        self.responses["actions/runs/123/jobs?per_page=100"] = {"total_count": len(jobs), "jobs": jobs}
+
+    def landed(self, count):
+        previous = self.base
+        self.actual = []
+        for index in range(count):
+            tree = self.git("rev-parse", self.merges[index] + "^{tree}")
+            actual = self.git("commit-tree", tree, "-p", previous, "-p", self.heads[index], "-m", "landed")
+            self.actual.append(actual)
+            self.responses[f"pulls/{10 + index}"].update(
+                state="closed", merged=True, merge_commit_sha=actual, merged_at="2026-11-10T12:01:00Z")
+            previous = actual
+        return self.push(previous, "refs/heads/main", self.base if count == 1 else self.actual[-2])
+
+    def landing_decision(self, event):
+        return self.decide(event, "push", main=event["after"], actor="mergify[bot]",
+                           ref="refs/heads/main", event_sha=event["after"])
+
+    def test_current_bottom_two_and_three_member_project_chains(self):
+        self.chain()
+        for index in range(3):
+            with self.subTest(index=index):
+                self.assertEqual(self.decide(self.event(index)), f"{SCOPE}-pr")
+
+    def test_mixed_ancestor_retains_full_checks(self):
+        event = self.chain(mixed=True)
+        self.assertIsNone(self.decide(event))
+
+    def test_foreign_event_snapshot_cannot_use_same_repo_live_data(self):
+        event = self.chain()
+        for ref in ("head", "base"):
+            changed = deepcopy(event)
+            changed["pull_request"][ref]["repo"]["full_name"] = "other/fork"
+            self.assertIsNone(self.decide(changed))
+
+    def test_optin_scope_prefix_current_head_base_and_dependency_required(self):
+        event = self.chain()
+        for field, value in (("body", ""), ("body", "Stack-CI: wave-widget-sync"),
+                             ("draft", True), ("state", "closed")):
+            original = deepcopy(self.responses)
+            self.responses["pulls/12"][field] = value
+            self.assertIsNone(self.decide(event))
+            self.responses = original
+        for ref, field, value in (("head", "sha", "f" * 40), ("base", "sha", self.base),
+                                  ("head", "ref", "ci/stack-wave-widget-sync/12"),
+                                  ("base", "repo", {"full_name": "other/fork"})):
+            original = deepcopy(self.responses)
+            self.responses["pulls/12"][ref][field] = value
+            self.assertIsNone(self.decide(event))
+            self.responses = original
+        self.responses["branches/main"]["commit"]["sha"] = "f" * 40
+        self.assertIsNone(self.decide(event))
+
+    def test_only_delayed_same_head_merged_project_metadata_is_exempt(self):
+        event = self.chain(1)
+        event["action"] = "edited"
+        merge = self.candidate()
+        self.responses["pulls/10"].update(state="closed", merged=True,
+                                        merge_commit_sha=merge, changed_files=1)
+        files = "pulls/10/files?per_page=100"
+        self.responses[files] = [{"filename": PRIMARY, "status": "modified"}]
+        self.assertEqual(self.decide(event, main=merge), f"merged-{SCOPE}-metadata")
+        for field, value in (("merged", False), ("changed_files", 2)):
+            original = deepcopy(self.responses)
+            self.responses["pulls/10"][field] = value
+            self.assertIsNone(self.decide(event, main=merge))
+            self.responses = original
+        for action in ("synchronize", "opened", "reopened", "ready_for_review"):
+            self.assertIsNone(self.decide({**event, "action": action}, main=merge))
+        for file in ({"filename": "bootstrap.sh", "status": "modified"},
+                     {"filename": PRIMARY, "status": "renamed"}):
+            self.responses[files] = [file]
+            self.assertIsNone(self.decide(event, main=merge))
+
+    def test_metadata_with_changed_head_missing_git_or_unlanded_merge_stays_full(self):
+        event = self.chain(1)
+        merge = self.candidate()
+        self.responses["pulls/10"].update(state="closed", merged=True,
+                                        merge_commit_sha=merge, changed_files=1)
+        self.responses["pulls/10/files?per_page=100"] = [{"filename": PRIMARY, "status": "modified"}]
+        event["action"] = "edited"
+        self.assertIsNone(self.decide(event))  # Trusted main predates landing.
+        event["pull_request"]["head"]["sha"] = "f" * 40
+        self.assertIsNone(self.decide(event, main=merge))
+
+    def test_too_long_chains_and_open_mixed_edits_stay_full(self):
+        event = self.chain(4)
+        self.assertIsNone(self.decide(event))
+        head = self.commit("README.md", "# real open edit\n")
+        self.responses["pulls/13"]["head"]["sha"] = head
+        self.assertIsNone(self.decide(self.event(3, "edited")))
+
+    def test_author_push_requires_exact_sha_namespace_marker_and_regular_diff(self):
+        self.chain(1)
+        head = self.heads[0]
+        ref = f"refs/heads/{PREFIX}10"
+        event = self.push(head, ref)
+        self.assertEqual(self.decide(event, "push", ref=ref, event_sha=head), f"{SCOPE}-source-push")
+        for changed in ({**event, "after": "f" * 40}, {**event, "deleted": True},
+                        {**event, "ref": "refs/tags/v1"},
+                        {**event, "repository": {"full_name": "other/fork"}}):
+            self.assertIsNone(self.decide(changed, "push", ref=ref, event_sha=head))
+        for wrong in ("refs/tags/v1", "refs/heads/main", "refs/heads/ordinary"):
+            self.assertIsNone(self.decide(self.push(head, wrong), "push", ref=wrong, event_sha=head))
+        self.git("commit", "--amend", "-qm", "no opt-in")
+        head = self.git("rev-parse", "HEAD")
+        self.assertIsNone(self.decide(self.push(head, ref), "push", ref=ref, event_sha=head))
+
+    def test_source_push_empty_stale_or_diverged_main_stays_full(self):
+        self.chain(1)
+        ref = f"refs/heads/{PREFIX}10"
+        head = self.heads[0]
+        self.responses["branches/main"]["commit"]["sha"] = "f" * 40
+        self.assertIsNone(self.decide(self.push(head, ref), "push", ref=ref, event_sha=head))
+        self.responses["branches/main"]["commit"]["sha"] = self.base
+        self.assertIsNone(self.decide(self.push(self.base, ref), "push", ref=ref, event_sha=self.base))
+        self.git("switch", "-q", "--detach", self.base)
+        new_main = self.commit("README.md", "main advanced\n")
+        self.responses["branches/main"]["commit"]["sha"] = new_main
+        self.assertIsNone(self.decide(self.push(head, ref), "push", main=new_main, ref=ref, event_sha=head))
+
+    def test_mixed_deleted_renamed_mode_and_symlink_source_pushes_fall_back(self):
+        self.chain(1)
+        ref = f"refs/heads/{PREFIX}10"
+        for operation in ("mixed", "delete", "rename", "mode", "symlink"):
+            with self.subTest(operation=operation):
+                self.git("switch", "-q", "--detach", self.base)
+                if operation == "mixed":
+                    self.commit("README.md", "mixed\n")
+                elif operation == "delete":
+                    self.git("rm", PRIMARY)
+                elif operation == "rename":
+                    self.git("mv", PRIMARY, PRIMARY + ".other")
+                elif operation == "mode":
+                    (self.repo / PRIMARY).chmod(0o755)
+                    self.git("update-index", "--chmod=+x", PRIMARY)
+                else:
+                    path = self.repo / PRIMARY
+                    path.unlink()
+                    path.symlink_to("elsewhere")
+                    self.git("add", PRIMARY)
+                self.git("commit", "--allow-empty", "-qm", f"change\n\n{MARKER}")
+                head = self.git("rev-parse", "HEAD")
+                self.assertIsNone(self.decide(self.push(head, ref), "push", ref=ref, event_sha=head))
+
+    def test_queue_push_requires_strict_reviewed_batch_not_just_actor(self):
+        self.chain()
+        head = self.candidate()
+        ref = "refs/heads/" + QUEUE
+        event = self.push(head, ref)
+        self.assertEqual(self.decide(event, "push", ref=ref, event_sha=head,
+                                     actor="mergify[bot]"), f"{SCOPE}-candidate-push")
+        self.assertIsNone(self.decide(event, "push", ref=ref, event_sha=head))
+        self.responses[f"commits/{self.heads[0]}/status"]["statuses"][0]["state"] = "failure"
+        self.assertIsNone(self.decide(event, "push", ref=ref, event_sha=head, actor="mergify[bot]"))
+
+    def candidate_event(self):
+        pr = {"number": 99, "state": "open", "draft": True, "user": {"login": "mergify[bot]"},
+              "head": {"sha": self.candidate_sha, "ref": QUEUE, "repo": {"full_name": REPO}},
+              "base": {"sha": self.base, "ref": "main", "repo": {"full_name": REPO}}}
+        self.responses["pulls/99"] = pr
+        return {"action": "opened", "number": 99, "pull_request": deepcopy(pr)}
+
+    def candidate_runs_endpoint(self):
+        return ("actions/workflows/stack-candidate-heavy.yml/runs?head_sha="
+                f"{self.candidate_sha}&event=push&per_page=20")
+
+    def closed_candidate(self):
+        self.chain()
+        self.evidence()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        self.responses["pulls/99"].update(state="closed", merged=False)
+        return event
+
+    def test_third_party_candidate_edits_use_origin_and_exact_batch_proof(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        for actor in ("sourcery-ai[bot]", "review-helper[bot]", "maintainer"):
+            with self.subTest(actor=actor):
+                self.assertEqual(self.decide(event, actor=actor), f"{SCOPE}-candidate-pr")
+        self.responses["pulls/10"]["body"] = "Stack-CI: wave-widget-sync"
+        self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+
+    def test_third_party_non_metadata_events_keep_full_checks(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        for action in ("opened", "reopened", "synchronize", "ready_for_review", "closed", "labeled", ""):
+            with self.subTest(action=action):
+                self.assertIsNone(self.decide({**event, "action": action}, actor="sourcery-ai[bot]"))
+
+    def test_candidate_metadata_cannot_trust_editor_prefix_or_stale_snapshot(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        original = deepcopy(self.responses)
+        for field, value in (("user", {"login": "sourcery-ai[bot]"}), ("number", 98),
+                             ("state", "unknown")):
+            with self.subTest(field=field):
+                self.responses = deepcopy(original)
+                self.responses["pulls/99"][field] = value
+                self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+        self.responses = original
+        for ref, field, value in (("head", "sha", "f" * 40), ("base", "sha", "f" * 40),
+                                  ("head", "ref", "mergify/merge-queue/ffffffffff"),
+                                  ("base", "ref", "other"),
+                                  ("head", "repo", {"full_name": "other/fork"})):
+            with self.subTest(ref=ref, field=field):
+                changed = deepcopy(event)
+                changed["pull_request"][ref][field] = value
+                self.assertIsNone(self.decide(changed, actor="sourcery-ai[bot]"))
+        self.responses[f"commits/{self.heads[0]}/status"]["statuses"][0]["state"] = "failure"
+        self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+
+    def test_third_party_edit_of_mixed_candidate_stays_full(self):
+        self.chain(mixed=True)
+        self.candidate()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+
+    def test_dequeued_metadata_uses_exact_run_when_success_list_omits_it(self):
+        event = self.closed_candidate()
+        self.responses.pop(POLICY["RUNS_ENDPOINT"])
+        # The event snapshot was open, but live readback is closed/unmerged;
+        # the member PRs remain open. This must not imply anything landed.
+        self.assertEqual(event["pull_request"]["state"], "open")
+        self.assertEqual(self.responses["pulls/10"]["state"], "open")
+        for actor in ("mergify[bot]", "sourcery-ai[bot]", "maintainer"):
+            with self.subTest(actor=actor):
+                self.assertEqual(self.decide(event, actor=actor), f"{SCOPE}-candidate-pr")
+
+    def test_dequeued_candidate_requires_exact_success_and_complete_jobs(self):
+        event = self.closed_candidate()
+        self.assertEqual(self.decide(event, actor="sourcery-ai[bot]"), f"{SCOPE}-candidate-pr")
+        original = deepcopy(self.responses)
+        endpoint = self.candidate_runs_endpoint()
+        for field, value in (("head_sha", "f" * 40), ("head_branch", "mergify/merge-queue/ffffffffff"),
+                             ("conclusion", "failure"), ("status", "in_progress"), ("run_attempt", 2),
+                             ("path", ".github/workflows/other.yml"), ("event", "pull_request"),
+                             ("actor", {"login": "sourcery-ai[bot]"}),
+                             ("head_repository", {"full_name": "other/fork"})):
+            with self.subTest(field=field):
+                self.responses = deepcopy(original)
+                self.responses[endpoint]["workflow_runs"][0][field] = value
+                self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+        for state in ("failure", "cancelled", "skipped", ""):
+            for name in POLICY["REQUIRED_JOBS"]:
+                with self.subTest(state=state, job=name):
+                    self.responses = deepcopy(original)
+                    jobs = self.responses["actions/runs/123/jobs?per_page=100"]["jobs"]
+                    next(job for job in jobs if job["name"] == name)["conclusion"] = state
+                    self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+        for missing in (endpoint, "actions/runs/123/jobs?per_page=100", "pulls/10"):
+            with self.subTest(missing=missing):
+                self.responses = deepcopy(original)
+                self.responses.pop(missing)
+                self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+
+    def test_dequeued_policy_drift_or_unmerged_closed_member_stays_full(self):
+        event = self.closed_candidate()
+        original = deepcopy(self.responses)
+        self.responses["pulls/10"].update(state="closed", merged=False)
+        self.assertIsNone(self.decide(event, actor="sourcery-ai[bot]"))
+        self.responses = original
+        self.git("switch", "-q", "--detach", self.base)
+        new_main = self.commit(POLICY_FILE, "# new policy\n")
+        self.assertIsNone(self.decide(event, main=new_main, actor="sourcery-ai[bot]"))
+
+    def test_candidate_editor_exception_does_not_authorize_queue_or_main_push(self):
+        self.chain()
+        self.evidence()
+        for ref in ("refs/heads/" + QUEUE, "refs/heads/main"):
+            event = self.push(self.candidate_sha, ref)
+            self.assertIsNone(self.decide(event, "push", ref=ref, event_sha=self.candidate_sha,
+                                         actor="sourcery-ai[bot]"))
+
+    def test_real_classifier_outputs_skip_only_for_proven_candidate_edit(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        event["action"] = "edited"
+        event_file, output = self.repo / "candidate-event.json", self.repo / "outputs"
+        event_file.write_text(json.dumps(event))
+        function, decide = POLICY["classify"], POLICY["decision"]
+        env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": REPO,
+               "GITHUB_ACTOR": "sourcery-ai[bot]", "GITHUB_EVENT_PATH": str(event_file),
+               "GITHUB_OUTPUT": str(output)}
+        for missing in (False, True):
+            output.write_text("")
+            if missing:
+                self.responses.pop("pulls/99")
+            with patch.dict(function.__globals__, git=lambda *_a: self.base.encode(),
+                            decision=lambda *args: decide(*args, request=self.request, run_git=self.run_git)):
+                function(env)
+            self.assertEqual(output.read_text(), f"skip_{SCOPE}={'false' if missing else 'true'}\n")
+
+    def test_candidate_draft_pr_checks_exact_batch_instead_of_branch_only_skip(self):
+        self.chain()
+        self.candidate()
+        event = self.candidate_event()
+        self.assertEqual(self.decide(event, actor="mergify[bot]"), f"{SCOPE}-candidate-pr")
+        self.assertIsNone(self.decide(event))
+        self.responses["pulls/10"]["body"] = "Stack-CI: wave-widget-sync"
+        self.assertIsNone(self.decide(event, actor="mergify[bot]"))
+
+    def test_closed_candidate_metadata_requires_successful_exact_heavy_run(self):
+        self.chain()
+        self.evidence()
+        event = self.candidate_event()
+        landing = self.landed(3)
+        self.responses["pulls/99"]["state"] = "closed"
+        event["action"] = "edited"
+        self.assertEqual(self.decide(event, main=landing["after"], actor="mergify[bot]"), f"{SCOPE}-candidate-pr")
+        self.responses[POLICY["RUNS_ENDPOINT"]]["workflow_runs"][0]["conclusion"] = "failure"
+        self.assertIsNone(self.decide(event, main=landing["after"], actor="mergify[bot]"))
+
+    def test_successful_heavy_proof_matches_every_landed_prefix(self):
+        self.chain()
+        self.evidence()
+        for count in range(1, 4):
+            event = self.landed(count)
+            with self.subTest(count=count):
+                self.assertEqual(self.landing_decision(event), f"tested-{SCOPE}-landing")
+
+    def test_landing_requires_successful_exact_candidate_and_all_platforms(self):
+        self.chain()
+        self.evidence()
+        event = self.landed(2)
+        for field, value in (("conclusion", "failure"), ("head_sha", "f" * 40),
+                             ("event", "pull_request"), ("run_attempt", 2),
+                             ("actor", {"login": "author"}), ("head_branch", "ordinary"),
+                             ("path", ".github/workflows/other.yml"),
+                             ("head_repository", {"full_name": "other/fork"})):
+            with self.subTest(field=field):
+                original = deepcopy(self.responses)
+                self.responses[POLICY["RUNS_ENDPOINT"]]["workflow_runs"][0][field] = value
+                self.assertIsNone(self.landing_decision(event))
+                self.responses = original
+        for name in POLICY["REQUIRED_JOBS"]:
+            original = deepcopy(self.responses)
+            jobs = self.responses["actions/runs/123/jobs?per_page=100"]["jobs"]
+            next(job for job in jobs if job["name"] == name)["conclusion"] = "skipped"
+            self.assertIsNone(self.landing_decision(event))
+            self.responses = original
+
+    def test_landing_rejects_wrong_heads_trees_receipts_timing_and_extra_commits(self):
+        self.chain()
+        self.evidence()
+        event = self.landed(2)
+        for endpoint, field, value in (
+            ("pulls/10", "merge_commit_sha", "f" * 40),
+            ("pulls/11", "merged_at", "2026-11-10T11:59:00Z"),
+            ("pulls/11", "merged", False),
+            ("pulls/11", "body", "Stack-CI: wave-widget-sync"),
+        ):
+            original = deepcopy(self.responses)
+            self.responses[endpoint][field] = value
+            self.assertIsNone(self.landing_decision(event))
+            self.responses = original
+        original = deepcopy(self.responses)
+        self.responses[f"commits/{self.heads[1]}/status"]["statuses"][0]["description"] = (
+            f"base={self.base} stack=10,11,12")
+        self.assertIsNone(self.landing_decision(event))
+        self.responses = original
+        for parents, tree in (([self.actual[0], self.heads[2]], self.merges[1]),
+                              ([self.actual[0], self.heads[1]], self.merges[0]),
+                              ([self.base, self.heads[1]], self.merges[1])):
+            wrong = self.git("commit-tree", self.git("rev-parse", tree + "^{tree}"),
+                             "-p", parents[0], "-p", parents[1], "-m", "wrong landing")
+            bad_event = self.push(wrong, "refs/heads/main", parents[0])
+            pr = self.responses[f"pulls/{10 + self.heads.index(parents[1])}"]
+            original_merge = pr.get("merge_commit_sha")
+            pr["merge_commit_sha"] = wrong  # Do not reject before checking the tree.
+            with patch.object(self, "run_git", wraps=self.run_git) as run_git:
+                self.assertIsNone(self.landing_decision(bad_event))
+                if parents == [self.actual[0], self.heads[1]]:
+                    run_git.assert_any_call("rev-parse", wrong + "^{tree}")
+            pr["merge_commit_sha"] = original_merge
+
+    def test_missing_duplicate_truncated_jobs_and_api_errors_retain_full_landing(self):
+        self.chain()
+        self.evidence()
+        event = self.landed(1)
+        endpoint = "actions/runs/123/jobs?per_page=100"
+        for change in ("missing", "duplicate", "truncated", "sha", "timestamp", "missing-run"):
+            with self.subTest(change=change):
+                original = deepcopy(self.responses)
+                response = self.responses[endpoint]
+                if change == "missing":
+                    response["jobs"].pop()
+                    response["total_count"] -= 1
+                elif change == "duplicate":
+                    response["jobs"].append(deepcopy(response["jobs"][0]))
+                    response["total_count"] += 1
+                elif change == "truncated":
+                    response["total_count"] = 101
+                elif change == "sha":
+                    response["jobs"][0]["head_sha"] = "f" * 40
+                elif change == "timestamp":
+                    response["jobs"][0]["completed_at"] = None
+                else:
+                    self.responses.pop(POLICY["RUNS_ENDPOINT"])
+                self.assertIsNone(self.landing_decision(event))
+                self.responses = original
+
+    def test_policy_change_or_mixed_candidate_cannot_reuse_old_success(self):
+        self.chain()
+        self.evidence()
+        event = self.landed(1)
+        self.git("switch", "-q", "--detach", event["after"])
+        main = self.commit(POLICY_FILE, "# changed policy\n")
+        self.assertIsNone(self.decide(event, "push", main=main, actor="mergify[bot]",
+                                     ref="refs/heads/main", event_sha=event["after"]))
+
+    def test_all_incomplete_project_aggregate_results_fail(self):
+        gate = POLICY["COMMON"]["verify_results"]
+        parity = runpy.run_path(str(ROOT / "devcontainer.test/test-helper-coverage-parity.py"))
+        variables = (["PROJECT"] if SCOPE == "project" else
+                     [job[2] for job in parity["JOBS"].values()])
+        for variable in variables:
+            for result in ("failure", "cancelled", "skipped", ""):
+                env = parity["gate_env"](scope=SCOPE)
+                env[variable] = result
+                with self.subTest(variable=variable, result=result), self.assertRaises(ValueError):
+                    gate(env)
+
+    def test_missing_api_git_and_unknown_events_keep_full_checks(self):
+        event = self.chain()
+        self.responses = {}
+        self.assertIsNone(self.decide(event))
+        for kind in ("workflow_dispatch", "pull_request_target", "schedule"):
+            self.assertIsNone(self.decide(event, kind))
+        with patch.dict(POLICY["decision"].__globals__, scoped_pr_qualified=lambda *_a, **_k: (_ for _ in ()).throw(OSError("unavailable"))):
+            self.assertIsNone(self.decide(event))
+
+    def test_output_errors_and_nonboolean_values_never_select_skip(self):
+        function = POLICY["classify"]
+        event_file, output = self.repo / "event.json", self.repo / "output"
+        event_file.write_text("not JSON")
+        env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REPOSITORY": REPO,
+               "GITHUB_EVENT_PATH": str(event_file), "GITHUB_OUTPUT": str(output)}
+        function(env)
+        self.assertIn(f"skip_{SCOPE}=false\n", output.read_text())
+        event_file.write_text(json.dumps({}))
+        for reason in (None, f"{SCOPE}-pr"):
+            output.write_text("")
+            with patch.dict(function.__globals__, git=lambda *_a: b"a" * 40,
+                            decision=lambda *_a, **_k: reason):
+                function(env)
+            self.assertIn(f"skip_{SCOPE}={'true' if reason else 'false'}\n", output.read_text())
+
+    def test_workflow_wiring_preserves_fail_safe_platforms_and_scope_isolation(self):
+        files = (["project-command.yml"] if SCOPE == "project" else
+                 ["speckit-git-bash.yml", "speckit-git-powershell.yml"])
+        for file in files:
+            workflow = (ROOT / ".github/workflows" / file).read_text()
+            if SCOPE == "project":
+                self.assertIn("os: [ubuntu-latest, macos-latest]", workflow)
+            for fragment in ("ref: main", "persist-credentials: false",
+                             f"python3 -I {POLICY_FILE}", "actions: read", "needs: classify",
+                             f"needs.classify.result != 'success' || needs.classify.outputs.skip_{SCOPE} != 'true'",
+                             "types: [opened, reopened, synchronize, edited, ready_for_review]"):
+                self.assertIn(fragment, workflow)
+        heavy = (ROOT / ".github/workflows/stack-candidate-heavy.yml").read_text()
+        self.assertIn("os: [ubuntu-latest, ubuntu-24.04, macos-latest]", heavy)
+        self.assertIn("bash -n scripts/project scripts/onp scripts/new-project.sh scripts/install-workbench-commands.sh scripts/setup-workbenches.sh setup.sh", heavy)
+        fast = (ROOT / ".github/workflows/stack-pr-fast.yml").read_text()
+        self.assertIn(f"python3 devcontainer.test/test-{SCOPE}-stack-ci.py", fast)
+        wave = (ROOT / ".github/workflows/credential-recovery.yml").read_text()
+        self.assertNotIn(f"skip_{SCOPE}", wave)
+        for result in ("success", "failure", "cancelled", "skipped", ""):
+            for value in ("true", "false", "", "True", "unknown"):
+                self.assertEqual(result != "success" or value != "true",
+                                 not (result == "success" and value == "true"))
+
+
+if __name__ == "__main__":
+    unittest.main()

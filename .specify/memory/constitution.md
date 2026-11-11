@@ -1,50 +1,47 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+Sync Impact Report
+Version: unratified template -> 1.0.0 (initial adoption)
+Principles added: One Task Set per Pull Request; Validate the Candidate Before Landing.
+Sections added: Development Workflow; Governance.
+Templates updated: .specify/templates/tasks-template.md; .specify/templates/plan-template.md.
+Feature spec template remains compatible: user stories and acceptance criteria retain their existing shape.
+Guidance added: docs/task-set-delivery.md.
+Deferred placeholders: none.
+-->
+
+# OpenBenches Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. One Task Set per Pull Request
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+Every Spec Kit implementation PR MUST deliver exactly one named task set: one
+reviewable outcome, its related task IDs, and a focused verification command.
+A task set MUST be testable against its declared parent. Tests and compatibility
+changes needed for that set MUST accompany it. An intermediate landing MUST
+leave the target branch usable; incomplete behavior MUST remain inactive.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### II. Validate the Candidate Before Landing
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+Each PR MUST pass its fast checks and applicable review on the current head
+before enqueue. The combined candidate MUST pass the required integration check
+before landing. Tests on an earlier head or after the merge do not satisfy these
+gates. Higher-risk changes retain any additional checks the repository requires.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+## Development Workflow
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
-
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
-
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
-
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+Use one Spec Kit task list and split a set when it needs more than one independent
+review decision. Record parent dependencies in the task list and PRs. Keep
+ordinary pre-merge CI separate from release qualification and publication.
+See [task-set delivery](../../docs/task-set-delivery.md) for the procedure.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+Changes to these principles require maintainer approval, a version update, and
+synchronized planning guidance. A new or expanded principle bumps the minor
+version; incompatible changes bump the major version; clarifications bump the
+patch version. Reviewers check that the PR maps to one set and that required
+checks match its current head. Any exception must be explicit and scoped; this
+constitution does not grant queue, ruleset, or release bypass authority.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-11-09 | **Last Amended**: 2026-11-09

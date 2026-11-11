@@ -54,35 +54,35 @@ sources:
         mode: "100644"
 
   - id: openrepotools
-    source_repository: opensoft/openRepoTools
+    source_repository: opensoft/openRepoTools-code
     materialization: copied
     revision_kind: commit
-    commit: "586dea25e073caadc33002e0157376788678dee0"
+    commit: "2a057a6d84e58c8acb4bda20d2b7b667b552c3fe"
     vendor_dir: files/openrepotools
     files:
       - path: openRepoTools
-        sha256: "a07bd7cb8d8d95345b9c7d05696946d3de4b5530bbd5824d3343f8a499591ad1"
+        sha256: "0afd469286de34db2c35739babf89d33ef8fd288868ede83d40d733d5c0664e1"
         mode: "100755"
       - path: park
-        sha256: "21f0b286f9781fa7ccc83714df0e18d4f3a9151eeff2689e19787aebe15b573f"
+        sha256: "f257bbe019981dfa304e062c370401e2ba1a9bc61929f6b0f8c05f6e297e9588"
         mode: "100755"
       - path: resume
-        sha256: "b63603d37658f8e6813936c485b14b876fb27254b5c40a3a887146ef20bdd8f0"
+        sha256: "0d03ecbb8eee6fdd24b9ac269c8d41162640b1952e75b67b83ba10e769135c16"
         mode: "100755"
       - path: status
-        sha256: "b3d52923c16789f1478144756130361c92adc359843d7ea25fdf0387825c2717"
+        sha256: "cab61a3d52f651b4299d745fc3b09c084b7292a8f6c2805e92d33bd78a3ab234"
         mode: "100755"
       - path: lanes
-        sha256: "25b2b1affa0ed838863895ae0a788c055138a73d25fc6d9087d4fd12912b5ca2"
+        sha256: "a712498f50a192215579f8f53fc086192972ce9ec33f626088d298e33f0c5639"
         mode: "100755"
       - path: lanes-edit.sh
-        sha256: "65fc8eaac75c60c489959998d7c1e2b2615f64b118ca8e31aea35bf38e8d8714"
+        sha256: "b68d0cbac35ac3bbac9e70790cafe63538821be582ca28cec0f7ec0f5c4745d2"
         mode: "100755"
       - path: lane-start
-        sha256: "50e6045cd4ecbbbbdffa80024076cb1db5a35a730787f58cb1280d0ff45c05dc"
+        sha256: "5b9b73c2a28ee5417abcc9e28385c9fc4b7413daf99cf4a972f8c16cd9cbecc2"
         mode: "100755"
       - path: lane-end
-        sha256: "af28239129e51af98035cfa774e349315c8a51f5e785dbaa23eece072a9ebb8e"
+        sha256: "a0076f2a9f2f5a78cc40ad88d0b4af0c7d8b0bbc5cc5e5663d23c8c11b885387"
         mode: "100755"
       - path: link-estates
         sha256: "660b087e2b9391fed637a16128ac1716ad512fc326095e623e630864cd5a0f40"
@@ -100,13 +100,13 @@ sources:
         sha256: "9dc2f404bdf1f018d7e25004fdd27390bdecd81a20ba3f0a07dd9c7a709cb67e"
         mode: "100644"
       - path: lane
-        sha256: "4f79af909fa2f1074d31ba7c497d9203ae5864692c6a1f16350ead44087f54c2"
+        sha256: "1173f7b778ae0ff24274b586b165d0f8ba9f1dd7442607855f1b11ecb4000675"
         mode: "100755"
       - path: lane-handoff
-        sha256: "f3fc35aebd69acccd683e2457dbd0766c0d09c6c6ebeddec846efebf80ac9c66"
+        sha256: "a5a8a2bb51ab788e8878cc77c82afeac399145b2b6e8ea920c67ddef2036309f"
         mode: "100755"
       - path: skills/handoff/SKILL.md
-        sha256: "930f3ac89809d34d7cd8855e01eb06277369adb3d7506ac937d99b35fec0589c"
+        sha256: "9fe3f6378a6bddfd15a77cfd344d919b50d06685d2a97db9a08f1cbca43f73ab"
         mode: "100644"
       - path: commands/handoff.md
         sha256: "fc7ff1127ad0581ca49e92e1513e6b56dce8c410201148d73ce84ad980f976dc"
@@ -118,14 +118,14 @@ sources:
         sha256: "81dc3297228a17e1dd1eabcb870ee583556e1ca7714f4de149e728d66524ca0f"
         mode: "100755"
       - path: claude-current
-        sha256: "50b483609a6e80cc34ffd355effcaf417492bb336fd64a5c5bfb2c633deafd82"
+        sha256: "3b6d144cf7beb685d711a1f895b33d213d678659421914cfffa8d80e58d869c7"
         mode: "100755"
       - path: claude-restart-check
-        sha256: "129914d42f705587741715579e70fb52895e5fb56c40939a8b104f2f07a4c5ff"
+        sha256: "43a5167d541349de58becedda79e455aadca456671001e0f4fceff1f17350343"
         mode: "100755"
       - path: lanes-index
-        sha256: "bd861103d890e134c53b1a23e3c39f1c4f498822015b0fb41e0592da7b6d82b4"
+        sha256: "9417d90150e960b1b8b2a6f6bc2317e503f52fe5ef7b1ec5040b8b39b3ac26e3"
         mode: "100755"
       - path: lane-worktrees
-        sha256: "c5c448b0c550ef8bf0d9f15e0c830f2e1ea79dfc6eb0468c1d26ec3824e6aef2"
+        sha256: "29f538ee67cb4313e75980ad558bba66f2d4c748fe9db9b8cc3fc37e32c5aafd"
         mode: "100755"

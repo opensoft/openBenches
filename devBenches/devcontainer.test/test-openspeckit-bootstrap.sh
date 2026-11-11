@@ -7033,6 +7033,10 @@ export HOME="$FIXTURE_HOME"
 export SPECKIT_WORKTREE_TEMPLATE_ROOT="$WORKTREE_TEMPLATE_ROOT"
 export OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT"
 
+if ! python3 "$TEST_DIR/test-task-set-delivery.py"; then
+    fail 'task-set delivery preview regression'
+fi
+
 if (( failures == 0 )); then
     printf '%s\n' 'GREEN: OpenSpec bootstrap regression test passed'
 else

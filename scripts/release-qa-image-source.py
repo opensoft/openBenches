@@ -36,12 +36,13 @@ def main():
     args = parser.parse_args()
     identity = (planned_identity(args.plan, args.commit) if args.plan else
                 source(args.root, Path(__file__).resolve().parents[1] / 'config/release-tests.json', args.commit))
-    if os.environ.get('GITHUB_REPOSITORY') != 'opensoft/workBenches':
+    repository = os.environ.get('GITHUB_REPOSITORY')
+    if repository not in ('opensoft/workBenches', 'opensoft/openBenches'):
         raise ValidationError('unexpected_image_repository')
     token = os.environ['WB_SOURCE_READ_TOKEN']
 
     def fetch(path):
-        request = urllib.request.Request('https://api.github.com/repos/opensoft/workBenches/' + path,
+        request = urllib.request.Request(f'https://api.github.com/repos/{repository}/{path}',
             headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json'})
         try:
             with urllib.request.urlopen(request, timeout=15) as response:

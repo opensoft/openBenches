@@ -1623,6 +1623,142 @@ function Test-WorktreeLookupThrowsWhenBothPorcelainAttemptsFail {
     } $functionAsts
 }
 
+function Test-WorktreeLookupLockedMarkerRace {
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($sourceFeatureScript, [ref]$tokens, [ref]$parseErrors)
+    Assert-Equal 0 $parseErrors.Count 'production lookup parse errors'
+    $names = @('ConvertFrom-GitCQuotedPath', 'Find-WorktreePathForBranch')
+    $definitions = @($ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $names -ccontains $node.Name
+    }, $true))
+    Assert-Equal 2 $definitions.Count 'production race lookup helper count'
+
+    & {
+        param($Definitions, $Candidate)
+        foreach ($definition in $Definitions) {
+            Invoke-Expression $definition.Extent.Text
+        }
+        $script:RaceCandidate = $Candidate
+        $script:RaceHead = 'b' * 40
+        $script:RaceBranch = 'feature/locked-marker-race'
+        $knownError = "fatal: failed to read '.git/worktrees/005-concurrent-alpha/locked': No such file or directory"
+        function Invoke-GitWorktreePorcelain {
+            param([switch]$NullDelimited)
+            $script:RaceCalls++
+            if ($script:RaceLegacy -and $NullDelimited) {
+                return [PSCustomObject]@{ ExitCode = 129; Stdout = ''; Stderr = 'unknown switch z' }
+            }
+            $script:RaceSnapshots++
+            if ($script:RaceSnapshots -le $script:RaceFailures) {
+                # Even plausible partial records from a failed process are untrusted.
+                return [PSCustomObject]@{
+                    ExitCode = $script:RaceCode
+                    Stdout = "worktree /stale$([char]0)HEAD $('a' * 40)$([char]0)"
+                    Stderr = $script:RaceError
+                }
+            }
+            $stdout = if ($script:RacePayload -eq 'malformed') {
+                "worktree $script:RaceCandidate$([char]0)"
+            } elseif ($script:RaceLegacy) {
+                "worktree $script:RaceCandidate$([char]10)HEAD $script:RaceHead$([char]10)branch refs/heads/$script:RaceBranch$([char]10)$([char]10)"
+            } else {
+                "worktree $script:RaceCandidate$([char]0)HEAD $script:RaceHead$([char]0)branch refs/heads/$script:RaceBranch$([char]0)$([char]0)"
+            }
+            return [PSCustomObject]@{ ExitCode = 0; Stdout = $stdout; Stderr = '' }
+        }
+        function Assert-WorktreeCandidateValid {
+            param($CandidatePath, $BranchName, $ExpectedHead)
+            $script:RaceValidations++
+            Assert-Equal $script:RaceCandidate $CandidatePath 'only the fresh snapshot path reaches validation'
+            Assert-Equal $script:RaceHead $ExpectedHead 'only the fresh snapshot HEAD reaches validation'
+            Assert-Equal $script:RaceBranch $BranchName 'recovery preserves branch validation'
+            if ($script:RaceRejectCandidate) { throw 'candidate authentication rejected' }
+        }
+        function Start-Sleep {
+            param([int]$Milliseconds)
+            Assert-Equal 100 $Milliseconds 'bounded recovery backoff'
+            $script:RaceSleeps++
+        }
+
+        $cases = @()
+        foreach ($legacy in @($false, $true)) {
+            foreach ($count in 1, 2, 3) {
+                $cases += @{
+                    Name = "format legacy=$legacy, missing markers=$count"
+                    Legacy = $legacy; Failures = $count; Code = 128; Error = $knownError
+                    Throw = ($count -eq 3); Calls = [Math]::Min($count + 1, 3) + [int]$legacy
+                    Sleeps = [Math]::Min($count, 2); Validations = [int]($count -lt 3)
+                }
+            }
+        }
+        foreach ($errorCase in @(
+            @{Code=128; Error=$knownError.Replace('No such file or directory', 'Permission denied')},
+            @{Code=128; Error=$knownError.Replace('/locked', '/HEAD')},
+            @{Code=128; Error=$knownError.Replace('/worktrees/', '/unrelated/')},
+            @{Code=1; Error=$knownError},
+            @{Code=128; Error="$knownError$([char]10)fatal: another error"}
+        )) {
+            $cases += @{
+                Name = "unrelated diagnostic: $($errorCase.Error)"
+                Legacy = $false; Failures = 1; Code = $errorCase.Code; Error = $errorCase.Error
+                Throw = $true; Calls = 1; Sleeps = 0; Validations = 0
+            }
+        }
+        $cases += @{
+            Name='Windows metadata path'; Legacy=$false; Failures=1; Code=128
+            Error="fatal: failed to read 'C:\repo\.git\worktrees\005-alpha\locked': No such file or directory"
+            Throw=$false; Calls=2; Sleeps=1; Validations=1
+        }
+        $cases += @{
+            Name='malformed fresh snapshot'; Legacy=$false; Failures=1; Code=128; Error=$knownError
+            Throw=$true; Calls=2; Sleeps=1; Validations=0; Payload='malformed'
+        }
+        $cases += @{
+            Name='uncorroborated fresh snapshot'; Legacy=$false; Failures=1; Code=128; Error=$knownError
+            Throw=$true; Calls=2; Sleeps=1; Validations=1; RejectCandidate=$true
+        }
+
+        $caseFailures = @()
+        foreach ($case in $cases) {
+            $script:RaceCalls = $script:RaceSnapshots = $script:RaceSleeps = $script:RaceValidations = 0
+            $script:RaceLegacy = $case.Legacy
+            $script:RaceFailures = $case.Failures
+            $script:RaceCode = $case.Code
+            $script:RaceError = $case.Error
+            $script:RacePayload = if ($case.ContainsKey('Payload')) { $case.Payload } else { 'valid' }
+            $script:RaceRejectCandidate = $case.ContainsKey('RejectCandidate')
+            try {
+                $caught = $null
+                $result = $null
+                try { $result = Find-WorktreePathForBranch -BranchName $script:RaceBranch } catch { $caught = $_.Exception }
+                Assert-Equal $case.Throw ($null -ne $caught) "case $($case.Name) throw result"
+                Assert-Equal $case.Calls $script:RaceCalls "case $($case.Name) attempt bound"
+                Assert-Equal $case.Sleeps $script:RaceSleeps "case $($case.Name) backoff count"
+                Assert-Equal $case.Validations $script:RaceValidations "case $($case.Name) validation count"
+                if (-not $case.Throw) { Assert-Equal $Candidate $result "case $($case.Name) fresh result" }
+            } catch {
+                $caseFailures += "$($case.Name): $($_.Exception.Message)"
+            }
+        }
+        Assert-Equal 0 $caseFailures.Count "locked-marker recovery cases: $($caseFailures -join '; ')"
+    } $definitions (Join-Path $fixtureRoot 'fresh-authenticated-worktree')
+}
+
+function Test-WorktreePorcelainUsesChildLocale {
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($sourceFeatureScript, [ref]$tokens, [ref]$parseErrors)
+    Assert-Equal 0 $parseErrors.Count 'production porcelain parse errors'
+    $definition = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-GitWorktreePorcelain'
+    }, $true)
+    Assert-True ($definition.Extent.Text -match "\.Environment\['LC_ALL'\]\s*=\s*'C'") 'diagnostic locale is set only on the Git child'
+    Assert-True ($definition.Extent.Text -notmatch '\$env:LC_ALL\s*=') 'parent locale is not mutated'
+}
+
 function Test-WorktreeLookupReturnsNullForSuccessfulNoMatch {
     $tokens = $null
     $parseErrors = $null
@@ -2161,6 +2297,8 @@ $defaultScenarios = [ordered]@{
     'state parent swap publishes only to authenticated parent' = ${function:Test-StateParentSwapPublishesOnlyToAuthenticatedParent}
     'prunable worktree records are finalized before lookup' = ${function:Test-PrunableWorktreeRecordsAreFinalizedBeforeLookup}
     'both failed porcelain attempts throw' = ${function:Test-WorktreeLookupThrowsWhenBothPorcelainAttemptsFail}
+    'bounded locked-marker snapshot recovery' = ${function:Test-WorktreeLookupLockedMarkerRace}
+    'Git discovery child uses stable diagnostic locale' = ${function:Test-WorktreePorcelainUsesChildLocale}
     'successful worktree no-match returns null' = ${function:Test-WorktreeLookupReturnsNullForSuccessfulNoMatch}
     'ambiguous line porcelain with two HEAD fields throws' = ${function:Test-AmbiguousLinePorcelainThrows}
     'matching worktree candidate requires live corroboration' = ${function:Test-WorktreeCandidateRequiresLiveCorroboration}
@@ -2176,6 +2314,8 @@ $defaultScenarios = [ordered]@{
 }
 
 $windowsStateScenarios = [ordered]@{
+    'bounded locked-marker snapshot recovery' = ${function:Test-WorktreeLookupLockedMarkerRace}
+    'Git discovery child uses stable diagnostic locale' = ${function:Test-WorktreePorcelainUsesChildLocale}
     'Windows state transaction structural contract' = ${function:Test-WindowsStateTransactionStructure}
     'Windows state replaces existing file with held reader' = ${function:Test-WindowsStateReplacesExistingFileWithHeldReader}
     'Windows state primary failure preserves error and cleans temporary' = ${function:Test-WindowsStatePrimaryFailurePreservesErrorAndCleansTemporary}

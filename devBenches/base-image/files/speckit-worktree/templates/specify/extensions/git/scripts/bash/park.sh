@@ -663,6 +663,14 @@ LEG_MOUNTS=()
 # The role is what the manifest records (spec, code, or repo for a single
 # repository); the mount is where the leg checkout sits, which is what a
 # copy-pasteable `git -C` command needs.
+park_git_common_dir() {
+    (
+        CDPATH="" cd -- "$1" || exit 1
+        common_path=$(git rev-parse --git-common-dir 2>/dev/null) || exit 1
+        CDPATH="" cd -- "$common_path" && pwd -P
+    )
+}
+
 build_legs() {
     local feature_dir="$1"
 
@@ -733,6 +741,7 @@ while [ "$feature_index" -lt "${#PARK_BRANCHES[@]}" ]; do
         tree="${LEG_TREES[$leg]}"
         tree_print="$(root_relative "$tree")"
         leg_print="${LEG_MOUNTS[$leg]}"
+        leg_repo="${LEG_REPOS[$leg]}"
         leg=$((leg + 1))
         if [ ! -d "$tree" ]; then
             >&2 echo "Error: $(root_relative "$feature_dir") has no $role leg worktree; that feature was NOT parked."
@@ -740,6 +749,27 @@ while [ "$feature_index" -lt "${#PARK_BRANCHES[@]}" ]; do
             >&2 echo "  or remove the feature directory and re-run \`make park\`."
             record_refusal "$branch" "missing $role leg worktree" \
                 "git -C $leg_print worktree add $(root_relative "$feature_dir")/$leg_print $branch"
+            refused=true
+            break
+        fi
+        expected_common="$(park_git_common_dir "$leg_repo" 2>/dev/null || true)"
+        actual_common="$(park_git_common_dir "$tree" 2>/dev/null || true)"
+        actual_root="$(git -C "$tree" rev-parse --show-toplevel 2>/dev/null || true)"
+        actual_root="$(CDPATH="" cd -- "$actual_root" 2>/dev/null && pwd -P || true)"
+        expected_root="$(CDPATH="" cd -- "$tree" 2>/dev/null && pwd -P || true)"
+        if [ -z "$expected_common" ] || [ "$actual_common" != "$expected_common" ] \
+            || [ -z "$expected_root" ] || [ "$actual_root" != "$expected_root" ]; then
+            >&2 echo "Error: $branch ($role leg) is not a worktree of the expected $role repository; that feature was NOT parked."
+            record_refusal "$branch" "wrong $role repository" \
+                "inspect git -C $leg_print worktree list and restore the expected worktree"
+            refused=true
+            break
+        fi
+        actual_branch="$(git -C "$tree" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+        if [ "$actual_branch" != "$branch" ]; then
+            >&2 echo "Error: $branch ($role leg) has checked-out branch '${actual_branch:-detached HEAD}', expected '$branch'; that feature was NOT parked."
+            record_refusal "$branch" "wrong checked-out branch in $role leg" \
+                "inspect git -C $tree_print status and restore branch $branch"
             refused=true
             break
         fi
@@ -1041,6 +1071,10 @@ PROJECT_REPOSITORY="$WORKSPACE_PROJECT_REPOSITORY"
     printf 'manifest_path\t%s\n' "$MANIFEST_RELATIVE"
     printf 'active_feature\t%s\n' "$ACTIVE_FEATURE"
     printf 'active_feature_source\t%s\n' "$ACTIVE_FEATURE_SOURCE"
+    if [ "${#REQUESTED_BRANCHES[@]}" -gt 0 ]; then
+        selected_scope="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PARK_BRANCHES[@]}")"
+        printf '_selected_branches\t%s\n' "$selected_scope"
+    fi
     printf '_family\t%s\n' "$WORKSPACE_FAMILY"
     printf '_repository\t%s\n' "$PROJECT_REPOSITORY"
     printf '_shape\t%s\n' "$REPO_SHAPE"
@@ -1089,18 +1123,20 @@ if [ "$DRY_RUN" != true ]; then
             exit 3
         fi
         MANIFEST_COMMIT="$(git -C "$WORKSPACE_PATH" rev-parse --short HEAD)"
-        if workspace_push_manifest "$WORKSPACE_PATH"; then
-            PUSH_STATE="$WORKSPACE_PUSH_RESULT"
-        else
-            PUSH_STATE="$WORKSPACE_PUSH_RESULT"
-            if [ "$PUSH_STATE" = "dirty" ]; then
-                workspace_refuse_dirty "$WORKSPACE_PATH" parked
-                workspace_unlock
-                exit 2
-            fi
+    fi
+    # An unchanged file can still have a pending commit from a failed park.
+    # Retry publication independently; do not manufacture an empty commit.
+    if workspace_push_manifest "$WORKSPACE_PATH"; then
+        PUSH_STATE="$WORKSPACE_PUSH_RESULT"
+    else
+        PUSH_STATE="$WORKSPACE_PUSH_RESULT"
+        if [ "$PUSH_STATE" = "dirty" ]; then
+            workspace_refuse_dirty "$WORKSPACE_PATH" parked
             workspace_unlock
-            exit 3
+            exit 2
         fi
+        workspace_unlock
+        exit 3
     fi
     workspace_unlock
 fi

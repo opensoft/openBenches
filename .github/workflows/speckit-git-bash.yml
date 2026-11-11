@@ -3,8 +3,19 @@ name: OpenSpeckit Bash
 on:
   push:
     paths:
+      - scripts/stack-ci.py
+      - scripts/project-stack-ci.py
+      - scripts/helper-stack-ci.py
+      - devcontainer.test/test-project-stack-ci.py
+      - devcontainer.test/test-helper-stack-ci.py
       - .github/workflows/speckit-git-bash.yml
+      - .github/actions/openspeckit-bash/**
+      - .github/actions/openspeckit-compat/**
+      - devcontainer.test/helper-integration-baseline.json
+      - devcontainer.test/test-helper-coverage-parity.py
       - devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
+      - devBenches/devcontainer.test/test-task-set-delivery.py
+      - devBenches/base-image/files/openspeckit/task-set-delivery/**
       - devBenches/devcontainer.test/test-speckit-git-feature.sh
       - devBenches/devcontainer.test/test-speckit-git-compat.sh
       - devBenches/devcontainer.test/test-ct-launchers.sh
@@ -47,9 +58,21 @@ on:
       - scripts/wave-container-shell.sh
       - setup.sh
   pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
     paths:
+      - scripts/stack-ci.py
+      - scripts/project-stack-ci.py
+      - scripts/helper-stack-ci.py
+      - devcontainer.test/test-project-stack-ci.py
+      - devcontainer.test/test-helper-stack-ci.py
       - .github/workflows/speckit-git-bash.yml
+      - .github/actions/openspeckit-bash/**
+      - .github/actions/openspeckit-compat/**
+      - devcontainer.test/helper-integration-baseline.json
+      - devcontainer.test/test-helper-coverage-parity.py
       - devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
+      - devBenches/devcontainer.test/test-task-set-delivery.py
+      - devBenches/base-image/files/openspeckit/task-set-delivery/**
       - devBenches/devcontainer.test/test-speckit-git-feature.sh
       - devBenches/devcontainer.test/test-speckit-git-compat.sh
       - devBenches/devcontainer.test/test-ct-launchers.sh
@@ -101,174 +124,74 @@ env:
   SPECKIT_WORKTREE_FALLBACK_FILE: ${{ github.workspace }}/devBenches/base-image/files/speckit-worktree/templates/specify/shell/worktrees.sh
 
 jobs:
+  classify:
+    name: Classify helper stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+      actions: read
+    outputs:
+      skip_helper: ${{ steps.scope.outputs.skip_helper }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify from trusted main; uncertainty retains full CI
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! python3 -I scripts/helper-stack-ci.py; then
+            echo 'skip_helper=false' >> "$GITHUB_OUTPUT"
+          fi
+
   regression:
+    needs: classify
+    if: >-
+      ${{ always() && !cancelled() &&
+      (needs.classify.result != 'success' || needs.classify.outputs.skip_helper != 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Ensure zsh is available
-        run: |
-          if ! command -v zsh >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends zsh
-          fi
-
-      - name: Verify runtime prerequisites
-        run: |
-          git --version
-          bash --version | sed -n '1p'
-          python3 --version
-          zsh --version
-
-      - name: Check the vendored upstream copies against their pin
-        run: python3 ./devBenches/base-image/update-upstream.py check
-
-      # opensoft/workBenches#153. `apply`'s two ways to accept a commit: the
-      # default-branch rule, word for word as it was, and a release named by
-      # `--tag` and `--branch`. The real tool runs against a throwaway pin with
-      # a stub `gh` first on PATH, a failing `curl`, a bogus GH_TOKEN and an
-      # empty GH_CONFIG_DIR, so nothing reaches GitHub. Needs python3, git, jq.
-      - name: Run the update-upstream.py apply regression test
-        run: python3 ./devcontainer.test/test-update-upstream.py
-
-      - name: Run the setup-estate-commands regression test
-        run: bash ./devcontainer.test/test-setup-estate-commands.sh
-
-      - name: Run the setup-workspace-repo regression test
-        run: bash ./devcontainer.test/test-setup-workspace-repo.sh
-
-      # opensoft/workBenches#90. Two suites that guard the same estate install
-      # from the other end -- the container-start step's wiring, and the
-      # launcher's own account of removing the Amendment 12 name guard -- and
-      # until this PR nothing in CI ran either, so a regression in either went
-      # green. Both are host-run and hermetic: the first reads two Dockerfiles
-      # and never builds one, the second redirects HOME, CLAUDE_PROFILES_HOME
-      # and the profile manifest into its own sandbox and needs no tmux.
-      - name: Run the base-image Dockerfile wiring test
-        run: bash ./devcontainer.test/test-base-image-dockerfile.sh
-
-      # Remaining launcher suites from #105. Fakes and temporary profiles keep
-      # these independent of real accounts, tmux servers, and AI sessions.
-      - name: Run launcher, lane, and statusline regression suites
-        run: |
-          jq --version
-          script --version
-          for suite in \
-            test-claude-profile-lane-default \
-            test-claude-profile-lane-start \
-            test-claude-profile-session-start-hook \
-            test-claude-profile-preserves-model \
-            test-claude-tmux-statusline \
-            test-claude-tmux-statusline-env-isolation \
-            test-claude-statusline-snapshots; do
-            bash "./devcontainer.test/$suite.sh"
-          done
-
-      - name: Run the claude-profile name-guard regression test
-        run: bash ./devcontainer.test/test-claude-profile-name-guard-hook.sh
-
-      - name: Run the claude-profile binary-selection regression test
-        env:
-          WORKBENCHES_CLAUDE_TMUX_CHILD: "1"
-          WORKBENCHES_CLAUDE_WINDOW: ambient-lane
-          WORKBENCHES_CLAUDE_WINDOW_ID: "@999"
-          CLAUDE_LANE: ambient-lane
-          # What a session started by the launcher carries (opensoft/workBenches#119).
-          CLAUDE_BIN: /ambient/claude
-          CLAUDE_RESOLVED_BIN: /ambient/claude
-          CLAUDE_VERIFIED_VERSION: "0.0.1"
-        run: bash ./devcontainer.test/test-claude-profile-binary-selection.sh
-
-      # lane-collision-protocol Amendment 9 adoption act 4b. This suite is the
-      # guard on the act's deletion -- that scripts/setup-claude-profiles.sh no
-      # longer installs the /lane-swap skill or ensures the SessionStart entry,
-      # and that `openRepoTools --install` is the one thing that does. Until
-      # this PR nothing in CI ran it, so restoring either writer would have
-      # gone green. It is host-run, needs only bash/jq/python3, and is
-      # hermetic: it redirects HOME, CLAUDE_PROFILES_HOME and CLAUDE_USER_DIR
-      # into its own sandbox.
-      - name: Run the lane-swap skill install regression test
-        run: bash ./devcontainer.test/test-claude-profile-skill-install.sh
-
-      # opensoft/workBenches#93. This suite audits lane-collision-protocol
-      # Amendment 11 (the launcher's window reuse, directory and precedence-4
-      # rules) plus the vendored handoff/lane-swap skill's mechanics, against
-      # `base-image/files/claude-profile`, `base-image/files/claude-usage-
-      # guard.sh`, `docs/claude-multi-account-profiles.md` and the vendored
-      # openrepotools skills/commands above. It was written but never wired in
-      # here, so real rot against the vendored bytes went uncaught for two
-      # pin moves; every assertion that had drifted from the shipped bytes
-      # without a genuine gap behind it is retargeted in the suite itself
-      # (cited inline as `RETARGETED (opensoft/workBenches#93)`), and every
-      # assertion behind a real upstream gap is skipped pending its own issue
-      # (`KNOWN GAP, NOT THIS PR'S`, opensoft/openRepoTools#79/#98/#99/#100).
-      # Host-run, hermetic (its own $TEST_ROOT, real HOME never touched).
-      - name: Run the claude-profile Amendment 11 regression test
-        run: bash ./devcontainer.test/test-claude-profile-amendment-11.sh
-
-      # Every profile's settings.json gets CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1
-      # under `env` (Brett Heap, 2026-10-13: "we do not want the fallback to
-      # 4.8"); the shared protocol's Build Tiers preflight reads it back. This
-      # suite pins the seeding: a fresh file, an existing `env` kept whole, an
-      # explicit "0" preserved. Host-run, hermetic (its own sandbox for HOME,
-      # CLAUDE_PROFILES_HOME and the manifest), needs only bash and jq.
-      - name: Run the claude-profile refusal-fallback env regression test
-        run: bash ./devcontainer.test/test-claude-profile-refusal-fallback.sh
-
-      # Every profile's settings.json gets the two agent-model-record hook
-      # entries, a PostToolUse on the Agent tool and a SubagentStop, when
-      # `~/.local/bin/claude-agent-model-record` is installed (Brett Heap,
-      # 2026-10-15: "add the posttooluse hook that records the resolved
-      # model"); the shared protocol's Build Tiers "Pin and verify" names the
-      # record they write. This suite pins the seeding: both entries byte for
-      # byte, ensuring twice appends once, an entry already carrying the
-      # command and every foreign entry are left as they are, and nothing is
-      # written (or removed) where the script is not. Host-run, hermetic (its
-      # own sandbox for HOME, CLAUDE_PROFILES_HOME and the manifest), needs
-      # only bash and jq.
-      - name: Run the claude-profile agent-model-record hook regression test
-        run: bash ./devcontainer.test/test-claude-profile-agent-model-hook.sh
-
-      - name: Run bootstrap suite
-        run: bash ./devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
-
-      - name: Run feature suite
-        run: bash ./devBenches/devcontainer.test/test-speckit-git-feature.sh
-
-      - name: Run compatibility suite
-        run: bash ./devBenches/devcontainer.test/test-speckit-git-compat.sh
-
-      - name: Run ct launcher suite
-        run: bash ./devBenches/devcontainer.test/test-ct-launchers.sh
+      - name: Run shared integration suites
+        uses: ./.github/actions/openspeckit-bash
 
   git-2-34-1:
+    needs: classify
+    if: >-
+      ${{ always() && !cancelled() &&
+      (needs.classify.result != 'success' || needs.classify.outputs.skip_helper != 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Run Git 2.34.1 feature and compatibility suites
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
-            --workdir /workspace \
-            ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc \
-            bash -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends git=1:2.34.1-1ubuntu1 git-man=1:2.34.1-1ubuntu1 jq python3 zsh ca-certificates && git --version && test "$(git --version)" = "git version 2.34.1" && bash ./devBenches/devcontainer.test/test-speckit-git-feature.sh && bash ./devBenches/devcontainer.test/test-speckit-git-compat.sh'
+      - name: Run shared integration suites
+        uses: ./.github/actions/openspeckit-compat
+        with:
+          runtime: git-2-34-1
 
   bash-3-2:
+    needs: classify
+    if: >-
+      ${{ always() && !cancelled() &&
+      (needs.classify.result != 'success' || needs.classify.outputs.skip_helper != 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Run feature and compatibility suites with Bash 3.2
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
-            --workdir /workspace \
-            bash:3.2@sha256:241dd7ed99aa1f458b6a74cd200a49dca934d9e29d7a9b7636fe712db275a02b \
-            -c 'apk add --no-cache git python3 coreutils jq >/dev/null && bash --version | sed -n "1p" && jq --version && bash ./devBenches/devcontainer.test/test-speckit-git-feature.sh && bash ./devBenches/devcontainer.test/test-speckit-git-compat.sh'
+      - name: Run shared integration suites
+        uses: ./.github/actions/openspeckit-compat
+        with:
+          runtime: bash-3-2

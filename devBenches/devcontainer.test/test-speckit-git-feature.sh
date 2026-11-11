@@ -393,6 +393,18 @@ test_malformed_and_symlinked_state_fall_back_safely() {
     assert_equal "$registered_path" "$(json_field "$output" WORKTREE_PATH)" 'malformed state fallback path' || return 1
     assert_equal 'worktree_root_fallback' "$(json_field "$output" SOURCE)" 'malformed state fallback source' || return 1
 
+    # A state file must be one JSON document, not a stream of objects.
+    write_worktree_state "$state_file" "$registered_path" feature/014-registered || return 1
+    printf '\n{}\n' >> "$state_file" || return 1
+    output="$(cd "$repo" && bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
+    assert_equal 'worktree_root_fallback' "$(json_field "$output" SOURCE)" 'multi-document state fallback source' || return 1
+
+    # Do not truncate an impossible path to a real registered path at a NUL.
+    python3 -c 'import json, sys; print(json.dumps({"WORKTREE_PATH": sys.argv[1] + "\0ignored"}))' \
+        "$registered_path" > "$state_file" || return 1
+    output="$(cd "$repo" && bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
+    assert_equal 'worktree_root_fallback' "$(json_field "$output" SOURCE)" 'NUL state fallback source' || return 1
+
     # Given: the same state pathname is a symlink to external sentinel bytes.
     rm -f "$state_file" || return 1
     printf 'external sentinel bytes\n' > "$sentinel" || return 1
@@ -4232,6 +4244,113 @@ test_vendored_copies_match_their_pins() {
     python3 "$UPDATE_UPSTREAM_FILE" check >/dev/null
 }
 
+test_get_last_worktree_help_without_git() {
+    local output
+    output="$(cd "$FIXTURE_ROOT" && PATH=/nonexistent "$BASH" "$GET_LAST_WORKTREE_SCRIPT" --help)" || return 1
+    case "$output" in
+        'Usage: get-last-worktree.sh [--json | --env | --help]'*) return 0 ;;
+        *) printf 'unexpected last-worktree help: %s\n' "$output" >&2; return 1 ;;
+    esac
+}
+
+assert_get_last_worktree_usage_error() {
+    local expected="$1" status=0
+    shift
+    (cd "$FIXTURE_ROOT" && PATH=/nonexistent "$BASH" "$GET_LAST_WORKTREE_SCRIPT" "$@") \
+        >"$FIXTURE_ROOT/last-worktree-args.stdout" \
+        2>"$FIXTURE_ROOT/last-worktree-args.stderr" || status=$?
+    assert_equal 2 "$status" 'last-worktree argument error status' || return 1
+    [ ! -s "$FIXTURE_ROOT/last-worktree-args.stdout" ] || return 1
+    grep -Fq -- "$expected" "$FIXTURE_ROOT/last-worktree-args.stderr" &&
+        grep -Fq 'Usage: get-last-worktree.sh' "$FIXTURE_ROOT/last-worktree-args.stderr"
+}
+
+test_get_last_worktree_rejects_bad_args() {
+    assert_get_last_worktree_usage_error 'unrecognized option: --jsno' --jsno &&
+        assert_get_last_worktree_usage_error 'expected at most one option' --json --env &&
+        # Help must not hide a second option, regardless of argument order.
+        assert_get_last_worktree_usage_error 'expected at most one option' --help --json &&
+        assert_get_last_worktree_usage_error 'expected at most one option' --env --help &&
+        assert_get_last_worktree_usage_error 'unrecognized option:' ''
+}
+
+test_get_last_worktree_keeps_invalid_option_literal() {
+    local sentinel="$FIXTURE_ROOT/invalid-option-must-not-execute"
+    local argument="--\$(touch '$sentinel');*"
+    local quoted
+
+    # Invalid shell-like text is reported, never evaluated or glob-expanded.
+    assert_get_last_worktree_usage_error 'unrecognized option:' "$argument" || return 1
+    printf -v quoted '%q' "$argument"
+    grep -Fq -- "unrecognized option: $quoted" \
+        "$FIXTURE_ROOT/last-worktree-args.stderr" || return 1
+    [ ! -e "$sentinel" ]
+}
+
+test_get_last_worktree_reads_mtime_once() {
+    local repo="$FIXTURE_ROOT/mtime-repo"
+    local path="$FIXTURE_ROOT/mtime-worktrees/001-probe"
+    local shim="$FIXTURE_ROOT/mtime-bin"
+    local log="$FIXTURE_ROOT/mtime.log"
+    local config=$'checkout_mode: worktree\nbase_branch: main\nworktree_root: ../mtime-worktrees'
+    local output
+    initialize_fixture "$repo" "$config" || return 1
+    install_discovery_scripts "$repo" || return 1
+    git -C "$repo" branch feature/mtime-probe || return 1
+    git -C "$repo" worktree add -q "$path" feature/mtime-probe || return 1
+    mkdir -p "$shim" || return 1
+    cat > "$shim/stat" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" -eq 3 ] && [ "$1" = -c ] && [ "$2" = %Y ] && [ "$3" = "$TEST_MTIME_PATH" ]; then
+    printf 'probe\n' >> "$TEST_MTIME_LOG"
+    printf '%s\n' "${TEST_MTIME_VALUE:-100}"
+    exit 0
+fi
+exec "$TEST_REAL_STAT" "$@"
+SH
+    chmod +x "$shim/stat" || return 1
+    output="$(cd "$repo" && PATH="$shim:$PATH" TEST_MTIME_PATH="$path" TEST_MTIME_LOG="$log" \
+        TEST_REAL_STAT="$(command -v stat)" bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
+    assert_equal "$path" "$(json_field "$output" WORKTREE_PATH)" 'mtime probe path' || return 1
+    assert_equal 1 "$(grep -c '^probe$' "$log")" 'single successful mtime probe' || return 1
+
+    # An unusable stat result must not become a selectable worktree.
+    if (cd "$repo" && PATH="$shim:$PATH" TEST_MTIME_PATH="$path" TEST_MTIME_LOG="$log" \
+        TEST_MTIME_VALUE=not-an-epoch TEST_REAL_STAT="$(command -v stat)" \
+        bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json) \
+        >"$FIXTURE_ROOT/invalid-mtime.stdout" 2>"$FIXTURE_ROOT/invalid-mtime.stderr"; then
+        printf 'assertion failed: last-worktree accepted a nonnumeric mtime\n' >&2
+        return 1
+    fi
+    [ ! -s "$FIXTURE_ROOT/invalid-mtime.stdout" ] &&
+        grep -Fq 'no Speckit worktree handoff has been recorded yet' "$FIXTURE_ROOT/invalid-mtime.stderr"
+}
+
+test_get_last_worktree_breaks_mtime_ties_by_path() {
+    local repo="$FIXTURE_ROOT/mtime-tie-repo"
+    local root="$FIXTURE_ROOT/mtime-tie-worktrees"
+    local first="$root/001-alpha" second="$root/002-zulu"
+    local shim="$FIXTURE_ROOT/mtime-tie-bin"
+    local records="$FIXTURE_ROOT/mtime-tie.records"
+    local config=$'checkout_mode: worktree\nbase_branch: main\nworktree_root: ../mtime-tie-worktrees'
+    local head output
+    initialize_fixture "$repo" "$config" || return 1
+    install_discovery_scripts "$repo" || return 1
+    git -C "$repo" branch feature/mtime-alpha || return 1
+    git -C "$repo" branch feature/mtime-zulu || return 1
+    git -C "$repo" worktree add -q "$first" feature/mtime-alpha || return 1
+    git -C "$repo" worktree add -q "$second" feature/mtime-zulu || return 1
+    touch -t 202001010100 "$first" "$second" || return 1
+    head="$(git -C "$repo" rev-parse HEAD)" || return 1
+    install_git_porcelain_shim "$shim" || return 1
+    printf 'worktree %s\nHEAD %s\nbranch refs/heads/%s\n\n' \
+        "$second" "$head" feature/mtime-zulu "$first" "$head" feature/mtime-alpha > "$records" || return 1
+    output="$(cd "$repo" && PATH="$shim:$PATH" SPECKIT_TEST_REAL_GIT="$REAL_GIT" \
+        SPECKIT_TEST_GIT_MODE=records-file SPECKIT_TEST_GIT_RECORDS_FILE="$records" \
+        bash .specify/extensions/git/scripts/bash/get-last-worktree.sh --json)" || return 1
+    assert_equal "$first" "$(json_field "$output" WORKTREE_PATH)" 'equal mtime uses path order, not Git enumeration'
+}
+
 failures=0
 run_scenario() {
     local name="$1"
@@ -4247,6 +4366,11 @@ run_scenario() {
 
 run_scenario 'the vendored openRepoShape copies match devBenches/base-image/upstream-pin.yaml' \
     test_vendored_copies_match_their_pins
+run_scenario 'last-worktree help works without a Git checkout or Git binary' test_get_last_worktree_help_without_git
+run_scenario 'last-worktree rejects malformed arguments before Git discovery' test_get_last_worktree_rejects_bad_args
+run_scenario 'last-worktree keeps shell-like invalid options literal' test_get_last_worktree_keeps_invalid_option_literal
+run_scenario 'last-worktree reads a successful mtime once and rejects invalid timestamps' test_get_last_worktree_reads_mtime_once
+run_scenario 'last-worktree breaks equal modification times by canonical path' test_get_last_worktree_breaks_mtime_ties_by_path
 run_scenario 'default sequential worktree with apostrophe description' test_default_sequential_worktree
 run_scenario 'branch_template with {number}-{slug} final segment' test_branch_template
 run_scenario 'namespaced sequential numbering' test_namespaced_numbering
@@ -4315,6 +4439,12 @@ run_scenario "resume's rollback removes an attached worktree through its own leg
 run_scenario "resume's rollback leaves another lane's unmounted registration alone" test_resume_rollback_leaves_unmounted_registrations
 run_scenario 'a per-org workspace override keeps that org out of the default repository' test_per_org_workspace_override
 run_scenario 'single-repository park and resume' test_single_repo_park_and_resume
+
+test_park_handoff_safety() {
+    SPECKIT_PARK_TEMPLATE_ROOT="$TEMPLATE_ROOT/specify" \
+        python3 "$SCRIPT_DIR/test-speckit-park-handoff.py"
+}
+run_scenario 'park validates handoff repository and branch identity' test_park_handoff_safety
 
 if [ "$failures" -ne 0 ]; then
     printf 'RED: Speckit Git feature behavior tests failed: %d scenario(s)\n' "$failures" >&2

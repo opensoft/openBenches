@@ -7037,6 +7037,14 @@ if ! python3 "$TEST_DIR/test-task-set-delivery.py"; then
     fail 'task-set delivery preview regression'
 fi
 
+# Repository adoption is a source contract, not an installed-image requirement.
+# The partial /test mount has runtime fixtures but not the repository root.
+if [[ -f "$WORKBENCH_ROOT/devcontainer.test/test-workflow-adoption.py" ]]; then
+    if ! python3 "$WORKBENCH_ROOT/devcontainer.test/test-workflow-adoption.py"; then
+        fail 'durable source workflow adoption'
+    fi
+fi
+
 if (( failures == 0 )); then
     printf '%s\n' 'GREEN: OpenSpec bootstrap regression test passed'
 else

@@ -15,5 +15,5 @@ OpenSpec/Speckit protocol and project bootstrap contract.
 - Preserve unrelated changes in the parent checkout and in bench submodules.
 
 <!-- SPECKIT START -->
-Active implementation plan: `specs/033-rename-openbenches/plan.md` (staged repository and runtime compatibility migration).
+Active implementation plan: `specs/181-docker-flight-recorder/plan.md` (bounded, local-only Docker/WSL diagnosis; no automatic recovery).
 <!-- SPECKIT END -->

@@ -4040,8 +4040,8 @@ assert_contains "$SHAPE_BLOCK_ROOT/.claude/commands/opsx/apply.md" '<!-- OPENSPE
 assert_equal "$(sed -n '1p' "$SHAPE_BLOCK_ROOT/.claude/skills/ct/SKILL.md")" '<!-- OPENSPEC-SPECKIT-SHAPE:START -->' 'managed shape block opens a file without frontmatter'
 assert_not_contains "$SHAPE_BLOCK_ROOT/.claude/skills/openspec-propose/SKILL.md" 'OPENSPEC-SPECKIT-SHAPE' 'managed shape block skips repo-local OpenSpec wrappers'
 
-printf '%s\n' 'Then: user-global targets carry the resolved protocol root and symlinks are skipped'
-assert_contains "$SHAPE_BLOCK_HOME/.claude/skills/speckit-plan/SKILL.md" "$SHAPE_BLOCK_PROTOCOL_ROOT/protocols/openspec-speckit-workflow.md" 'user-global shape block uses the resolved protocol root'
+printf '%s\n' 'Then: user-global targets carry the protocol root as configured and symlinks are skipped'
+assert_contains "$SHAPE_BLOCK_HOME/.claude/skills/speckit-plan/SKILL.md" "$SHAPE_BLOCK_PROTOCOL_ROOT/protocols/openspec-speckit-workflow.md" 'user-global shape block uses the protocol root as configured'
 assert_contains "$SHAPE_BLOCK_HOME/.claude/skills/ctp/SKILL.md" '<!-- OPENSPEC-SPECKIT-SHAPE:START -->' 'user-global shape block reaches ctp'
 assert_contains "$SHAPE_BLOCK_HOME/.agents/skills/speckit-tasks/SKILL.md" '<!-- OPENSPEC-SPECKIT-SHAPE:START -->' 'user-global shape block reaches Agents skills'
 assert_contains "$SHAPE_BLOCK_HOME/.codex/skills/openspec-apply-change/SKILL.md" '<!-- OPENSPEC-SPECKIT-SHAPE:START -->' 'user-global shape block reaches Codex OpenSpec skills'
@@ -4156,7 +4156,7 @@ assert_contains "$ROUTING_TASKS" 'Stock Spec Kit body.' 'routing block preserves
 assert_contains "$ROUTING_ROOT/.agents/skills/speckit-analyze/SKILL.md" '## Model Routing fixture for speckit-analyze' 'routing block reaches repo-local Agents speckit-analyze'
 assert_contains "$ROUTING_ROOT/.codex/skills/speckit-implement/SKILL.md" '## Model Routing fixture for speckit-implement' 'routing block reaches repo-local Codex speckit-implement'
 assert_not_contains "$ROUTING_ROOT/.claude/skills/speckit-plan/SKILL.md" 'OPENSPEC-SPECKIT-MODEL-ROUTING' 'routing block skips skills outside the build tiers'
-assert_contains "$ROUTING_HOME/.claude/skills/speckit-tasks/SKILL.md" "$ROUTING_PROTOCOL_ROOT/protocols/openspec-speckit-workflow.md" 'user-global routing block uses the resolved protocol root'
+assert_contains "$ROUTING_HOME/.claude/skills/speckit-tasks/SKILL.md" "$ROUTING_PROTOCOL_ROOT/protocols/openspec-speckit-workflow.md" 'user-global routing block uses the protocol root as configured'
 assert_contains "$ROUTING_HOME/.codex/skills/speckit-analyze/SKILL.md" '## Model Routing fixture for speckit-analyze' 'routing block reaches user-global Codex skills'
 assert_not_contains "$ROUTING_LINKED_AGENTS/skills/speckit-implement/SKILL.md" 'OPENSPEC-SPECKIT-MODEL-ROUTING' 'routing block never writes through a symlinked user-global skills root'
 assert_not_contains "$ROUTING_LINKED_AGENTS/skills/speckit-implement/SKILL.md" 'OPENSPEC-SPECKIT-SHAPE' 'shape block never writes through a symlinked user-global skills root'
@@ -4196,6 +4196,192 @@ assert_not_contains "$ROUTING_ROOT/.claude/skills/speckit-implement/SKILL.md" 'O
 # before this scenario existed; give them back exactly that environment.
 export HOME="$SHAPE_BLOCK_HOME"
 export AGENT_PROTOCOL_ROOT="$SHAPE_BLOCK_PROTOCOL_ROOT"
+
+printf '%s\n' 'Given: a home whose ~/.agents is a symlink into a dotfiles checkout, with AGENT_PROTOCOL_ROOT unset and the user-global passes on'
+# The shape of a workstation whose ~/.agents links into a new-workstation
+# checkout. Each run below sets its environment itself and unsets
+# AGENT_PROTOCOL_ROOT, so the installer's own ~/.agents default is what is
+# exercised, and the exported environment the later scenarios use is untouched.
+STABLE_SPELLING_HOME="$TMPDIR_ROOT/stable-spelling-home"
+STABLE_SPELLING_CHECKOUT="$TMPDIR_ROOT/stable-spelling-dotfiles/projects/new-workstation/home/.agents"
+STABLE_SPELLING_SPELLING="$STABLE_SPELLING_HOME/.agents"
+STABLE_SPELLING_POINTER_REPO="$TMPDIR_ROOT/stable-spelling-pointer-repo"
+STABLE_SPELLING_REPO="$TMPDIR_ROOT/stable-spelling-repo"
+STABLE_SPELLING_HOME_FIRST="$TMPDIR_ROOT/stable-spelling-home-first.snapshot"
+STABLE_SPELLING_HOME_SECOND="$TMPDIR_ROOT/stable-spelling-home-second.snapshot"
+mkdir -p \
+    "$STABLE_SPELLING_CHECKOUT/skills/ct/bin" \
+    "$STABLE_SPELLING_CHECKOUT/skills/speckit-tasks" \
+    "$STABLE_SPELLING_CHECKOUT/templates/speckit/model-routing" \
+    "$STABLE_SPELLING_HOME/.claude/skills/speckit-tasks" \
+    "$STABLE_SPELLING_HOME/.codex/skills/speckit-analyze" \
+    "$STABLE_SPELLING_POINTER_REPO" \
+    "$STABLE_SPELLING_REPO"
+printf '%s\n' 'skill read through a symlinked ~/.agents' > "$STABLE_SPELLING_CHECKOUT/skills/ct/SKILL.md"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "linked skill script ran"' > "$STABLE_SPELLING_CHECKOUT/skills/ct/bin/run.sh"
+chmod 0755 "$STABLE_SPELLING_CHECKOUT/skills/ct/bin/run.sh"
+printf '%s\n' '---' 'name: fixture' '---' '' 'Checkout Spec Kit body.' > "$STABLE_SPELLING_CHECKOUT/skills/speckit-tasks/SKILL.md"
+for routing_skill in speckit-tasks speckit-implement speckit-analyze; do
+    printf '%s\n' \
+        '<!-- OPENSPEC-SPECKIT-MODEL-ROUTING:START -->' \
+        "## Model Routing fixture for $routing_skill" \
+        'Full rules: `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/protocols/openspec-speckit-workflow.md` ("Build Tiers").' \
+        '<!-- OPENSPEC-SPECKIT-MODEL-ROUTING:END -->' \
+        > "$STABLE_SPELLING_CHECKOUT/templates/speckit/model-routing/$routing_skill.md"
+done
+printf '%s\n' '---' 'name: fixture' '---' '' 'Stock Spec Kit body.' > "$STABLE_SPELLING_HOME/.claude/skills/speckit-tasks/SKILL.md"
+printf '%s\n' '---' 'name: fixture' '---' '' 'Stock Spec Kit body.' > "$STABLE_SPELLING_HOME/.codex/skills/speckit-analyze/SKILL.md"
+ln -s "$STABLE_SPELLING_CHECKOUT" "$STABLE_SPELLING_SPELLING"
+git init -q "$STABLE_SPELLING_POINTER_REPO"
+git init -q "$STABLE_SPELLING_REPO"
+STABLE_SPELLING_FLAGS=(
+    --skip-init
+    --no-worktrees
+    --no-speckit-registration
+    --preserve-readmes
+)
+
+printf '%s\n' 'When: bootstrap runs with --no-skill-links, so the skill copy is not reached'
+if env -u AGENT_PROTOCOL_ROOT \
+    HOME="$STABLE_SPELLING_HOME" \
+    OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
+    python3 "$SETUP_SCRIPT" \
+        --repo "$STABLE_SPELLING_POINTER_REPO" \
+        "${STABLE_SPELLING_FLAGS[@]}" \
+        --no-skill-links > "$TMPDIR_ROOT/stable-spelling-pointers.log" 2>&1; then
+    pass 'bootstrap without skill links completes when ~/.agents is a symlink'
+else
+    fail 'bootstrap without skill links completes when ~/.agents is a symlink'
+    cat "$TMPDIR_ROOT/stable-spelling-pointers.log"
+fi
+
+printf '%s\n' 'Then: every user-global block names ~/.agents as spelled, never the checkout it links into'
+STABLE_SPELLING_POINTER_FILES=(
+    .codex/AGENTS.md
+    .claude/CLAUDE.md
+    .config/opencode/AGENTS.md
+    .augment/rules/specify-rules.md
+    .cursor/rules/specify-rules.mdc
+    .gemini/GEMINI.md
+    .github/copilot-instructions.md
+    .junie/AGENTS.md
+    .kilocode/rules/specify-rules.md
+    .kimi/KIMI.md
+    .qoder/QODER.md
+    .qwen/QWEN.md
+    .roo/rules/specify-rules.md
+    .shai/SHAI.md
+    .tabnine/TABNINE.md
+    .trae/rules/project_rules.md
+    .vibe/agents/specify-agents.md
+    .windsurf/rules/specify-rules.md
+)
+for pointer_file in "${STABLE_SPELLING_POINTER_FILES[@]}"; do
+    pointer_path="$STABLE_SPELLING_HOME/$pointer_file"
+    assert_contains "$pointer_path" "Read \`$STABLE_SPELLING_SPELLING/AGENTS.md\` for user-global workflow rules" "user-global pointer names the unresolved agent root: $pointer_file"
+    assert_not_contains "$pointer_path" '/projects/new-workstation/' "user-global pointer omits the checkout path: $pointer_file"
+done
+for global_skill in .claude/skills/speckit-tasks .codex/skills/speckit-analyze; do
+    global_skill_path="$STABLE_SPELLING_HOME/$global_skill/SKILL.md"
+    assert_contains "$global_skill_path" "Full rules: \`$STABLE_SPELLING_SPELLING/protocols/openspec-speckit-workflow.md\` (\"Repository Shape\", \"Worktree Rules\")." "user-global shape block names the unresolved agent root: $global_skill"
+    assert_contains "$global_skill_path" "Full rules: \`$STABLE_SPELLING_SPELLING/protocols/openspec-speckit-workflow.md\` (\"Build Tiers\")." "user-global routing block names the unresolved agent root: $global_skill"
+    assert_not_contains "$global_skill_path" '/projects/new-workstation/' "user-global shape and routing blocks omit the checkout path: $global_skill"
+done
+assert_contains "$STABLE_SPELLING_CHECKOUT/AGENTS.md" "\`$STABLE_SPELLING_SPELLING/protocols/openspec-speckit-workflow.md\`" 'the entrypoint written into the checkout names the unresolved agent root'
+assert_contains "$STABLE_SPELLING_CHECKOUT/protocols/openspec-speckit-workflow.md" "\`$STABLE_SPELLING_SPELLING/protocols/project-agent-bootstrap.md\`" 'the workflow protocol written into the checkout names the unresolved agent root'
+assert_contains "$STABLE_SPELLING_CHECKOUT/protocols/project-agent-bootstrap.md" "\`$STABLE_SPELLING_SPELLING/protocols/openspec-speckit-workflow.md\`" 'the bootstrap protocol written into the checkout names the unresolved agent root'
+for protocol_file in AGENTS.md protocols/openspec-speckit-workflow.md protocols/project-agent-bootstrap.md; do
+    assert_not_contains "$STABLE_SPELLING_CHECKOUT/$protocol_file" '/projects/new-workstation/' "the file written into the checkout omits the checkout path: $protocol_file"
+done
+assert_not_contains "$STABLE_SPELLING_CHECKOUT/skills/speckit-tasks/SKILL.md" 'OPENSPEC-SPECKIT-SHAPE' 'the stable spelling still never writes a block through the symlinked skills root'
+
+printf '%s\n' 'When: bootstrap runs in full, copying skills, with ~/.agents a symlink'
+snapshot_repo "$STABLE_SPELLING_HOME" > "$STABLE_SPELLING_HOME_FIRST"
+if env -u AGENT_PROTOCOL_ROOT \
+    HOME="$STABLE_SPELLING_HOME" \
+    OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
+    python3 "$SETUP_SCRIPT" \
+        --repo "$STABLE_SPELLING_REPO" \
+        "${STABLE_SPELLING_FLAGS[@]}" > "$TMPDIR_ROOT/stable-spelling-full.log" 2>&1; then
+    pass 'a full bootstrap completes when ~/.agents is a symlink'
+else
+    fail 'a full bootstrap completes when ~/.agents is a symlink'
+    cat "$TMPDIR_ROOT/stable-spelling-full.log"
+fi
+
+assert_not_contains "$TMPDIR_ROOT/stable-spelling-full.log" 'Traceback' 'the full bootstrap raises no traceback'
+snapshot_repo "$STABLE_SPELLING_HOME" > "$STABLE_SPELLING_HOME_SECOND"
+if cmp -s "$STABLE_SPELLING_HOME_FIRST" "$STABLE_SPELLING_HOME_SECOND"; then
+    pass 'a full bootstrap leaves every user-global file as the --no-skill-links run wrote it'
+else
+    fail 'a full bootstrap leaves every user-global file as the --no-skill-links run wrote it'
+fi
+
+printf '%s\n' 'Given: a RELATIVE AGENT_PROTOCOL_ROOT, with the installer run from a subdirectory'
+# A relative root has no stable spelling: made absolute against the current
+# directory it would name <cwd>/../..., so every user-global block must name the
+# resolved root instead. Only an absolute root is spelled as given (the linked
+# ~/.agents scenario above).
+RELATIVE_ROOT_HOME="$TMPDIR_ROOT/relative-root-home"
+RELATIVE_ROOT_AGENTS="$TMPDIR_ROOT/relative-root-agents"
+RELATIVE_ROOT_CWD="$TMPDIR_ROOT/relative-root-work/sub"
+RELATIVE_ROOT_REPO="$TMPDIR_ROOT/relative-root-repo"
+RELATIVE_ROOT_VALUE='../../relative-root-agents'
+mkdir -p \
+    "$RELATIVE_ROOT_AGENTS/templates/speckit/model-routing" \
+    "$RELATIVE_ROOT_HOME/.claude/skills/speckit-tasks" \
+    "$RELATIVE_ROOT_HOME/.codex/skills/speckit-analyze" \
+    "$RELATIVE_ROOT_CWD" \
+    "$RELATIVE_ROOT_REPO"
+RELATIVE_ROOT_RESOLVED="$(cd "$RELATIVE_ROOT_AGENTS" && pwd -P)"
+for routing_skill in speckit-tasks speckit-implement speckit-analyze; do
+    printf '%s\n' \
+        '<!-- OPENSPEC-SPECKIT-MODEL-ROUTING:START -->' \
+        "## Model Routing fixture for $routing_skill" \
+        'Full rules: `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/protocols/openspec-speckit-workflow.md` ("Build Tiers").' \
+        '<!-- OPENSPEC-SPECKIT-MODEL-ROUTING:END -->' \
+        > "$RELATIVE_ROOT_AGENTS/templates/speckit/model-routing/$routing_skill.md"
+done
+printf '%s\n' '---' 'name: fixture' '---' '' 'Stock Spec Kit body.' > "$RELATIVE_ROOT_HOME/.claude/skills/speckit-tasks/SKILL.md"
+printf '%s\n' '---' 'name: fixture' '---' '' 'Stock Spec Kit body.' > "$RELATIVE_ROOT_HOME/.codex/skills/speckit-analyze/SKILL.md"
+git init -q "$RELATIVE_ROOT_REPO"
+assert_equal "$(cd "$RELATIVE_ROOT_CWD" && cd "$RELATIVE_ROOT_VALUE" && pwd -P)" "$RELATIVE_ROOT_RESOLVED" 'the relative AGENT_PROTOCOL_ROOT names the protocol root when read from the subdirectory'
+
+printf '%s\n' 'When: bootstrap runs from the subdirectory with --no-skill-links'
+if (
+    cd "$RELATIVE_ROOT_CWD" &&
+    env AGENT_PROTOCOL_ROOT="$RELATIVE_ROOT_VALUE" \
+        HOME="$RELATIVE_ROOT_HOME" \
+        OPSX_COMMAND_TEMPLATE_ROOT="$COMMAND_TEMPLATE_ROOT" \
+        python3 "$SETUP_SCRIPT" \
+            --repo "$RELATIVE_ROOT_REPO" \
+            "${STABLE_SPELLING_FLAGS[@]}" \
+            --no-skill-links
+) > "$TMPDIR_ROOT/relative-root.log" 2>&1; then
+    pass 'bootstrap completes with a relative AGENT_PROTOCOL_ROOT'
+else
+    fail 'bootstrap completes with a relative AGENT_PROTOCOL_ROOT'
+    cat "$TMPDIR_ROOT/relative-root.log"
+fi
+
+printf '%s\n' 'Then: every user-global block names the resolved protocol root, and none contains /../'
+for pointer_file in "${STABLE_SPELLING_POINTER_FILES[@]}"; do
+    pointer_path="$RELATIVE_ROOT_HOME/$pointer_file"
+    assert_contains "$pointer_path" "Read \`$RELATIVE_ROOT_RESOLVED/AGENTS.md\` for user-global workflow rules" "user-global pointer names the resolved root of a relative AGENT_PROTOCOL_ROOT: $pointer_file"
+    assert_not_contains "$pointer_path" '/../' "user-global pointer omits /../ under a relative AGENT_PROTOCOL_ROOT: $pointer_file"
+done
+for global_skill in .claude/skills/speckit-tasks .codex/skills/speckit-analyze; do
+    global_skill_path="$RELATIVE_ROOT_HOME/$global_skill/SKILL.md"
+    assert_contains "$global_skill_path" "Full rules: \`$RELATIVE_ROOT_RESOLVED/protocols/openspec-speckit-workflow.md\` (\"Repository Shape\", \"Worktree Rules\")." "user-global shape block names the resolved root of a relative AGENT_PROTOCOL_ROOT: $global_skill"
+    assert_contains "$global_skill_path" "Full rules: \`$RELATIVE_ROOT_RESOLVED/protocols/openspec-speckit-workflow.md\` (\"Build Tiers\")." "user-global routing block names the resolved root of a relative AGENT_PROTOCOL_ROOT: $global_skill"
+    assert_not_contains "$global_skill_path" '/../' "user-global shape and routing blocks omit /../ under a relative AGENT_PROTOCOL_ROOT: $global_skill"
+done
+assert_contains "$RELATIVE_ROOT_AGENTS/AGENTS.md" "\`$RELATIVE_ROOT_RESOLVED/protocols/openspec-speckit-workflow.md\`" 'the entrypoint written under a relative AGENT_PROTOCOL_ROOT names the resolved root'
+assert_contains "$RELATIVE_ROOT_AGENTS/protocols/openspec-speckit-workflow.md" "\`$RELATIVE_ROOT_RESOLVED/protocols/project-agent-bootstrap.md\`" 'the workflow protocol written under a relative AGENT_PROTOCOL_ROOT names the resolved root'
+assert_contains "$RELATIVE_ROOT_AGENTS/protocols/project-agent-bootstrap.md" "\`$RELATIVE_ROOT_RESOLVED/protocols/openspec-speckit-workflow.md\`" 'the bootstrap protocol written under a relative AGENT_PROTOCOL_ROOT names the resolved root'
+for protocol_file in AGENTS.md protocols/openspec-speckit-workflow.md protocols/project-agent-bootstrap.md; do
+    assert_not_contains "$RELATIVE_ROOT_AGENTS/$protocol_file" '/../' "the file written under a relative AGENT_PROTOCOL_ROOT omits /../: $protocol_file"
+done
 
 printf '%s\n' 'Given: a home whose ~/.agents is a symlink into a dotfiles checkout, with AGENT_PROTOCOL_ROOT unset'
 # The shape of a workstation whose ~/.agents is a symlink into a dotfiles

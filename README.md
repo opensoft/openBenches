@@ -548,3 +548,5 @@ publishing its immutable `shared-images-…` release manifest; a private package
 cannot become the default download path. The initial release targets
 `linux/amd64`; other platforms retain local builds. Publishing never includes
 personalized Layer 3 or workstation credentials.
+
+Shared-shell maintenance: [feature 182](specs/182-shell-clarity/plan.md).

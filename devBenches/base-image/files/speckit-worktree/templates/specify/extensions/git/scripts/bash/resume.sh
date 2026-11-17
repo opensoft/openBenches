@@ -51,14 +51,14 @@ usage() {
 }
 
 i=1
-while [ $i -le $# ]; do
+while test $i -le $#; do
     arg="${!i}"
     case "$arg" in
         --json) JSON_MODE=true ;;
         --dry-run) DRY_RUN=true ;;
         --keep-staged) KEEP_STAGED=true ;;
         --feature|--workspace)
-            if [ $((i + 1)) -gt $# ]; then
+            if test $((i + 1)) -gt $#; then
                 echo "Error: $arg requires a value" >&2
                 exit 1
             fi
@@ -90,12 +90,12 @@ done
 
 SCRIPT_DIR="$(CDPATH="" cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_REPO_ROOT="$(CDPATH="" cd -- "$SCRIPT_DIR/../../../../.." && pwd 2>/dev/null || true)"
-if [ ! -f "$SCRIPT_DIR/git-common.sh" ]; then
+if [[ ! -f "$SCRIPT_DIR/git-common.sh" ]]; then
     echo "Error: Could not locate git-common.sh next to resume.sh." >&2
     exit 1
 fi
 source "$SCRIPT_DIR/git-common.sh"
-if [ ! -f "$SCRIPT_DIR/workspace-common.sh" ]; then
+if [[ ! -f "$SCRIPT_DIR/workspace-common.sh" ]]; then
     echo "Error: Could not locate workspace-common.sh next to resume.sh." >&2
     exit 1
 fi
@@ -106,8 +106,8 @@ if REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
 else
     REPO_ROOT=""
 fi
-[ -n "$REPO_ROOT" ] || REPO_ROOT="$SCRIPT_REPO_ROOT"
-if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT/.specify" ]; then
+[[ -n "$REPO_ROOT" ]] || REPO_ROOT="$SCRIPT_REPO_ROOT"
+if [[ -z "$REPO_ROOT" ]] || [[ ! -d "$REPO_ROOT/.specify" ]]; then
     echo "Error: not inside a Git repository or Speckit checkout." >&2
     exit 1
 fi
@@ -122,19 +122,19 @@ CHECKOUT_MODE=$(get_config_value "checkout_mode" "branch" "SPECKIT_GIT_CHECKOUT_
 CHECKOUT_MODE=$(printf '%s' "$CHECKOUT_MODE" | tr '[:upper:]' '[:lower:]')
 BASE_BRANCH=$(get_config_value "base_branch" "main" "SPECKIT_GIT_BASE_BRANCH")
 DEFAULT_WORKTREE_ROOT="../${REPO_ROOT##*/}-worktrees"
-if [ "$REPO_SHAPE" = "three-leg" ]; then
+if test "$REPO_SHAPE" = "three-leg"; then
     DEFAULT_WORKTREE_ROOT="worktrees"
 fi
 WORKTREE_ROOT_RAW=$(get_config_value "worktree_root" "$DEFAULT_WORKTREE_ROOT" "SPECKIT_GIT_WORKTREE_ROOT")
 WORKTREE_ROOT=$(resolve_path_from_repo_root "$WORKTREE_ROOT_RAW")
 
-if [ "$CHECKOUT_MODE" != "worktree" ]; then
+if test "$CHECKOUT_MODE" != "worktree"; then
     echo "Error: checkout_mode '$CHECKOUT_MODE' has no worktree to resume; nothing was resumed." >&2
     echo "park and resume carry linked worktrees between workstations. Set checkout_mode: worktree in .specify/extensions/git/git-config.yml." >&2
     exit 1
 fi
 
-if [ "$REPO_SHAPE" = "three-leg" ]; then
+if test "$REPO_SHAPE" = "three-leg"; then
     if ! shape_leg_is_checkout "$SPEC_LEG"; then
         echo "Error: the spec leg '$SHAPE_SPEC_PATH' is not an initialised Git checkout at '$SPEC_LEG'." >&2
         echo "Run 'git submodule update --init' (or 'make bootstrap') in the project root first." >&2
@@ -151,7 +151,7 @@ if ! command -v python3 >/dev/null 2>&1; then
     echo "Error: resume requires Python 3 for safe manifest and state publication." >&2
     exit 1
 fi
-if [ "$JSON_MODE" = true ] && ! select_json_encoder >/dev/null; then
+if test "$JSON_MODE" = true && ! select_json_encoder >/dev/null; then
     echo "Error: JSON output requires jq, a trusted json_escape function, or Python 3; no JSON encoder is available." >&2
     exit 1
 fi
@@ -160,7 +160,7 @@ workspace_project_id "$REPO_ROOT"
 PROJECT_ID="$WORKSPACE_PROJECT_ID"
 workspace_family_name "$REPO_ROOT" "$PROJECT_ID"
 MANIFEST_NAME="$WORKSPACE_FAMILY"
-[ -n "$MANIFEST_NAME" ] || MANIFEST_NAME="$PROJECT_ID"
+[[ -n "$MANIFEST_NAME" ]] || MANIFEST_NAME="$PROJECT_ID"
 # One private workspace repository tracks work across several orgs, so the
 # manifest is filed under the owner of the declared repository: two projects
 # that share an id in different orgs never share a file. The same org also
@@ -177,10 +177,10 @@ fi
 
 WORKSPACE_RESOLVE_STATUS=0
 workspace_resolve "$WORKSPACE_ARG" "$MANIFEST_ORG" || WORKSPACE_RESOLVE_STATUS=$?
-if [ "$WORKSPACE_RESOLVE_STATUS" -eq 2 ]; then
+if test "$WORKSPACE_RESOLVE_STATUS" -eq 2; then
     workspace_refuse_invalid_config resumed resume
     exit 2
-elif [ "$WORKSPACE_RESOLVE_STATUS" -ne 0 ]; then
+elif test "$WORKSPACE_RESOLVE_STATUS" -ne 0; then
     workspace_refuse_no_config resumed resume
     exit 2
 fi
@@ -200,7 +200,7 @@ MANIFEST_PATH="$WORKSPACE_PATH/$MANIFEST_RELATIVE"
 
 # The receiving clone may predate the published handoff. Refresh before
 # reading, under the same mutex as park. Dry-run keeps its cached preview.
-if [ "$DRY_RUN" != true ]; then
+if test "$DRY_RUN" != true; then
     if ! workspace_lock "$WORKSPACE_PATH"; then
         >&2 echo "Error: another park or resume holds '$WORKSPACE_PATH/.workspaces.lock'; nothing was resumed."
         exit 2
@@ -266,12 +266,12 @@ wip_gap_is_ours() {
     local depth="$4"
     local count step
 
-    [ "$depth" -gt 0 ] || return 1
+    test "$depth" -gt 0 || return 1
     git -C "$tree" cat-file -e "$to^{commit}" 2>/dev/null || return 1
     count="$(git -C "$tree" rev-list --count "$from..$to" 2>/dev/null || echo 0)"
-    [ "$count" = "$depth" ] || return 1
+    test "$count" = "$depth" || return 1
     step=0
-    while [ "$step" -lt "$depth" ]; do
+    while test "$step" -lt "$depth"; do
         commit_subject_is_wip "$tree" "$to~$step" || return 1
         step=$((step + 1))
     done
@@ -285,8 +285,8 @@ leg_registered_at() {
 
     LEG_REGISTERED_BRANCH=""
     load_git_worktrees "$leg" || return 2
-    while [ "$index" -lt "${#GIT_WORKTREE_PATHS[@]}" ]; do
-        if [ "${GIT_WORKTREE_PATHS[$index]}" = "$path" ]; then
+    while test "$index" -lt "${#GIT_WORKTREE_PATHS[@]}"; do
+        if test "${GIT_WORKTREE_PATHS[$index]}" = "$path"; then
             LEG_REGISTERED_BRANCH="${GIT_WORKTREE_BRANCH_REFS[$index]#refs/heads/}"
             return 0
         fi
@@ -319,27 +319,27 @@ collect_legs() {
     LEG_DEPTHS=()
     LEG_PUSHEDS=()
     LEG_PUSHED_SEENS=()
-    while [ "$index" -lt "${#MANIFEST_LEG_ROLE[@]}" ]; do
-        if [ "${MANIFEST_LEG_FEATURE[$index]}" != "$feature_index" ]; then
+    while test "$index" -lt "${#MANIFEST_LEG_ROLE[@]}"; do
+        if test "${MANIFEST_LEG_FEATURE[$index]}" != "$feature_index"; then
             index=$((index + 1))
             continue
         fi
         role="${MANIFEST_LEG_ROLE[$index]}"
         case "$role" in
             spec)
-                [ "$REPO_SHAPE" = "three-leg" ] || return 1
+                test "$REPO_SHAPE" = "three-leg" || return 1
                 LEG_REPOS[${#LEG_REPOS[@]}]="$SPEC_LEG"
                 LEG_MOUNTS[${#LEG_MOUNTS[@]}]="$SHAPE_SPEC_PATH"
                 LEG_TREES[${#LEG_TREES[@]}]="$WORKTREE_ROOT/$branch/$SHAPE_SPEC_PATH"
                 ;;
             code)
-                [ "$REPO_SHAPE" = "three-leg" ] || return 1
+                test "$REPO_SHAPE" = "three-leg" || return 1
                 LEG_REPOS[${#LEG_REPOS[@]}]="$CODE_LEG"
                 LEG_MOUNTS[${#LEG_MOUNTS[@]}]="$SHAPE_CODE_PATH"
                 LEG_TREES[${#LEG_TREES[@]}]="$WORKTREE_ROOT/$branch/$SHAPE_CODE_PATH"
                 ;;
             repo)
-                [ "$REPO_SHAPE" = "single" ] || return 1
+                test "$REPO_SHAPE" = "single" || return 1
                 LEG_REPOS[${#LEG_REPOS[@]}]="$REPO_ROOT"
                 LEG_MOUNTS[${#LEG_MOUNTS[@]}]="."
                 LEG_TREES[${#LEG_TREES[@]}]="$WORKTREE_ROOT/$branch"
@@ -353,7 +353,7 @@ collect_legs() {
         LEG_PUSHED_SEENS[${#LEG_PUSHED_SEENS[@]}]="${MANIFEST_LEG_PUSHED_SEEN[$index]}"
         index=$((index + 1))
     done
-    [ "${#LEG_ROLES[@]}" -gt 0 ]
+    test "${#LEG_ROLES[@]}" -gt 0
 }
 
 REFUSED_BRANCHES=()
@@ -368,14 +368,14 @@ record_refusal() {
     REFUSED_REMEDIATIONS[${#REFUSED_REMEDIATIONS[@]}]="$3"
 }
 
-if [ "$REPO_SHAPE" = three-leg ] && [ "$DRY_RUN" != true ]; then
-    if [ -L "$REPO_ROOT/.specify" ]; then
+if test "$REPO_SHAPE" = three-leg && test "$DRY_RUN" != true; then
+    if [[ -L "$REPO_ROOT/.specify" ]]; then
         >&2 echo "Error: the feature selector directory is a symlink; nothing was resumed."
         exit 2
     fi
     assert_state_file_safe "$REPO_ROOT/.specify/feature.json" || exit 2
     selector_temporary="$REPO_ROOT/.specify/.feature.json.tmp"
-    if [ -e "$selector_temporary" ] || [ -L "$selector_temporary" ]; then
+    if [[ -e "$selector_temporary" ]] || [[ -L "$selector_temporary" ]]; then
         >&2 echo "Error: the feature selector temporary path already exists; nothing was resumed."
         exit 2
     fi
@@ -394,8 +394,8 @@ HEADER_FILE="$_GIT_WORKTREE_OUTPUT_FILE"
 # shellcheck disable=SC2329  # an EXIT trap handler
 cleanup() {
     workspace_unlock
-    [ -n "${RECORD_FILE:-}" ] && rm -f "$RECORD_FILE" 2>/dev/null || true
-    [ -n "${HEADER_FILE:-}" ] && rm -f "$HEADER_FILE" 2>/dev/null || true
+    [[ -n "${RECORD_FILE:-}" ]] && rm -f "$RECORD_FILE" 2>/dev/null || true
+    [[ -n "${HEADER_FILE:-}" ]] && rm -f "$HEADER_FILE" 2>/dev/null || true
     return 0
 }
 trap cleanup EXIT
@@ -409,13 +409,13 @@ append_report() {
 # Which manifest features to work on.
 SELECTED_INDEXES=()
 index=0
-while [ "$index" -lt "${#MANIFEST_FEATURE_BRANCHES[@]}" ]; do
-    if [ "${#REQUESTED_BRANCHES[@]}" -eq 0 ]; then
+while test "$index" -lt "${#MANIFEST_FEATURE_BRANCHES[@]}"; do
+    if test "${#REQUESTED_BRANCHES[@]}" -eq 0; then
         SELECTED_INDEXES[${#SELECTED_INDEXES[@]}]="$index"
     else
         inner=0
-        while [ "$inner" -lt "${#REQUESTED_BRANCHES[@]}" ]; do
-            if [ "${REQUESTED_BRANCHES[$inner]}" = "${MANIFEST_FEATURE_BRANCHES[$index]}" ]; then
+        while test "$inner" -lt "${#REQUESTED_BRANCHES[@]}"; do
+            if test "${REQUESTED_BRANCHES[$inner]}" = "${MANIFEST_FEATURE_BRANCHES[$index]}"; then
                 SELECTED_INDEXES[${#SELECTED_INDEXES[@]}]="$index"
                 break
             fi
@@ -425,14 +425,14 @@ while [ "$index" -lt "${#MANIFEST_FEATURE_BRANCHES[@]}" ]; do
     index=$((index + 1))
 done
 
-if [ "${#REQUESTED_BRANCHES[@]}" -gt 0 ] \
-    && [ "${#SELECTED_INDEXES[@]}" -ne "${#REQUESTED_BRANCHES[@]}" ]; then
+if test "${#REQUESTED_BRANCHES[@]}" -gt 0 \
+    && test "${#SELECTED_INDEXES[@]}" -ne "${#REQUESTED_BRANCHES[@]}"; then
     >&2 echo "Error: $MANIFEST_PATH has no entry for every --feature named; nothing was resumed."
     >&2 echo "  look:  grep -n 'branch:' $MANIFEST_PATH"
     exit 1
 fi
 
-if [ "${#MANIFEST_FEATURE_BRANCHES[@]}" -eq 0 ]; then
+if test "${#MANIFEST_FEATURE_BRANCHES[@]}" -eq 0; then
     echo "[specify] $MANIFEST_RELATIVE records no open features for '$PROJECT_ID'; nothing to resume." >&2
 fi
 
@@ -440,7 +440,7 @@ fi
 # Per feature: check everything, then touch nothing unless every check passed.
 # ---------------------------------------------------------------------------
 selection=0
-while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
+while test "$selection" -lt "${#SELECTED_INDEXES[@]}"; do
     feature_index="${SELECTED_INDEXES[$selection]}"
     selection=$((selection + 1))
     branch="${MANIFEST_FEATURE_BRANCHES[$feature_index]}"
@@ -455,7 +455,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
     refused=false
     LEG_ACTION=()
     leg=0
-    while [ "$leg" -lt "${#LEG_ROLES[@]}" ]; do
+    while test "$leg" -lt "${#LEG_ROLES[@]}"; do
         role="${LEG_ROLES[$leg]}"
         leg_repo="${LEG_REPOS[$leg]}"
         mount="${LEG_MOUNTS[$leg]}"
@@ -491,8 +491,8 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
         # `MANIFEST_LEG_PUSHED_SEEN` for that reason, and these are
         # `openRepoTools`' `status`'s words for the same four states, so the
         # two tools tell the person one story.
-        if [ "$pushed" != true ]; then
-            if [ "$pushed" = false ]; then
+        if test "$pushed" != true; then
+            if test "$pushed" = false; then
                 >&2 echo "Error: $branch ($role leg) was parked with --no-push; that feature was NOT recreated."
                 >&2 echo "Its parked commit $parked_commit exists only on the workstation that parked it ($MANIFEST_PARKED_ON)."
                 >&2 echo "Push it there, re-run \`make park\`, then resume here."
@@ -502,10 +502,10 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
                 # branch-level REFUSED line and the `--json` reason do not, so
                 # "this leg" had no antecedent there — the reason names the
                 # leg itself (the independent review of this change, 2026-09-11).
-                if [ -z "$pushed_seen" ]; then
+                if [[ -z "$pushed_seen" ]]; then
                     unreadable_pushed="the record has no \`pushed:\` for this leg"
                     refusal_reason="the record has no \`pushed:\` for the $role leg"
-                elif [ -z "$pushed" ]; then
+                elif [[ -z "$pushed" ]]; then
                     unreadable_pushed="its record's \`pushed:\` has no value, which is neither true nor false"
                     refusal_reason="$unreadable_pushed"
                 else
@@ -523,7 +523,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
         fi
 
         # RR2 — verify origin before accepting even an existing worktree.
-        if [ "$DRY_RUN" != true ]; then
+        if test "$DRY_RUN" != true; then
             if ! GIT_TERMINAL_PROMPT=0 git -C "$leg_repo" fetch -q origin \
                 "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1; then
                 >&2 echo "Error: $branch ($role leg) could not be verified on origin; that feature was NOT recreated."
@@ -535,7 +535,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
             fi
         fi
         remote_tip="$(git -C "$leg_repo" rev-parse --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null || true)"
-        if [ -z "$remote_tip" ]; then
+        if [[ -z "$remote_tip" ]]; then
             >&2 echo "Error: $branch is no longer on origin in the $role leg; that feature was NOT recreated."
             >&2 echo "The manifest recorded it at $parked_commit, parked $MANIFEST_PARKED_AT on $MANIFEST_PARKED_ON."
             >&2 echo "If the feature landed, delete its entry:"
@@ -549,7 +549,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
 
         # RR1 — divergence. The ruling: nothing is ever reset over commits
         # this workspace did not park.
-        if [ "$remote_tip" != "$parked_commit" ]; then
+        if test "$remote_tip" != "$parked_commit"; then
             >&2 echo "Error: $branch ($role leg) has moved since it was parked; that feature was NOT recreated."
             >&2 echo "  parked commit  $parked_commit   (parked $MANIFEST_PARKED_AT on $MANIFEST_PARKED_ON)"
             >&2 echo "  current tip    $remote_tip   (origin/$branch)"
@@ -568,14 +568,14 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
         # first resume the local branch may be legitimately BEHIND the parked
         # WIP commit, so decide this before the local-branch check in RR5.
         if leg_registered_at "$leg_repo" "$tree"; then
-            if [ "$LEG_REGISTERED_BRANCH" = "$branch" ]; then
+            if test "$LEG_REGISTERED_BRANCH" = "$branch"; then
                 LEG_ACTION[leg - 1]="present"
                 present_head="$(git -C "$tree" rev-parse --verify HEAD 2>/dev/null || true)"
                 present_depth="${LEG_DEPTHS[$((leg - 1))]}"
                 case "$present_depth" in
                     ''|*[!0-9]*) present_depth=0 ;;
                 esac
-                if [ -n "$present_head" ] && [ "$present_head" != "$parked_commit" ] \
+                if [[ -n "$present_head" ]] && test "$present_head" != "$parked_commit" \
                     && git -C "$tree" merge-base --is-ancestor "$present_head" "$parked_commit" 2>/dev/null \
                     && ! wip_gap_is_ours "$tree" "$present_head" "$parked_commit" "$present_depth"; then
                     >&2 echo "Error: the $role leg's local branch '$branch' is BEHIND the parked commit ($present_head is an ancestor of $parked_commit); that feature was NOT recreated."
@@ -600,7 +600,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
         fi
 
         # RR3 — something else is already at the worktree path.
-        if [ -e "$tree" ]; then
+        if [[ -e "$tree" ]]; then
             >&2 echo "Error: '$(root_relative "$tree")' exists and is not a registered worktree of the $role leg; that feature was NOT recreated."
             >&2 echo "Nothing here overwrites a directory it did not create."
             >&2 echo "  look:  git -C $mount worktree list"
@@ -617,7 +617,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
         # commits the parked commit does not contain and nothing here may
         # discard them.
         local_sha="$(git -C "$leg_repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null || true)"
-        if [ -n "$local_sha" ] && [ "$local_sha" != "$parked_commit" ]; then
+        if [[ -n "$local_sha" ]] && test "$local_sha" != "$parked_commit"; then
             if git -C "$leg_repo" merge-base --is-ancestor "$local_sha" "$parked_commit" 2>/dev/null; then
                 >&2 echo "Error: the $role leg's local branch '$branch' is BEHIND the parked commit ($local_sha is an ancestor of $parked_commit); that feature was NOT recreated."
                 >&2 echo "Fast-forward it, then re-run:"
@@ -637,20 +637,20 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
             break
         fi
 
-        if [ -n "$local_sha" ]; then
+        if [[ -n "$local_sha" ]]; then
             LEG_ACTION[leg - 1]="attach"
         else
             LEG_ACTION[leg - 1]="create"
         fi
     done
-    [ "$refused" = false ] || continue
+    test "$refused" = false || continue
 
-    if [ "$DRY_RUN" = true ]; then
+    if test "$DRY_RUN" = true; then
         append_report "RESUMED: $branch (--dry-run)"
         workspace_record_section "$RECORD_FILE" feature
         workspace_record_put "$RECORD_FILE" branch "$branch"
         leg=0
-        while [ "$leg" -lt "${#LEG_ROLES[@]}" ]; do
+        while test "$leg" -lt "${#LEG_ROLES[@]}"; do
             workspace_record_section "$RECORD_FILE" leg
             workspace_record_put "$RECORD_FILE" role "${LEG_ROLES[$leg]}"
             workspace_record_put "$RECORD_FILE" path "$(root_relative "${LEG_TREES[$leg]}")"
@@ -671,7 +671,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
     CREATED_BRANCH_NEW=()
     mkdir -p "$WORKTREE_ROOT/$branch" 2>/dev/null || true
     leg=0
-    while [ "$leg" -lt "${#LEG_ROLES[@]}" ]; do
+    while test "$leg" -lt "${#LEG_ROLES[@]}"; do
         role="${LEG_ROLES[$leg]}"
         leg_repo="${LEG_REPOS[$leg]}"
         tree="${LEG_TREES[$leg]}"
@@ -710,10 +710,10 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
                 ;;
         esac
     done
-    if [ "$refused" = true ]; then
+    if test "$refused" = true; then
         >&2 echo "[specify] Rolling back the worktrees this run created for '$branch'."
         undo=0
-        while [ "$undo" -lt "${#CREATED_TREES[@]}" ]; do
+        while test "$undo" -lt "${#CREATED_TREES[@]}"; do
             undo_tree="${CREATED_TREES[$undo]}"
             # The owner is always the LEG repository that registered the
             # worktree. Naming the assembly root instead makes `worktree
@@ -731,7 +731,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
             # git_worktree_prune_visible (git-common.sh) clears only what it
             # can actually tell is gone.
             git_worktree_prune_visible "$owner" "$WORKTREE_ROOT" || true
-            if [ "$undo_new_branch" = true ]; then
+            if test "$undo_new_branch" = true; then
                 git -C "$owner" branch -D "$branch" >/dev/null 2>&1 || true
             fi
         done
@@ -744,7 +744,7 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
     workspace_record_put "$RECORD_FILE" branch "$branch"
     append_report "RESUMED: $branch"
     leg=0
-    while [ "$leg" -lt "${#LEG_ROLES[@]}" ]; do
+    while test "$leg" -lt "${#LEG_ROLES[@]}"; do
         role="${LEG_ROLES[$leg]}"
         tree="${LEG_TREES[$leg]}"
         parked_commit="${LEG_COMMITS[$leg]}"
@@ -756,14 +756,14 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
         head_now="$(git -C "$tree" rev-parse --verify HEAD 2>/dev/null || true)"
         short_head="$(git -C "$tree" rev-parse --short HEAD 2>/dev/null || true)"
         note="clean"
-        if [ "$depth" -gt 0 ]; then
-            if [ "$head_now" != "$parked_commit" ]; then
+        if test "$depth" -gt 0; then
+            if test "$head_now" != "$parked_commit"; then
                 echo "[specify] Warning: $branch ($role): HEAD is $head_now, not the parked commit $parked_commit; the parked WIP was NOT un-committed." >&2
                 note="left as it is"
             else
                 recognised=true
                 step=0
-                while [ "$step" -lt "$depth" ]; do
+                while test "$step" -lt "$depth"; do
                     if ! commit_subject_is_wip "$tree" "HEAD~$step" \
                         || ! commit_has_one_parent "$tree" "HEAD~$step"; then
                         recognised=false
@@ -771,14 +771,14 @@ while [ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]; do
                     fi
                     step=$((step + 1))
                 done
-                if [ "$recognised" != true ]; then
+                if test "$recognised" != true; then
                     echo "[specify] Warning: $branch ($role): the $depth tip commit(s) are not this workspace's parked WIP; nothing was reset." >&2
                     note="left as it is"
                 else
                     plural="commits"
-                    [ "$depth" -eq 1 ] && plural="commit"
+                    test "$depth" -eq 1 && plural="commit"
                     git -C "$tree" reset --soft "HEAD~$depth"
-                    if [ "$KEEP_STAGED" = true ]; then
+                    if test "$KEEP_STAGED" = true; then
                         note="un-committed $depth WIP $plural, staged"
                     else
                         git -C "$tree" reset -q
@@ -803,19 +803,19 @@ done
 # The active feature: feature.json (three-leg only) and the state file.
 # ---------------------------------------------------------------------------
 ACTIVE_FEATURE="$MANIFEST_ACTIVE_FEATURE"
-if [ -n "$ACTIVE_FEATURE" ]; then
+if [[ -n "$ACTIVE_FEATURE" ]]; then
     known=false
     index=0
-    while [ "$index" -lt "${#RESUMED_BRANCHES[@]}" ]; do
-        if [ "${RESUMED_BRANCHES[$index]}" = "$ACTIVE_FEATURE" ]; then
+    while test "$index" -lt "${#RESUMED_BRANCHES[@]}"; do
+        if test "${RESUMED_BRANCHES[$index]}" = "$ACTIVE_FEATURE"; then
             known=true
             break
         fi
         index=$((index + 1))
     done
-    if [ "$known" = false ]; then
+    if test "$known" = false; then
         ACTIVE_FEATURE=""
-        if [ "${#RESUMED_BRANCHES[@]}" -gt 0 ]; then
+        if test "${#RESUMED_BRANCHES[@]}" -gt 0; then
             ACTIVE_FEATURE="${RESUMED_BRANCHES[0]}"
         fi
     fi
@@ -823,12 +823,12 @@ fi
 
 FEATURE_JSON_VALUE=""
 STATE_FILE_VALUE=""
-if [ -n "$ACTIVE_FEATURE" ] && [ "$DRY_RUN" != true ]; then
-    if [ "$REPO_SHAPE" = "three-leg" ]; then
+if [[ -n "$ACTIVE_FEATURE" ]] && test "$DRY_RUN" != true; then
+    if test "$REPO_SHAPE" = "three-leg"; then
         shape_feature_paths_for "$REPO_ROOT" "$WORKTREE_ROOT/$ACTIVE_FEATURE" "$ACTIVE_FEATURE"
         FEATURE_JSON_VALUE="$SHAPE_FEATURE_DIR_RELATIVE"
         previous=""
-        if [ -f "$REPO_ROOT/.specify/feature.json" ]; then
+        if [[ -f "$REPO_ROOT/.specify/feature.json" ]]; then
             previous="$(python3 - "$REPO_ROOT/.specify/feature.json" <<'PY'
 import json
 import sys
@@ -845,9 +845,9 @@ if isinstance(payload, dict):
 PY
             )" || previous=""
         fi
-        if [ -n "$previous" ] && [ "$previous" != "$FEATURE_JSON_VALUE" ]; then
+        if [[ -n "$previous" ]] && test "$previous" != "$FEATURE_JSON_VALUE"; then
             echo "[specify] Warning: .specify/feature.json named '$previous'; rewritten to the parked active feature '$ACTIVE_FEATURE'." >&2
-            if [ -d "$REPO_ROOT/$previous" ]; then
+            if [[ -d "$REPO_ROOT/$previous" ]]; then
                 echo "[specify] The manifest wins: '$ACTIVE_FEATURE' is what travelled, and the other feature is recreated but not selected." >&2
             fi
         fi
@@ -872,8 +872,8 @@ PY
 fi
 
 # The recreated worktrees must not show up in the root's `git status`.
-if [ "${#RESUMED_BRANCHES[@]}" -gt 0 ] && [ "$REPO_SHAPE" = "three-leg" ]; then
-    if ! { [ -f "$REPO_ROOT/.gitignore" ] \
+if test "${#RESUMED_BRANCHES[@]}" -gt 0 && test "$REPO_SHAPE" = "three-leg"; then
+    if ! { [[ -f "$REPO_ROOT/.gitignore" ]] \
         && grep -Eq "^/?$WORKTREE_ROOT_RAW/?$" "$REPO_ROOT/.gitignore"; }; then
         echo "[specify] Warning: '$REPO_ROOT/.gitignore' does not ignore /$WORKTREE_ROOT_RAW/; the recreated worktrees will show in \`git status\` at the root. Add the line, or re-run setup-openspeckit." >&2
     fi
@@ -888,22 +888,22 @@ fi
     printf 'workspace_path\t%s\n' "$WORKSPACE_PATH"
     printf 'workspace_source\t%s\n' "$WORKSPACE_SOURCE_LABEL"
     printf 'manifest_path\t%s\n' "$MANIFEST_PATH"
-    if [ -n "$ACTIVE_FEATURE" ]; then
+    if [[ -n "$ACTIVE_FEATURE" ]]; then
         printf 'active_feature\t%s\n' "$ACTIVE_FEATURE"
     fi
-    if [ -n "$FEATURE_JSON_VALUE" ]; then
+    if [[ -n "$FEATURE_JSON_VALUE" ]]; then
         printf 'feature_json\t%s\n' "$FEATURE_JSON_VALUE"
     fi
-    if [ -n "$STATE_FILE_VALUE" ]; then
+    if [[ -n "$STATE_FILE_VALUE" ]]; then
         printf 'state_file\t%s\n' "$STATE_FILE_VALUE"
     fi
-    if [ "$DRY_RUN" = true ]; then
+    if test "$DRY_RUN" = true; then
         printf 'dry_run\ttrue\n'
     fi
 } > "$HEADER_FILE"
 cat "$RECORD_FILE" >> "$HEADER_FILE"
 index=0
-while [ "$index" -lt "${#REFUSED_BRANCHES[@]}" ]; do
+while test "$index" -lt "${#REFUSED_BRANCHES[@]}"; do
     {
         printf '[refused]\n'
         printf 'branch\t%s\n' "${REFUSED_BRANCHES[$index]}"
@@ -914,32 +914,32 @@ while [ "$index" -lt "${#REFUSED_BRANCHES[@]}" ]; do
 done
 mv "$HEADER_FILE" "$RECORD_FILE"
 
-if [ "$JSON_MODE" = true ]; then
+if test "$JSON_MODE" = true; then
     workspace_emit_json "$RECORD_FILE" RESUMED
 else
     echo "REPO_SHAPE: $REPO_SHAPE"
     echo "PROJECT_ID: $PROJECT_ID"
     echo "MANIFEST: $MANIFEST_PATH"
-    if [ -n "$RESUME_REPORT" ]; then
+    if [[ -n "$RESUME_REPORT" ]]; then
         printf '%s' "$RESUME_REPORT"
     fi
-    if [ -n "$FEATURE_JSON_VALUE" ]; then
+    if [[ -n "$FEATURE_JSON_VALUE" ]]; then
         echo "FEATURE_JSON: $FEATURE_JSON_VALUE"
     fi
-    if [ -n "$STATE_FILE_VALUE" ]; then
+    if [[ -n "$STATE_FILE_VALUE" ]]; then
         echo "STATE_FILE: $STATE_FILE_VALUE (BRANCH_NAME=$ACTIVE_FEATURE)"
     fi
     index=0
-    while [ "$index" -lt "${#REFUSED_BRANCHES[@]}" ]; do
+    while test "$index" -lt "${#REFUSED_BRANCHES[@]}"; do
         echo "REFUSED: ${REFUSED_BRANCHES[$index]} — ${REFUSED_REASONS[$index]}"
         index=$((index + 1))
     done
 fi
 
-if [ "${#REFUSED_BRANCHES[@]}" -eq 0 ]; then
+if test "${#REFUSED_BRANCHES[@]}" -eq 0; then
     exit 0
 fi
-if [ "$RESUMED_COUNT" -eq 0 ]; then
+if test "$RESUMED_COUNT" -eq 0; then
     exit 2
 fi
 exit 3

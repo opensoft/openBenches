@@ -1,0 +1,8 @@
+# Implementation plan
+Use Bash double-bracket conditionals for string and file predicates while keeping quoted comparison operands literal. Use the explicit decimal test builtin for numeric comparisons: unlike double-bracket arithmetic, it does not reinterpret leading-zero numbers, empty or untrusted strings as arithmetic expressions. Retain the same operands, operators, order, short circuiting and command boundaries.
+
+Qualify canonical source before publishing and port the bounded predicate repairs into installed consumer variants without upgrading unrelated bootstrap behavior. Preserve source provenance and every existing assertion. Run shell syntax, compare static diagnostics, differential predicate probes and the existing shared-overlay fixture suites. Publish and verify provider main before updating consumers.
+
+Qualification includes arbitrarily long numeric selections, leading zeroes, signed values, empty values and arithmetic-shaped strings. The builtin command name in invalid-integer diagnostics changes from [ to test; no project-authored diagnostic, parsing decision, refusal or exit status is changed by that spelling difference.
+
+Candidate qualification: all nine scripts pass bash syntax; 728 optional ShellCheck bracket diagnostics are removed with every other diagnostic code/count unchanged. Differential probes agree on 2,400 numeric comparison results, 560 string results and 63 file-attribute results. Of the numeric probes, 1,536 malformed or overflowing pairs exercised the recorded builtin-name diagnostic difference. Existing overlay suites, independent review, hosted CI and actual-main acceptance remain pending.

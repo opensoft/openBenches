@@ -633,7 +633,7 @@ verify_git_worktree_candidate() {
     actual_head="$_GIT_WORKTREE_QUERY_RESULT"
     [[ "$actual_head" == "$parsed_head" && -z "${actual_head#"$parsed_head"}" ]] || return 1
 
-    if [[ "$parsed_detached" = "true" ]]; then
+    if [[ "$parsed_detached" == "true" && -z "${parsed_detached#true}" ]]; then
         if _git_worktree_query "$canonical_candidate" symbolic-ref -q HEAD; then
             return 1
         fi
@@ -1090,7 +1090,7 @@ shape_add_leg_worktree() {
     local create_branch="$5"
     local worktree_error=""
 
-    if [[ "$create_branch" = "true" ]]; then
+    if [[ "$create_branch" == "true" && -z "${create_branch#true}" ]]; then
         if ! worktree_error=$(git -C "$leg" worktree add -b "$BRANCH_NAME" "$path" "$base_ref" 2>&1); then
             >&2 echo "Error: Failed to create the $role leg worktree '$path' from '$base_ref'."
             if [[ -n "$worktree_error" ]]; then

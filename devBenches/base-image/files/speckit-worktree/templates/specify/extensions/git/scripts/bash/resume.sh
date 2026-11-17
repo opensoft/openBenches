@@ -495,8 +495,8 @@ while [[ "$selection" -lt "${#SELECTED_INDEXES[@]}" ]]; do
         # `MANIFEST_LEG_PUSHED_SEEN` for that reason, and these are
         # `openRepoTools`' `status`'s words for the same four states, so the
         # two tools tell the person one story.
-        if [[ "$pushed" != "true" ]]; then
-            if [[ "$pushed" = "false" ]]; then
+        if [[ "$pushed" != "true" || -n "${pushed#true}" ]]; then
+            if [[ "$pushed" == "false" && -z "${pushed#false}" ]]; then
                 >&2 echo "Error: $branch ($role leg) was parked with --no-push; that feature was NOT recreated."
                 >&2 echo "Its parked commit $parked_commit exists only on the workstation that parked it ($MANIFEST_PARKED_ON)."
                 >&2 echo "Push it there, re-run \`make park\`, then resume here."

@@ -72,6 +72,7 @@ _normalize_yaml_scalar() {
             value="${value#\'}"
             value="${value%\'}"
             ;;
+        *) : ;;
     esac
     printf '%s\n' "$value"
 }
@@ -91,6 +92,7 @@ if [[ -f "$_config_file" ]]; then
         [[ -n "$_trimmed" ]] || continue
         case "$_trimmed" in
             \#*) continue ;;
+            *) : ;;
         esac
 
         _indent="${_line%%[![:space:]]*}"
@@ -147,11 +149,9 @@ if [[ -f "$_config_file" ]]; then
     done < "$_config_file"
 
     # If event-specific key not found, use default
-    if test "$_enabled" = "false" && test "$_default_enabled" = "true"; then
-        # Only use default if the event wasn't explicitly set to false.
-        if ! $_event_seen; then
-            _enabled=true
-        fi
+    # Only use default if the event wasn't explicitly set to false.
+    if test "$_enabled" = "false" && test "$_default_enabled" = "true" && ! $_event_seen; then
+        _enabled=true
     fi
 else
     # No config file — auto-commit disabled by default

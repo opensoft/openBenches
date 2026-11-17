@@ -70,7 +70,7 @@ print_script_dir() {
     local script_path="${BASH_SOURCE[0]}"
     local script_dir="${script_path%/*}"
 
-    [[ "$script_dir" != "$script_path" ]] || script_dir=.
+    test "$script_dir" != "$script_path" || script_dir=.
     CDPATH="" cd "$script_dir" && pwd
 }
 
@@ -328,7 +328,7 @@ resolve_main_repo_root() {
 
     capture_path basename "$common_dir" || return 1
     common_name="$CAPTURED_PATH"
-    if [[ "$common_name" = ".git" ]]; then
+    if test "$common_name" = ".git"; then
         capture_path dirname "$common_dir" || return 1
         main_root="$CAPTURED_PATH"
         if [[ -d "$main_root" ]]; then
@@ -365,7 +365,7 @@ resolve_worktree_root() {
     capture_path resolve_path_from_root "$main_root" "$raw_root" || return 1
     candidate="$CAPTURED_PATH"
     if [[ -d "$candidate" ]]; then
-        if [[ "$raw_root" != "$default_root" ]]; then
+        if test "$raw_root" != "$default_root"; then
             (cd "$candidate" && pwd -P)
             return 0
         elif worktree_root_has_registered_worktrees "$candidate" "$main_root"; then
@@ -376,7 +376,7 @@ resolve_worktree_root() {
         fi
     fi
 
-    if [[ "$raw_root" != "$default_root" ]]; then
+    if test "$raw_root" != "$default_root"; then
         printf '%s\n' "$candidate"
         return 0
     fi
@@ -422,7 +422,7 @@ emit_result() {
         printf 'BASE_BRANCH=%q\n' "$base_branch"
         printf 'WORKTREE_PATH=%q\n' "$worktree_path"
         printf 'SOURCE=%q\n' "$source"
-        if [[ "$EMIT_REPO_SHAPE" = three-leg ]]; then
+        if test "$EMIT_REPO_SHAPE" = three-leg; then
             printf 'SPEC_WORKTREE_PATH=%q\n' "$EMIT_SPEC_WORKTREE_PATH"
             printf 'CODE_WORKTREE_PATH=%q\n' "$EMIT_CODE_WORKTREE_PATH"
             printf 'FEATURE_DIR=%q\n' "$EMIT_FEATURE_DIR"
@@ -523,7 +523,7 @@ STATE_FILE="$COMMON_DIR/speckit-last-worktree.json"
 BASE_BRANCH=$(resolve_config_value "$REPO_ROOT" "base_branch" "main")
 
 load_repo_shape "$MAIN_REPO_ROOT"
-if [[ "$REPO_SHAPE" = "three-leg" ]]; then
+if test "$REPO_SHAPE" = "three-leg"; then
     if ! shape_leg_is_checkout "$SPEC_LEG"; then
         echo "Error: the spec leg '$SHAPE_SPEC_PATH' is not an initialised Git checkout at '$SPEC_LEG'." >&2
         echo "Run 'git submodule update --init' (or 'make bootstrap') in the project root first." >&2
@@ -547,7 +547,7 @@ if [[ "$REPO_SHAPE" = "three-leg" ]]; then
         if read_state_worktree_path "$STATE_FILE" && [[ -n "$WORKTREE_PATH" ]]; then
             SHAPE_INDEX=0
             while test "$SHAPE_INDEX" -lt "${#SHAPE_FEATURE_PATHS[@]}"; do
-                if [[ "$WORKTREE_PATH" = "${SHAPE_FEATURE_PATHS[$SHAPE_INDEX]}" ]]; then
+                if test "$WORKTREE_PATH" = "${SHAPE_FEATURE_PATHS[$SHAPE_INDEX]}"; then
                     SHAPE_SELECTED=$SHAPE_INDEX
                     SHAPE_SOURCE=state_file
                     break
@@ -589,7 +589,7 @@ if [[ ! -L "$STATE_FILE" ]] && [[ -f "$STATE_FILE" ]]; then
     if read_state_worktree_path "$STATE_FILE" && [[ -n "$WORKTREE_PATH" ]]; then
         STATE_INDEX=0
         while test "$STATE_INDEX" -lt "${#REGISTERED_WORKTREE_PATHS[@]}"; do
-            if [[ "$WORKTREE_PATH" = "${REGISTERED_WORKTREE_PATHS[$STATE_INDEX]}" ]]; then
+            if test "$WORKTREE_PATH" = "${REGISTERED_WORKTREE_PATHS[$STATE_INDEX]}"; then
                 emit_result "${REGISTERED_WORKTREE_BRANCHES[$STATE_INDEX]}" \
                     "${REGISTERED_WORKTREE_PATHS[$STATE_INDEX]}" "$BASE_BRANCH" "$REPO_ROOT" "state_file"
                 exit 0

@@ -42,8 +42,8 @@ workspace_read_scalar() {
         indent_ws="${content%%[![:space:]]*}"
         test "${#indent_ws}" -eq 0 || continue
         key="${trimmed%%:*}"
-        [[ "$key" != "$trimmed" ]] || continue
-        [[ "$key" = "$want" ]] || continue
+        test "$key" != "$trimmed" || continue
+        test "$key" = "$want" || continue
         _shape_set_scalar "${trimmed#*:}"
         WORKSPACE_SCALAR="$_SHAPE_SCALAR"
         return 0
@@ -68,21 +68,21 @@ workspace_members_contains() {
         indent=${#indent_ws}
         if test "$indent" -eq 0; then
             key="${trimmed%%:*}"
-            if [[ "$key" != "$trimmed" ]] && [[ "$key" = "members" ]]; then
+            if test "$key" != "$trimmed" && test "$key" = "members"; then
                 in_members=true
             else
                 in_members=false
             fi
             continue
         fi
-        [[ "$in_members" = true ]] || continue
+        test "$in_members" = true || continue
         _shape_set_trimmed "${trimmed#- }"
         trimmed="$_SHAPE_TRIMMED"
         key="${trimmed%%:*}"
-        [[ "$key" != "$trimmed" ]] || continue
-        [[ "$key" = "id" ]] || continue
+        test "$key" != "$trimmed" || continue
+        test "$key" = "id" || continue
         _shape_set_scalar "${trimmed#*:}"
-        [[ "$_SHAPE_SCALAR" = "$want" ]] || continue
+        test "$_SHAPE_SCALAR" = "$want" || continue
         return 0
     done < "$file"
     return 1
@@ -134,10 +134,10 @@ workspace_read_org_override() {
         indent=${#indent_ws}
 
         if test "$indent" -eq 0; then
-            [[ "$in_orgs" = false ]] || break
+            test "$in_orgs" = false || break
             key="${trimmed%%:*}"
-            [[ "$key" != "$trimmed" ]] || continue
-            [[ "$key" = "orgs" ]] || continue
+            test "$key" != "$trimmed" || continue
+            test "$key" = "orgs" || continue
             _shape_set_scalar "${trimmed#*:}"
             if [[ -n "$_SHAPE_SCALAR" ]]; then
                 WORKSPACE_CONFIG_ERROR="orgs: must be a map of org names, not a scalar"
@@ -149,7 +149,7 @@ workspace_read_org_override() {
             continue
         fi
 
-        [[ "$in_orgs" = true ]] || continue
+        test "$in_orgs" = true || continue
 
         case "$trimmed" in
             '-'|'- '*)
@@ -158,7 +158,7 @@ workspace_read_org_override() {
                 ;;
         esac
         key="${trimmed%%:*}"
-        if [[ "$key" = "$trimmed" ]]; then
+        if test "$key" = "$trimmed"; then
             WORKSPACE_CONFIG_ERROR="'$trimmed' is not a 'key: value' line"
             return 2
         fi
@@ -200,7 +200,7 @@ workspace_read_org_override() {
             WORKSPACE_CONFIG_ERROR="'$key' under '$current' has no value"
             return 2
         fi
-        if [[ "$current_folded" = "$want_folded" ]]; then
+        if test "$current_folded" = "$want_folded"; then
             found=true
             case "$key" in
                 repository) found_repository="$value" ;;
@@ -209,7 +209,7 @@ workspace_read_org_override() {
         fi
     done < "$file"
 
-    [[ "$found" = true ]] || return 1
+    test "$found" = true || return 1
     if [[ -z "$found_path" ]]; then
         WORKSPACE_CONFIG_ERROR="org '$want' has no path:"
         return 2
@@ -414,11 +414,11 @@ workspace_project_repository() {
         indent_ws="${content%%[![:space:]]*}"
         indent=${#indent_ws}
 
-        if [[ "$in_legs" = true ]]; then
+        if test "$in_legs" = true; then
             if test "$indent" -eq 0; then
                 in_legs=false
-            elif [[ "${trimmed:0:2}" = "- " ]] || [[ "$trimmed" = "-" ]]; then
-                if [[ "$cur_role" = "assembly" ]] && [[ -n "$cur_repository" ]]; then
+            elif test "${trimmed:0:2}" = "- " || test "$trimmed" = "-"; then
+                if test "$cur_role" = "assembly" && [[ -n "$cur_repository" ]]; then
                     WORKSPACE_PROJECT_REPOSITORY="$cur_repository"
                     return 0
                 fi
@@ -428,7 +428,7 @@ workspace_project_repository() {
                 _shape_set_trimmed "${trimmed#-}"
                 rest="$_SHAPE_TRIMMED"
                 key="${rest%%:*}"
-                if [[ -n "$rest" ]] && [[ "$key" != "$rest" ]]; then
+                if [[ -n "$rest" ]] && test "$key" != "$rest"; then
                     _shape_set_scalar "${rest#*:}"
                     case "$key" in
                         role) cur_role="$_SHAPE_SCALAR" ;;
@@ -438,7 +438,7 @@ workspace_project_repository() {
                 continue
             elif test "$indent" -eq "$key_col"; then
                 key="${trimmed%%:*}"
-                if [[ "$key" != "$trimmed" ]]; then
+                if test "$key" != "$trimmed"; then
                     _shape_set_scalar "${trimmed#*:}"
                     case "$key" in
                         role) cur_role="$_SHAPE_SCALAR" ;;
@@ -453,14 +453,14 @@ workspace_project_repository() {
 
         if test "$indent" -eq 0; then
             key="${trimmed%%:*}"
-            [[ "$key" != "$trimmed" ]] || continue
-            if [[ "$key" = "legs" ]]; then
+            test "$key" != "$trimmed" || continue
+            if test "$key" = "legs"; then
                 in_legs=true
                 key_col=-1
             fi
         fi
     done < "$manifest"
-    if [[ "$cur_role" = "assembly" ]] && [[ -n "$cur_repository" ]]; then
+    if test "$cur_role" = "assembly" && [[ -n "$cur_repository" ]]; then
         WORKSPACE_PROJECT_REPOSITORY="$cur_repository"
     fi
     return 0
@@ -479,13 +479,13 @@ workspace_family_name() {
     WORKSPACE_FAMILY_MANIFEST=""
     parent="${root%/*}"
     [[ -n "$parent" ]] || return 0
-    [[ "$parent" != "$root" ]] || return 0
+    test "$parent" != "$root" || return 0
     family_dir="${parent##*/}"
     [[ -n "$family_dir" ]] || return 0
     manifest="$parent/$family_dir/family.yaml"
     [[ -f "$manifest" ]] || return 0
     workspace_read_scalar "$manifest" kind || return 0
-    [[ "$WORKSPACE_SCALAR" = "family-manifest" ]] || return 0
+    test "$WORKSPACE_SCALAR" = "family-manifest" || return 0
     workspace_members_contains "$manifest" "$project_id" || return 0
     workspace_read_scalar "$manifest" id || return 0
     [[ -n "$WORKSPACE_SCALAR" ]] || return 0
@@ -679,7 +679,7 @@ workspace_load_project() {
             in_features=false
             in_legs=false
             key="${trimmed%%:*}"
-            [[ "$key" != "$trimmed" ]] || continue
+            test "$key" != "$trimmed" || continue
             _shape_set_scalar "${trimmed#*:}"
             value="$_SHAPE_SCALAR"
             case "$key" in
@@ -689,7 +689,7 @@ workspace_load_project() {
             continue
         fi
 
-        [[ "$in_projects" = true ]] || continue
+        test "$in_projects" = true || continue
 
         if test "$indent" -eq 2; then
             matching=false
@@ -702,22 +702,22 @@ workspace_load_project() {
             _shape_set_trimmed "${trimmed#- }"
             rest="$_SHAPE_TRIMMED"
             key="${rest%%:*}"
-            [[ "$key" != "$rest" ]] || continue
+            test "$key" != "$rest" || continue
             _shape_set_scalar "${rest#*:}"
-            if [[ "$key" = "id" ]] && [[ "$_SHAPE_SCALAR" = "$want" ]]; then
+            if test "$key" = "id" && test "$_SHAPE_SCALAR" = "$want"; then
                 matching=true
                 MANIFEST_PROJECT_FOUND=true
             fi
             continue
         fi
 
-        [[ "$matching" = true ]] || continue
+        test "$matching" = true || continue
 
         if test "$indent" -eq 4; then
             in_features=false
             in_legs=false
             key="${trimmed%%:*}"
-            [[ "$key" != "$trimmed" ]] || continue
+            test "$key" != "$trimmed" || continue
             _shape_set_scalar "${trimmed#*:}"
             value="$_SHAPE_SCALAR"
             case "$key" in
@@ -735,7 +735,7 @@ workspace_load_project() {
             continue
         fi
 
-        [[ "$in_features" = true ]] || continue
+        test "$in_features" = true || continue
 
         if test "$indent" -eq 6; then
             in_legs=false
@@ -746,9 +746,9 @@ workspace_load_project() {
             _shape_set_trimmed "${trimmed#- }"
             rest="$_SHAPE_TRIMMED"
             key="${rest%%:*}"
-            [[ "$key" != "$rest" ]] || continue
+            test "$key" != "$rest" || continue
             _shape_set_scalar "${rest#*:}"
-            [[ "$key" = "branch" ]] || continue
+            test "$key" = "branch" || continue
             MANIFEST_FEATURE_BRANCHES[${#MANIFEST_FEATURE_BRANCHES[@]}]="$_SHAPE_SCALAR"
             MANIFEST_FEATURE_DIRECTORIES[${#MANIFEST_FEATURE_DIRECTORIES[@]}]=""
             feature_index=$((${#MANIFEST_FEATURE_BRANCHES[@]} - 1))
@@ -760,7 +760,7 @@ workspace_load_project() {
         if test "$indent" -eq 8; then
             in_legs=false
             key="${trimmed%%:*}"
-            [[ "$key" != "$trimmed" ]] || continue
+            test "$key" != "$trimmed" || continue
             _shape_set_scalar "${trimmed#*:}"
             case "$key" in
                 feature_directory)
@@ -771,7 +771,7 @@ workspace_load_project() {
             continue
         fi
 
-        [[ "$in_legs" = true ]] || continue
+        test "$in_legs" = true || continue
 
         if test "$indent" -eq 10; then
             case "$trimmed" in
@@ -781,9 +781,9 @@ workspace_load_project() {
             _shape_set_trimmed "${trimmed#- }"
             rest="$_SHAPE_TRIMMED"
             key="${rest%%:*}"
-            [[ "$key" != "$rest" ]] || continue
+            test "$key" != "$rest" || continue
             _shape_set_scalar "${rest#*:}"
-            [[ "$key" = "role" ]] || continue
+            test "$key" = "role" || continue
             MANIFEST_LEG_FEATURE[${#MANIFEST_LEG_FEATURE[@]}]="$feature_index"
             MANIFEST_LEG_ROLE[${#MANIFEST_LEG_ROLE[@]}]="$_SHAPE_SCALAR"
             MANIFEST_LEG_REMOTE[${#MANIFEST_LEG_REMOTE[@]}]=""
@@ -798,7 +798,7 @@ workspace_load_project() {
         if test "$indent" -eq 12 && test "${#MANIFEST_LEG_ROLE[@]}" -gt 0; then
             local leg_index=$((${#MANIFEST_LEG_ROLE[@]} - 1))
             key="${trimmed%%:*}"
-            [[ "$key" != "$trimmed" ]] || continue
+            test "$key" != "$trimmed" || continue
             _shape_set_scalar "${trimmed#*:}"
             case "$key" in
                 remote) MANIFEST_LEG_REMOTE[leg_index]="$_SHAPE_SCALAR" ;;
@@ -813,7 +813,7 @@ workspace_load_project() {
         fi
     done < "$file"
 
-    [[ "$MANIFEST_PROJECT_FOUND" = true ]]
+    test "$MANIFEST_PROJECT_FOUND" = true
 }
 
 # ---------------------------------------------------------------------------
@@ -932,19 +932,19 @@ workspace_sync() {
 
     git -C "$workspace" remote get-url origin >/dev/null 2>&1 || return 0
     branch="$(git -C "$workspace" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    if [[ -z "$branch" ]] || [[ "$branch" = "HEAD" ]]; then
-        if [[ "$mode" = resume ]]; then
+    if [[ -z "$branch" ]] || test "$branch" = "HEAD"; then
+        if test "$mode" = resume; then
             >&2 echo "Error: could not refresh workspace '$workspace': its origin is configured but it is not on a branch; nothing was resumed."
             return 1
         fi
         return 0
     fi
     fetch_ref="$branch"
-    if [[ "$mode" = resume ]]; then
+    if test "$mode" = resume; then
         fetch_ref="+refs/heads/$branch:refs/remotes/origin/$branch"
     fi
     if ! git -C "$workspace" fetch -q origin "$fetch_ref" >/dev/null 2>&1; then
-        if [[ "$mode" = resume ]]; then
+        if test "$mode" = resume; then
             >&2 echo "Error: could not refresh workspace '$workspace' from origin/$branch; cached manifest data is insufficient; nothing was resumed."
             return 1
         fi
@@ -952,7 +952,7 @@ workspace_sync() {
     fi
     git -C "$workspace" merge-base --is-ancestor "refs/remotes/origin/$branch" HEAD 2>/dev/null && return 0
     # Resume does not commit or stash the receiving workstation's edits.
-    if [[ "$mode" = resume ]] \
+    if test "$mode" = resume \
         && [[ -n "$(git -C "$workspace" status --porcelain --untracked-files=all 2>/dev/null)" ]]; then
         >&2 echo "Error: workspace-dirty: '$workspace' has uncommitted changes and cannot be refreshed; nothing was resumed."
         >&2 echo "Commit or stash those paths, then re-run resume."
@@ -1000,7 +1000,7 @@ workspace_push_manifest() {
         return 0
     fi
     branch="$(git -C "$workspace" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    if [[ -z "$branch" ]] || [[ "$branch" = "HEAD" ]]; then
+    if [[ -z "$branch" ]] || test "$branch" = "HEAD"; then
         echo "[specify] Warning: the workspace checkout '$workspace' is not on a branch; the manifest commit was not pushed." >&2
         return 0
     fi

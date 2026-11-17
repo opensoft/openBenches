@@ -12,7 +12,7 @@ SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Find project root
 _find_project_root() {
     local dir="$1"
-    while [[ "$dir" != "/" ]]; do
+    while test "$dir" != "/"; do
         if [[ -d "$dir/.specify" ]] || [[ -d "$dir/.git" ]]; then
             echo "$dir"
             return 0
@@ -49,7 +49,7 @@ if [[ -f "$SCRIPT_DIR/git-common.sh" ]]; then
     . "$SCRIPT_DIR/git-common.sh"
     load_repo_shape "$REPO_ROOT"
 fi
-if [[ "$REPO_SHAPE" = "three-leg" ]]; then
+if test "$REPO_SHAPE" = "three-leg"; then
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[specify] Three-leg project root is already a Git repository; skipping" >&2
     else

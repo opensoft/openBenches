@@ -19,7 +19,7 @@ SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _find_project_root() {
     local dir="$1"
-    while [[ "$dir" != "/" ]]; do
+    while test "$dir" != "/"; do
         if [[ -d "$dir/.specify" ]] || [[ -d "$dir/.git" ]]; then
             echo "$dir"
             return 0
@@ -96,13 +96,13 @@ if [[ -f "$_config_file" ]]; then
         _indent="${_line%%[![:space:]]*}"
         _indent_len=${#_indent}
         _key="${_trimmed%%:*}"
-        [[ "$_trimmed" != "$_key" ]] || continue
+        test "$_trimmed" != "$_key" || continue
         _value="${_trimmed#*:}"
         _value="${_value#"${_value%%[![:space:]]*}"}"
         _value="$(_normalize_yaml_scalar "$_value")"
 
         # Detect auto_commit: section.
-        if test "$_indent_len" -eq 0 && [[ "$_key" = "auto_commit" ]]; then
+        if test "$_indent_len" -eq 0 && test "$_key" = "auto_commit"; then
             _in_auto_commit=true
             _in_event=false
             continue
@@ -114,18 +114,18 @@ if [[ -f "$_config_file" ]]; then
         fi
 
         if $_in_auto_commit; then
-            if $_in_event && test "$_indent_len" -le "$_event_indent" && [[ "$_key" != "$EVENT_NAME" ]]; then
+            if $_in_event && test "$_indent_len" -le "$_event_indent" && test "$_key" != "$EVENT_NAME"; then
                 _in_event=false
             fi
 
             # Check default key.
-            if [[ "$_key" = "default" ]]; then
+            if test "$_key" = "default"; then
                 _val=$(printf '%s\n' "$_value" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-                [[ "$_val" = "true" ]] && _default_enabled=true
+                test "$_val" = "true" && _default_enabled=true
             fi
 
             # Detect our event subsection using a literal key comparison.
-            if [[ "$_key" = "$EVENT_NAME" ]]; then
+            if test "$_key" = "$EVENT_NAME"; then
                 _in_event=true
                 _event_seen=true
                 _event_indent=$_indent_len
@@ -134,12 +134,12 @@ if [[ -f "$_config_file" ]]; then
 
             # Inside our event subsection.
             if $_in_event; then
-                if [[ "$_key" = "enabled" ]]; then
+                if test "$_key" = "enabled"; then
                     _val=$(printf '%s\n' "$_value" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-                    [[ "$_val" = "true" ]] && _enabled=true
-                    [[ "$_val" = "false" ]] && _enabled=false
+                    test "$_val" = "true" && _enabled=true
+                    test "$_val" = "false" && _enabled=false
                 fi
-                if [[ "$_key" = "message" ]]; then
+                if test "$_key" = "message"; then
                     _commit_msg="$_value"
                 fi
             fi
@@ -147,7 +147,7 @@ if [[ -f "$_config_file" ]]; then
     done < "$_config_file"
 
     # If event-specific key not found, use default
-    if [[ "$_enabled" = "false" ]] && [[ "$_default_enabled" = "true" ]]; then
+    if test "$_enabled" = "false" && test "$_default_enabled" = "true"; then
         # Only use default if the event wasn't explicitly set to false.
         if ! $_event_seen; then
             _enabled=true
@@ -158,7 +158,7 @@ else
     exit 0
 fi
 
-if [[ "$_enabled" != "true" ]]; then
+if test "$_enabled" != "true"; then
     exit 0
 fi
 
@@ -257,7 +257,7 @@ _commit_in_tree() {
     echo "✓ Changes committed ${_phase} ${_command_name} in the $label worktree" >&2
 }
 
-if [[ "$REPO_SHAPE" = "three-leg" ]]; then
+if test "$REPO_SHAPE" = "three-leg"; then
     # Derive a human-readable command name from the event
     # e.g., after_specify -> specify, before_plan -> plan
     _command_name=$(echo "$EVENT_NAME" | sed 's/^after_//' | sed 's/^before_//')

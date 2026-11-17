@@ -805,6 +805,29 @@ test_jq_without_python_fails_before_worktree_mutation() {
         return 1
     fi
 }
+test_exact_branch_identity_with_nocasematch() {
+    local repo="$FIXTURE_ROOT/nocasematch-identity"
+    local configured_root="$FIXTURE_ROOT/nocasematch-worktrees"
+    local candidate="$configured_root/001-Case"
+    local head
+    initialize_fixture "$repo" 'checkout_mode: worktree' || return 1
+    git -C "$repo" worktree add -qb 001-Case "$candidate" || return 1
+    head="$(git -C "$candidate" rev-parse HEAD)" || return 1
+    (
+        # shellcheck source=devBenches/base-image/files/speckit-worktree/templates/specify/extensions/git/scripts/bash/git-common.sh
+        source "$GIT_COMMON_SCRIPT"
+        shopt -s nocasematch
+        verify_git_worktree_candidate "$repo" "$configured_root" "$candidate" \
+            "$head" refs/heads/001-Case false || return 1
+        if verify_git_worktree_candidate "$repo" "$configured_root" "$candidate" \
+            "$head" refs/heads/001-case false; then
+            printf 'assertion failed: case-only different branch identity was accepted under nocasematch\n' >&2
+            return 1
+        fi
+        # A sourced helper must preserve the caller's shell option as well.
+        shopt -q nocasematch || return 1
+    )
+}
 failures=0
 run_scenario() {
     local name="$1"
@@ -816,6 +839,7 @@ run_scenario() {
         failures=$((failures + 1))
     fi
 }
+run_scenario 'exact branch identity survives inherited nocasematch' test_exact_branch_identity_with_nocasematch
 run_scenario 'branch prefix traversal is rejected' test_branch_prefix_traversal
 run_scenario 'exact branch override ignores invalid template' test_exact_branch_override
 run_scenario 'unsupported template token is rejected' test_unsupported_template_token

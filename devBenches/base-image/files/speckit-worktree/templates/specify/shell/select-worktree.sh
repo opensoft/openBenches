@@ -37,7 +37,7 @@ print_script_dir() {
     local script_path="${BASH_SOURCE[0]}"
     local script_dir="${script_path%/*}"
 
-    [[ "$script_dir" != "$script_path" ]] || script_dir=.
+    test "$script_dir" != "$script_path" || script_dir=.
     CDPATH="" cd "$script_dir" && pwd
 }
 
@@ -252,7 +252,7 @@ resolve_main_repo_root() {
 
     capture_path basename "$common_dir" || return 1
     common_name="$CAPTURED_PATH"
-    if [[ "$common_name" = ".git" ]]; then
+    if test "$common_name" = ".git"; then
         capture_path dirname "$common_dir" || return 1
         main_root="$CAPTURED_PATH"
         if [[ -d "$main_root" ]]; then
@@ -289,7 +289,7 @@ resolve_worktree_root() {
     capture_path resolve_path_from_root "$main_root" "$raw_root" || return 1
     candidate="$CAPTURED_PATH"
     if [[ -d "$candidate" ]]; then
-        if [[ "$raw_root" != "$default_root" ]]; then
+        if test "$raw_root" != "$default_root"; then
             (cd "$candidate" && pwd -P)
             return 0
         elif worktree_root_has_registered_worktrees "$candidate" "$main_root"; then
@@ -300,7 +300,7 @@ resolve_worktree_root() {
         fi
     fi
 
-    if [[ "$raw_root" != "$default_root" ]]; then
+    if test "$raw_root" != "$default_root"; then
         printf '%s\n' "$candidate"
         return 0
     fi
@@ -323,11 +323,11 @@ resolve_worktree_root() {
 }
 
 MODE="prompt"
-if [[ "${1:-}" = "--path" ]]; then
+if test "${1:-}" = "--path"; then
     MODE="path"
-elif [[ "${1:-}" = "--list" ]]; then
+elif test "${1:-}" = "--list"; then
     MODE="list"
-elif [[ "${1:-}" = "--env" ]]; then
+elif test "${1:-}" = "--env"; then
     MODE="env"
 elif test $# -gt 0; then
     echo "Usage: $0 [--path|--list|--env]" >&2
@@ -340,7 +340,7 @@ load_repo_shape "$MAIN_REPO_ROOT"
 
 PATHS=()
 BRANCHES=()
-if [[ "$REPO_SHAPE" = "three-leg" ]]; then
+if test "$REPO_SHAPE" = "three-leg"; then
     if ! shape_leg_is_checkout "$SPEC_LEG"; then
         echo "Error: the spec leg '$SHAPE_SPEC_PATH' is not an initialised Git checkout at '$SPEC_LEG'." >&2
         echo "Run 'git submodule update --init' (or 'make bootstrap') in the project root first." >&2
@@ -399,7 +399,7 @@ fi
 emit_selection() {
     local index="$1"
 
-    if [[ "$MODE" != "env" ]]; then
+    if test "$MODE" != "env"; then
         printf '%s\n' "${PATHS[$index]}"
         return 0
     fi
@@ -408,7 +408,7 @@ emit_selection() {
     printf 'PROJECT_ROOT=%q\n' "$MAIN_REPO_ROOT"
     printf 'BRANCH_NAME=%q\n' "${BRANCHES[$index]}"
     printf 'WORKTREE_PATH=%q\n' "${PATHS[$index]}"
-    if [[ "$REPO_SHAPE" = "three-leg" ]]; then
+    if test "$REPO_SHAPE" = "three-leg"; then
         shape_feature_paths_for "$MAIN_REPO_ROOT" "${PATHS[$index]}" "${BRANCHES[$index]}"
         printf 'SPEC_WORKTREE_PATH=%q\n' "$SHAPE_SPEC_WORKTREE_PATH"
         printf 'CODE_WORKTREE_PATH=%q\n' "$SHAPE_CODE_WORKTREE_PATH"
@@ -418,7 +418,7 @@ emit_selection() {
     fi
 }
 
-if [[ "$MODE" = "list" ]]; then
+if test "$MODE" = "list"; then
     for i in "${!PATHS[@]}"; do
         index=$((i + 1))
         marker=""
@@ -431,7 +431,7 @@ if [[ "$MODE" = "list" ]]; then
     exit 0
 fi
 
-if { [[ "$MODE" = "path" ]] || [[ "$MODE" = "env" ]]; } && ! [[ -t 0 ]]; then
+if { test "$MODE" = "path" || test "$MODE" = "env"; } && ! [[ -t 0 ]]; then
     emit_selection 0
     exit 0
 fi

@@ -95,13 +95,13 @@ load_repo_shape() {
         indent_ws="${content%%[![:space:]]*}"
         indent=${#indent_ws}
 
-        if [[ "$in_legs" = true ]]; then
+        if test "$in_legs" = true; then
             if test "$indent" -eq 0; then
                 _shape_record_leg "$cur_role" "$cur_path"
                 cur_role=""
                 cur_path=""
                 in_legs=false
-            elif [[ "${trimmed:0:2}" = "- " ]] || [[ "$trimmed" = "-" ]]; then
+            elif test "${trimmed:0:2}" = "- " || test "$trimmed" = "-"; then
                 _shape_record_leg "$cur_role" "$cur_path"
                 cur_role=""
                 cur_path=""
@@ -109,7 +109,7 @@ load_repo_shape() {
                 _shape_set_trimmed "${trimmed#-}"
                 rest="$_SHAPE_TRIMMED"
                 key="${rest%%:*}"
-                if [[ -n "$rest" ]] && [[ "$key" != "$rest" ]]; then
+                if [[ -n "$rest" ]] && test "$key" != "$rest"; then
                     _shape_set_scalar "${rest#*:}"
                     value="$_SHAPE_SCALAR"
                     case "$key" in
@@ -120,7 +120,7 @@ load_repo_shape() {
                 continue
             elif test "$indent" -eq "$key_col"; then
                 key="${trimmed%%:*}"
-                if [[ "$key" != "$trimmed" ]]; then
+                if test "$key" != "$trimmed"; then
                     _shape_set_scalar "${trimmed#*:}"
                     value="$_SHAPE_SCALAR"
                     case "$key" in
@@ -136,7 +136,7 @@ load_repo_shape() {
 
         if test "$indent" -eq 0; then
             key="${trimmed%%:*}"
-            [[ "$key" != "$trimmed" ]] || continue
+            test "$key" != "$trimmed" || continue
             _shape_set_scalar "${trimmed#*:}"
             value="$_SHAPE_SCALAR"
             case "$key" in
@@ -151,8 +151,8 @@ load_repo_shape() {
     done < "$manifest"
     _shape_record_leg "$cur_role" "$cur_path"
 
-    if [[ "$manifest_kind" = "project-manifest" ]] \
-        && [[ "$manifest_schema" = "project-repo-schema" ]] \
+    if test "$manifest_kind" = "project-manifest" \
+        && test "$manifest_schema" = "project-repo-schema" \
         && [[ -n "$_SHAPE_LEG_SPEC_PATH" ]] \
         && [[ -n "$_SHAPE_LEG_CODE_PATH" ]]; then
         REPO_SHAPE="three-leg"
@@ -344,7 +344,7 @@ _git_worktree_decode_line_path() {
         \"*) ;;
         *) _GIT_WORKTREE_DECODED_PATH="$payload"; return 0 ;;
     esac
-    test "${#payload}" -ge 2 && [[ "${payload: -1}" = '"' ]] || return 1
+    test "${#payload}" -ge 2 && test "${payload: -1}" = '"' || return 1
     remaining="${payload#\"}"
     remaining="${remaining%\"}"
 
@@ -371,7 +371,7 @@ _git_worktree_decode_line_path() {
                         test "${#remaining}" -ge 2 || return 1
                         octal="$escape${remaining:0:2}"
                         case "$octal" in [0-3][0-7][0-7]) ;; *) return 1 ;; esac
-                        [[ "$octal" != 000 ]] || return 1
+                        test "$octal" != 000 || return 1
                         remaining="${remaining:2}"
                         printf -v decoded_escape '%b' "\\$octal" || return 1
                         ;;
@@ -395,7 +395,7 @@ _git_worktree_finalize_record() {
         worktree\ *) path="${_GIT_WORKTREE_RECORD_FIELDS[0]#worktree }" ;;
         *) return 1 ;;
     esac
-    if [[ "$mode" = lines ]]; then
+    if test "$mode" = lines; then
         _git_worktree_decode_line_path "$path" || return 1
         path="$_GIT_WORKTREE_DECODED_PATH"
     fi
@@ -412,7 +412,7 @@ _git_worktree_finalize_record() {
     done
     test "$head_count" -eq 1 || return 1
 
-    if [[ "$mode" = lines ]]; then
+    if test "$mode" = lines; then
         index=1
         while test "$index" -lt "$head_index"; do
             path="$path"$'\n'"${_GIT_WORKTREE_RECORD_FIELDS[$index]}"
@@ -443,7 +443,7 @@ _git_worktree_finalize_record() {
     done
     test "$state_count" -eq 1 || return 1
 
-    if [[ "$prunable" = false ]]; then
+    if test "$prunable" = false; then
         _GIT_WORKTREE_STAGED_PATHS+=("$path")
         _GIT_WORKTREE_STAGED_BRANCH_REFS+=("$branch_ref")
         _GIT_WORKTREE_STAGED_HEADS+=("$head")
@@ -492,7 +492,7 @@ _git_worktree_parse_lines() {
             pending_blank=false
             continue
         fi
-        if [[ "$pending_blank" = true ]]; then
+        if test "$pending_blank" = true; then
             case "$line" in worktree\ *) return 1 ;; esac
         fi
         pending_blank=false
@@ -501,7 +501,7 @@ _git_worktree_parse_lines() {
         fi
         _GIT_WORKTREE_RECORD_FIELDS+=("$line")
     done < "$input_file"
-    [[ "$pending_blank" = false ]] && test "${#_GIT_WORKTREE_RECORD_FIELDS[@]}" -eq 0
+    test "$pending_blank" = false && test "${#_GIT_WORKTREE_RECORD_FIELDS[@]}" -eq 0
 }
 
 _git_worktree_create_temp_file() {
@@ -594,9 +594,9 @@ verify_git_worktree_candidate() {
     canonical_root="$_GIT_WORKTREE_CANONICAL_RESULT"
     _git_worktree_canonicalize_dir "$candidate" || return 1
     canonical_candidate="$_GIT_WORKTREE_CANONICAL_RESULT"
-    [[ "$canonical_candidate" != "$canonical_main" ]] || return 1
-    [[ "$canonical_candidate" != "$canonical_root" ]] || return 1
-    if [[ "$canonical_root" = / ]]; then
+    test "$canonical_candidate" != "$canonical_main" || return 1
+    test "$canonical_candidate" != "$canonical_root" || return 1
+    if test "$canonical_root" = /; then
         case "$canonical_candidate" in /*) ;; *) return 1 ;; esac
     else
         case "$canonical_candidate" in "$canonical_root"/*) ;; *) return 1 ;; esac
@@ -605,23 +605,23 @@ verify_git_worktree_candidate() {
     _git_worktree_query "$canonical_candidate" rev-parse --show-toplevel || return 1
     _git_worktree_canonicalize_dir "$_GIT_WORKTREE_QUERY_RESULT" || return 1
     canonical_top="$_GIT_WORKTREE_CANONICAL_RESULT"
-    [[ "$canonical_top" = "$canonical_candidate" ]] || return 1
+    test "$canonical_top" = "$canonical_candidate" || return 1
 
     _git_worktree_resolve_git_dir "$canonical_main" --git-common-dir || return 1
     main_common="$_GIT_WORKTREE_GIT_DIR_RESULT"
     _git_worktree_resolve_git_dir "$canonical_candidate" --git-common-dir || return 1
     candidate_common="$_GIT_WORKTREE_GIT_DIR_RESULT"
-    [[ "$candidate_common" = "$main_common" ]] || return 1
+    test "$candidate_common" = "$main_common" || return 1
     _git_worktree_resolve_git_dir "$canonical_candidate" --git-dir || return 1
     candidate_git_dir="$_GIT_WORKTREE_GIT_DIR_RESULT"
-    [[ "$candidate_git_dir" != "$main_common" ]] || return 1
+    test "$candidate_git_dir" != "$main_common" || return 1
     case "$candidate_git_dir" in "$main_common"/worktrees/*) ;; *) return 1 ;; esac
 
     _git_worktree_query "$canonical_candidate" rev-parse --verify HEAD || return 1
     actual_head="$_GIT_WORKTREE_QUERY_RESULT"
-    [[ "$actual_head" = "$parsed_head" ]] || return 1
+    test "$actual_head" = "$parsed_head" || return 1
 
-    if [[ "$parsed_detached" = true ]]; then
+    if test "$parsed_detached" = true; then
         if _git_worktree_query "$canonical_candidate" symbolic-ref -q HEAD; then
             return 1
         fi
@@ -630,7 +630,7 @@ verify_git_worktree_candidate() {
         [[ -n "$parsed_branch_ref" ]] || return 1
         _git_worktree_query "$canonical_candidate" symbolic-ref -q HEAD || return 1
         actual_branch_ref="$_GIT_WORKTREE_QUERY_RESULT"
-        [[ "$actual_branch_ref" = "$parsed_branch_ref" ]] || return 1
+        test "$actual_branch_ref" = "$parsed_branch_ref" || return 1
     fi
 
     GIT_WORKTREE_VERIFIED_PATH="$canonical_candidate"
@@ -730,10 +730,10 @@ _git_worktree_first_existing_ancestor() {
     local candidate="$1"
     local previous
 
-    while [[ -n "$candidate" ]] && [[ "$candidate" != "/" ]] && [[ ! -d "$candidate" ]]; do
+    while [[ -n "$candidate" ]] && test "$candidate" != "/" && [[ ! -d "$candidate" ]]; do
         previous="$candidate"
         candidate="${candidate%/*}"
-        if [[ "$candidate" = "$previous" ]]; then
+        if test "$candidate" = "$previous"; then
             candidate="/"
             break
         fi
@@ -807,7 +807,7 @@ git_worktree_prune_visible() {
     if _git_worktree_canonicalize_dir "$root"; then
         canonical_root="$_GIT_WORKTREE_CANONICAL_RESULT"
     fi
-    [[ -n "$canonical_root" ]] && [[ "$canonical_root" != "/" ]] || return 0
+    [[ -n "$canonical_root" ]] && test "$canonical_root" != "/" || return 0
 
     load_git_worktrees "$repo" || return 1
     index=0
@@ -955,7 +955,7 @@ resolve_git_common_dir() {
 select_json_encoder() {
     if command -v jq >/dev/null 2>&1; then
         printf '%s\n' jq
-    elif [[ "$(type -t json_escape 2>/dev/null || true)" = "function" ]]; then
+    elif test "$(type -t json_escape 2>/dev/null || true)" = "function"; then
         printf '%s\n' json_escape
     elif command -v python3 >/dev/null 2>&1; then
         printf '%s\n' python3
@@ -1078,7 +1078,7 @@ shape_add_leg_worktree() {
     local create_branch="$5"
     local worktree_error=""
 
-    if [[ "$create_branch" = true ]]; then
+    if test "$create_branch" = true; then
         if ! worktree_error=$(git -C "$leg" worktree add -b "$BRANCH_NAME" "$path" "$base_ref" 2>&1); then
             >&2 echo "Error: Failed to create the $role leg worktree '$path' from '$base_ref'."
             if [[ -n "$worktree_error" ]]; then

@@ -13,6 +13,8 @@
 
 set -e
 
+readonly SPECKIT_TRIAD_SHAPE='three-leg'
+
 JSON_MODE=false
 DRY_RUN=false
 NO_PUSH=false
@@ -82,12 +84,14 @@ while test $i -le $#; do
                     echo "Error: $arg requires a value" >&2
                     exit 1
                     ;;
+                *) : ;;
             esac
             case "$arg" in
                 --feature) REQUESTED_BRANCHES[${#REQUESTED_BRANCHES[@]}]="$next_arg" ;;
                 --lane) LANE_ARG="$next_arg" ;;
                 --message) MESSAGE_ARG="$next_arg" ;;
                 --workspace) WORKSPACE_ARG="$next_arg" ;;
+                *) : ;;
             esac
             ;;
         --help|-h)
@@ -140,7 +144,7 @@ CHECKOUT_MODE=$(get_config_value "checkout_mode" "branch" "SPECKIT_GIT_CHECKOUT_
 CHECKOUT_MODE=$(printf '%s' "$CHECKOUT_MODE" | tr '[:upper:]' '[:lower:]')
 BASE_BRANCH=$(get_config_value "base_branch" "main" "SPECKIT_GIT_BASE_BRANCH")
 DEFAULT_WORKTREE_ROOT="../${REPO_ROOT##*/}-worktrees"
-if test "$REPO_SHAPE" = "three-leg"; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
     DEFAULT_WORKTREE_ROOT="worktrees"
 fi
 WORKTREE_ROOT_RAW=$(get_config_value "worktree_root" "$DEFAULT_WORKTREE_ROOT" "SPECKIT_GIT_WORKTREE_ROOT")
@@ -152,7 +156,7 @@ if test "$CHECKOUT_MODE" != "worktree"; then
     exit 1
 fi
 
-if test "$REPO_SHAPE" = "three-leg"; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
     if ! shape_leg_is_checkout "$SPEC_LEG"; then
         echo "Error: the spec leg '$SHAPE_SPEC_PATH' is not an initialised Git checkout at '$SPEC_LEG'." >&2
         echo "Run 'git submodule update --init' (or 'make bootstrap') in the project root first." >&2
@@ -299,7 +303,9 @@ recorded_leg_index() {
 
 recorded_leg_commit() {
     RECORDED_COMMIT=""
-    recorded_leg_index "$1" "$2" || return 1
+    local record_branch_arg="$1"
+    local record_role_arg="$2"
+    recorded_leg_index "$record_branch_arg" "$record_role_arg" || return 1
     RECORDED_COMMIT="${MANIFEST_LEG_COMMIT[$RECORDED_INDEX]}"
     [[ -n "$RECORDED_COMMIT" ]]
 }
@@ -321,7 +327,7 @@ root_relative() {
     esac
 }
 
-if test "$REPO_SHAPE" = "three-leg"; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
     if ! shape_load_features "$WORKTREE_ROOT"; then
         echo "Error: Failed to list Git worktrees." >&2
         exit 1
@@ -462,7 +468,7 @@ detached_branch_for() {
     done
 }
 
-if test "$REPO_SHAPE" = "three-leg" && test "${#REQUESTED_BRANCHES[@]}" -eq 0; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" && test "${#REQUESTED_BRANCHES[@]}" -eq 0; then
     scan_blocked_features() {
         local leg="$1"
         local role="$2"
@@ -678,7 +684,7 @@ build_legs() {
     LEG_REPOS=()
     LEG_TREES=()
     LEG_MOUNTS=()
-    if test "$REPO_SHAPE" = "three-leg"; then
+    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
         LEG_ROLES=("spec" "code")
         LEG_REPOS=("$SPEC_LEG" "$CODE_LEG")
         LEG_TREES=("$feature_dir/$SHAPE_SPEC_PATH" "$feature_dir/$SHAPE_CODE_PATH")
@@ -958,7 +964,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
     # Recorded, and reported.
     workspace_record_section "$RECORD_FILE" feature
     workspace_record_put "$RECORD_FILE" branch "$branch"
-    if test "$REPO_SHAPE" = "three-leg"; then
+    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
         shape_feature_paths_for "$REPO_ROOT" "$feature_dir" "$branch"
         workspace_record_put "$RECORD_FILE" _feature_directory "$SHAPE_FEATURE_DIR_RELATIVE"
     fi
@@ -1005,6 +1011,7 @@ if [[ -n "$STATE_FILE" ]] && workspace_read_state_field "$STATE_FILE" BRANCH_NAM
             ACTIVE_FEATURE="$WORKSPACE_STATE_VALUE"
             ACTIVE_FEATURE_SOURCE="state_file"
             ;;
+        *) : ;;
     esac
 fi
 if [[ -z "$ACTIVE_FEATURE" ]] && test "${#FEATURE_BRANCHES[@]}" -gt 0; then
@@ -1014,7 +1021,7 @@ fi
 
 # W1: feature.json disagrees. park enumerates from git, so this is a warning
 # and never a refusal.
-if test "$REPO_SHAPE" = "three-leg" && [[ -f "$REPO_ROOT/.specify/feature.json" ]]; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" && [[ -f "$REPO_ROOT/.specify/feature.json" ]]; then
     recorded_dir="$(python3 - "$REPO_ROOT/.specify/feature.json" <<'PY'
 import json
 import sys

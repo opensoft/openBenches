@@ -156,6 +156,7 @@ workspace_read_org_override() {
                 WORKSPACE_CONFIG_ERROR="orgs: must be a map of org names, not a list"
                 return 2
                 ;;
+            *) : ;;
         esac
         key="${trimmed%%:*}"
         if test "$key" = "$trimmed"; then
@@ -205,6 +206,7 @@ workspace_read_org_override() {
             case "$key" in
                 repository) found_repository="$value" ;;
                 path) found_path="$value" ;;
+                *) : ;;
             esac
         fi
     done < "$file"
@@ -433,6 +435,7 @@ workspace_project_repository() {
                     case "$key" in
                         role) cur_role="$_SHAPE_SCALAR" ;;
                         repository) cur_repository="$_SHAPE_SCALAR" ;;
+                        *) : ;;
                     esac
                 fi
                 continue
@@ -443,6 +446,7 @@ workspace_project_repository() {
                     case "$key" in
                         role) cur_role="$_SHAPE_SCALAR" ;;
                         repository) cur_repository="$_SHAPE_SCALAR" ;;
+                        *) : ;;
                     esac
                 fi
                 continue
@@ -685,6 +689,7 @@ workspace_load_project() {
             case "$key" in
                 family) MANIFEST_FAMILY="$value" ;;
                 projects) in_projects=true ;;
+                *) : ;;
             esac
             continue
         fi
@@ -731,6 +736,7 @@ workspace_load_project() {
                 active_feature) MANIFEST_ACTIVE_FEATURE="$value" ;;
                 active_feature_source) MANIFEST_ACTIVE_FEATURE_SOURCE="$value" ;;
                 features) in_features=true ;;
+                *) : ;;
             esac
             continue
         fi
@@ -767,6 +773,7 @@ workspace_load_project() {
                     MANIFEST_FEATURE_DIRECTORIES[feature_index]="$_SHAPE_SCALAR"
                     ;;
                 legs) in_legs=true ;;
+                *) : ;;
             esac
             continue
         fi
@@ -801,14 +808,15 @@ workspace_load_project() {
             test "$key" != "$trimmed" || continue
             _shape_set_scalar "${trimmed#*:}"
             case "$key" in
-                remote) MANIFEST_LEG_REMOTE[leg_index]="$_SHAPE_SCALAR" ;;
-                parked_commit) MANIFEST_LEG_COMMIT[leg_index]="$_SHAPE_SCALAR" ;;
-                wip) MANIFEST_LEG_WIP[leg_index]="$_SHAPE_SCALAR" ;;
-                wip_depth) MANIFEST_LEG_DEPTH[leg_index]="$_SHAPE_SCALAR" ;;
+                remote) MANIFEST_LEG_REMOTE[${leg_index}]="$_SHAPE_SCALAR" ;;
+                parked_commit) MANIFEST_LEG_COMMIT[${leg_index}]="$_SHAPE_SCALAR" ;;
+                wip) MANIFEST_LEG_WIP[${leg_index}]="$_SHAPE_SCALAR" ;;
+                wip_depth) MANIFEST_LEG_DEPTH[${leg_index}]="$_SHAPE_SCALAR" ;;
                 pushed)
-                    MANIFEST_LEG_PUSHED[leg_index]="$_SHAPE_SCALAR"
-                    MANIFEST_LEG_PUSHED_SEEN[leg_index]=pushed
+                    MANIFEST_LEG_PUSHED[${leg_index}]="$_SHAPE_SCALAR"
+                    MANIFEST_LEG_PUSHED_SEEN[${leg_index}]=pushed
                     ;;
+                *) : ;;
             esac
         fi
     done < "$file"
@@ -894,10 +902,12 @@ workspace_dirty_outside_manifests() {
         [[ -n "$line" ]] || continue
         case "$line" in
             '??'*) continue ;;
+            *) : ;;
         esac
         path="${line:3}"
         case "$path" in
             workspaces/*) continue ;;
+            *) : ;;
         esac
         WORKSPACE_DIRTY_PATHS="$WORKSPACE_DIRTY_PATHS$path
 "
@@ -1052,7 +1062,8 @@ workspace_push_manifest() {
 # ---------------------------------------------------------------------------
 
 workspace_record_reset() {
-    : > "$1"
+    local workspace_record_path="$1"
+    : > "$workspace_record_path"
 }
 
 workspace_record_put() {
@@ -1066,7 +1077,9 @@ workspace_record_put() {
 }
 
 workspace_record_section() {
-    printf '[%s]\n' "$2" >> "$1"
+    local workspace_section_label="$2"
+    local workspace_section_path="$1"
+    printf '[%s]\n' "$workspace_section_label" >> "$workspace_section_path"
 }
 
 # Merge this project's block into <manifest>, in a fixed key order, rewriting

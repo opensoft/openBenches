@@ -7,6 +7,11 @@
 set -e
 # speckit-overlay-shape: 1
 
+readonly SPECKIT_TRIAD_SHAPE='three-leg'
+readonly SPECKIT_WORKTREE_MODE='worktree'
+readonly SPECKIT_TR_UPPER='[:upper:]'
+readonly SPECKIT_TR_LOWER='[:lower:]'
+
 JSON_MODE=false
 DRY_RUN=false
 ALLOW_EXISTING=false
@@ -309,7 +314,7 @@ reserve_next_branch_number() {
 # Function to clean and format a branch name
 clean_branch_name() {
     local name="$1"
-    echo "$name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//'
+    echo "$name" | tr "$SPECKIT_TR_UPPER" "$SPECKIT_TR_LOWER" | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//'
 }
 
 # ---------------------------------------------------------------------------
@@ -462,6 +467,7 @@ validate_branch_template() {
             >&2 echo "Error: branch_template contains an unsupported token; supported tokens are {author}, {app}, {number}, and {slug}."
             exit 1
             ;;
+        *) : ;;
     esac
     without_number=${template//\{number\}/}
     number_token_count=$(((${#template} - ${#without_number}) / ${#number_token}))
@@ -474,6 +480,7 @@ validate_branch_template() {
             >&2 echo "Error: branch_template must not place {slug} before {number}; use {slug} only in the final feature segment."
             exit 1
             ;;
+        *) : ;;
     esac
     case "$feature_segment" in
         "{number}-"*) ;;
@@ -485,7 +492,9 @@ validate_branch_template() {
 }
 
 build_branch_name() {
-    render_branch_template "$BRANCH_TEMPLATE" "$1" "$2"
+    local branch_render_number="$1"
+    local branch_render_slug="$2"
+    render_branch_template "$BRANCH_TEMPLATE" "$branch_render_number" "$branch_render_slug"
 }
 
 branch_scope_prefix() {
@@ -711,18 +720,18 @@ SPECS_DIR="$REPO_ROOT/specs"
 DEFAULT_WORKTREE_ROOT="../$(basename "$REPO_ROOT")-worktrees"
 SPEC_BASE_REF=""
 CODE_BASE_REF=""
-if test "$REPO_SHAPE" = "three-leg"; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
     SPECS_DIR="$SPEC_LEG/specs"
     DEFAULT_WORKTREE_ROOT="worktrees"
 fi
 CHECKOUT_MODE=$(get_config_value "checkout_mode" "branch" "SPECKIT_GIT_CHECKOUT_MODE")
-CHECKOUT_MODE=$(printf '%s' "$CHECKOUT_MODE" | tr '[:upper:]' '[:lower:]')
+CHECKOUT_MODE=$(printf '%s' "$CHECKOUT_MODE" | tr "$SPECKIT_TR_UPPER" "$SPECKIT_TR_LOWER")
 BRANCH_NUMBERING=$(get_config_value "branch_numbering" "sequential" "SPECKIT_GIT_BRANCH_NUMBERING")
-BRANCH_NUMBERING=$(printf '%s' "$BRANCH_NUMBERING" | tr '[:upper:]' '[:lower:]')
+BRANCH_NUMBERING=$(printf '%s' "$BRANCH_NUMBERING" | tr "$SPECKIT_TR_UPPER" "$SPECKIT_TR_LOWER")
 BASE_BRANCH=$(get_config_value "base_branch" "main" "SPECKIT_GIT_BASE_BRANCH")
 WORKTREE_ROOT_RAW=$(get_config_value "worktree_root" "$DEFAULT_WORKTREE_ROOT" "SPECKIT_GIT_WORKTREE_ROOT")
 WORKTREE_ROOT=$(resolve_path_from_repo_root "$WORKTREE_ROOT_RAW")
-if test "$CHECKOUT_MODE" != "branch" && test "$CHECKOUT_MODE" != "worktree"; then
+if test "$CHECKOUT_MODE" != "branch" && test "$CHECKOUT_MODE" != "$SPECKIT_WORKTREE_MODE"; then
     echo "Error: checkout_mode must be 'branch' or 'worktree' (got '$CHECKOUT_MODE')" >&2
     exit 1
 fi
@@ -732,8 +741,8 @@ if test "$BRANCH_NUMBERING" != "sequential" && test "$BRANCH_NUMBERING" != "time
     exit 1
 fi
 
-if test "$REPO_SHAPE" = "three-leg"; then
-    if test "$CHECKOUT_MODE" != "worktree"; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+    if test "$CHECKOUT_MODE" != "$SPECKIT_WORKTREE_MODE"; then
         echo "Error: a three-leg project requires checkout_mode: worktree in .specify/extensions/git/git-config.yml (got '$CHECKOUT_MODE')." >&2
         echo "Branch mode would put the feature on the assembly root, which never carries a feature branch." >&2
         exit 1
@@ -751,18 +760,17 @@ if test "$REPO_SHAPE" = "three-leg"; then
 fi
 
 JSON_ENCODER=""
-if test "$JSON_MODE" = true || { test "$CHECKOUT_MODE" = "worktree" && test "$DRY_RUN" != true; }; then
-    if ! JSON_ENCODER=$(select_json_encoder); then
-        echo "Error: JSON output requires jq, a trusted json_escape function, or Python 3; no JSON encoder is available." >&2
-        exit 1
-    fi
+if { test "$JSON_MODE" = true || { test "$CHECKOUT_MODE" = "$SPECKIT_WORKTREE_MODE" && test "$DRY_RUN" != true; }; } \
+    && ! JSON_ENCODER=$(select_json_encoder); then
+    echo "Error: JSON output requires jq, a trusted json_escape function, or Python 3; no JSON encoder is available." >&2
+    exit 1
 fi
-if test "$CHECKOUT_MODE" = "worktree" && test "$DRY_RUN" != true && ! command -v python3 >/dev/null 2>&1; then
+if test "$CHECKOUT_MODE" = "$SPECKIT_WORKTREE_MODE" && test "$DRY_RUN" != true && ! command -v python3 >/dev/null 2>&1; then
     echo "Error: Non-dry-run worktree creation requires Python 3 for safe state publication." >&2
     exit 1
 fi
 
-if test "$REPO_SHAPE" = "three-leg"; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
     # Base ref per leg: origin/<base_branch> after a best-effort fetch (failure
     # is a warning so offline work keeps working), else the local base branch.
     if test "$DRY_RUN" != true; then
@@ -789,7 +797,7 @@ generate_branch_name() {
 
     local stop_words="^(i|a|an|the|to|for|of|in|on|at|by|with|from|is|are|was|were|be|been|being|have|has|had|do|does|did|will|would|should|could|can|may|might|must|shall|this|that|these|those|my|your|our|their|want|need|add|get|set)$"
 
-    local clean_name=$(echo "$description" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/ /g')
+    local clean_name=$(echo "$description" | tr "$SPECKIT_TR_UPPER" "$SPECKIT_TR_LOWER" | sed 's/[^a-z0-9]/ /g')
 
     local meaningful_words=()
     for word in $clean_name; do
@@ -797,7 +805,7 @@ generate_branch_name() {
         if ! echo "$word" | grep -qiE "$stop_words"; then
             if test ${#word} -ge 3; then
                 meaningful_words+=("$word")
-            elif printf '%s' "$description" | grep -qw -- "$(printf '%s' "$word" | tr '[:lower:]' '[:upper:]')"; then
+            elif printf '%s' "$description" | grep -qw -- "$(printf '%s' "$word" | tr "$SPECKIT_TR_LOWER" "$SPECKIT_TR_UPPER")"; then
                 meaningful_words+=("$word")
             fi
         fi
@@ -860,7 +868,7 @@ else
     else
         BRANCH_SCOPE_PREFIX=$(branch_scope_prefix)
         if [[ -z "$BRANCH_NUMBER" ]]; then
-            if test "$REPO_SHAPE" = "three-leg"; then
+            if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
                 BRANCH_NUMBER=$(shape_next_feature_number)
             elif test "$DRY_RUN" = true && test "$HAS_GIT" = true; then
                 BRANCH_NUMBER=$(check_existing_branches "$SPECS_DIR" true "$BRANCH_SCOPE_PREFIX")
@@ -892,7 +900,10 @@ fi
 
 # GitHub enforces a 244-byte limit on branch names
 MAX_BRANCH_LENGTH=244
-_byte_length() { printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '; }
+_byte_length() {
+    local byte_length_input="$1"
+    printf '%s' "$byte_length_input" | LC_ALL=C wc -c | tr -d ' '
+}
 BRANCH_BYTE_LEN=$(_byte_length "$BRANCH_NAME")
 if [[ -n "${GIT_BRANCH_NAME:-}" ]] && test "$BRANCH_BYTE_LEN" -gt $MAX_BRANCH_LENGTH; then
     >&2 echo "Error: GIT_BRANCH_NAME must be 244 bytes or fewer in UTF-8. Provided value is ${BRANCH_BYTE_LEN} bytes."
@@ -925,7 +936,7 @@ if command -v git >/dev/null 2>&1 && ! git check-ref-format --branch "$BRANCH_NA
 fi
 
 WORKTREE_PATH=""
-if test "$CHECKOUT_MODE" = "worktree"; then
+if test "$CHECKOUT_MODE" = "$SPECKIT_WORKTREE_MODE"; then
     WORKTREE_PATH="$WORKTREE_ROOT/$BRANCH_NAME"
 fi
 
@@ -933,18 +944,19 @@ SPEC_WORKTREE_PATH=""
 CODE_WORKTREE_PATH=""
 FEATURE_DIR=""
 FEATURE_DIR_RELATIVE=""
-if test "$REPO_SHAPE" = "three-leg"; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
     SPEC_WORKTREE_PATH="$WORKTREE_PATH/$SHAPE_SPEC_PATH"
     CODE_WORKTREE_PATH="$WORKTREE_PATH/$SHAPE_CODE_PATH"
     FEATURE_DIR="$SPEC_WORKTREE_PATH/specs/$BRANCH_NAME"
     FEATURE_DIR_RELATIVE="$FEATURE_DIR"
     case "$FEATURE_DIR" in
         "$REPO_ROOT"/*) FEATURE_DIR_RELATIVE="${FEATURE_DIR#"$REPO_ROOT/"}" ;;
+        *) : ;;
     esac
 fi
 
 STATE_FILE=""
-if test "$DRY_RUN" != true && test "$HAS_GIT" = true && test "$CHECKOUT_MODE" = "worktree"; then
+if test "$DRY_RUN" != true && test "$HAS_GIT" = true && test "$CHECKOUT_MODE" = "$SPECKIT_WORKTREE_MODE"; then
     if ! STATE_COMMON_DIR=$(resolve_git_common_dir); then
         >&2 echo "Error: Failed to resolve the Git common directory."
         exit 1
@@ -956,10 +968,10 @@ if test "$DRY_RUN" != true && test "$HAS_GIT" = true && test "$CHECKOUT_MODE" = 
 fi
 
 if test "$DRY_RUN" != true; then
-    if test "$REPO_SHAPE" = "three-leg"; then
+    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
         shape_create_feature_worktrees
     elif test "$HAS_GIT" = true; then
-        if test "$CHECKOUT_MODE" = "worktree"; then
+        if test "$CHECKOUT_MODE" = "$SPECKIT_WORKTREE_MODE"; then
             existing_worktree=""
             find_worktree_status=0
             find_worktree_for_branch "$BRANCH_NAME" || find_worktree_status=$?
@@ -1055,13 +1067,13 @@ if test "$DRY_RUN" != true; then
     fi
 
     printf '# To persist: export SPECIFY_FEATURE=%q\n' "$BRANCH_NAME" >&2
-    if test "$REPO_SHAPE" = "three-leg"; then
+    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
         printf '#             export SPECIFY_FEATURE_DIRECTORY=%q\n' "$FEATURE_DIR_RELATIVE" >&2
     fi
-    if test "$CHECKOUT_MODE" = "worktree" && [[ -n "$WORKTREE_PATH" ]]; then
+    if test "$CHECKOUT_MODE" = "$SPECKIT_WORKTREE_MODE" && [[ -n "$WORKTREE_PATH" ]]; then
         write_last_worktree_state "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
         printf '# Feature worktree: %q\n' "$WORKTREE_PATH" >&2
-        if test "$REPO_SHAPE" = "three-leg"; then
+        if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
             printf '# Spec worktree: %q\n' "$SPEC_WORKTREE_PATH" >&2
             printf '# Code worktree: %q\n' "$CODE_WORKTREE_PATH" >&2
         fi
@@ -1091,11 +1103,11 @@ if $JSON_MODE; then
         _je_payload=$(printf '{"BRANCH_NAME":"%s","FEATURE_NUM":"%s","CHECKOUT_MODE":"%s","HAS_GIT":%s,"REPO_SHAPE":"%s"' \
             "$(json_escape "$BRANCH_NAME")" "$(json_escape "$FEATURE_NUM")" \
             "$(json_escape "$CHECKOUT_MODE")" "$HAS_GIT" "$(json_escape "$REPO_SHAPE")")
-        if test "$CHECKOUT_MODE" = "worktree"; then
+        if test "$CHECKOUT_MODE" = "$SPECKIT_WORKTREE_MODE"; then
             _je_payload="$_je_payload$(printf ',"BASE_BRANCH":"%s","WORKTREE_PATH":"%s"' \
                 "$(json_escape "$BASE_BRANCH")" "$(json_escape "$WORKTREE_PATH")")"
         fi
-        if test "$REPO_SHAPE" = "three-leg"; then
+        if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
             _je_payload="$_je_payload$(printf ',"PROJECT_ROOT":"%s","SPEC_WORKTREE_PATH":"%s","CODE_WORKTREE_PATH":"%s","FEATURE_DIR":"%s"' \
                 "$(json_escape "$PROJECT_ROOT")" "$(json_escape "$SPEC_WORKTREE_PATH")" \
                 "$(json_escape "$CODE_WORKTREE_PATH")" "$(json_escape "$FEATURE_DIR")")"
@@ -1136,11 +1148,11 @@ else
     echo "CHECKOUT_MODE: $CHECKOUT_MODE"
     echo "HAS_GIT: $HAS_GIT"
     echo "REPO_SHAPE: $REPO_SHAPE"
-    if test "$CHECKOUT_MODE" = "worktree"; then
+    if test "$CHECKOUT_MODE" = "$SPECKIT_WORKTREE_MODE"; then
         echo "BASE_BRANCH: $BASE_BRANCH"
         echo "WORKTREE_PATH: $WORKTREE_PATH"
     fi
-    if test "$REPO_SHAPE" = "three-leg"; then
+    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
         echo "PROJECT_ROOT: $PROJECT_ROOT"
         echo "SPEC_WORKTREE_PATH: $SPEC_WORKTREE_PATH"
         echo "CODE_WORKTREE_PATH: $CODE_WORKTREE_PATH"
@@ -1148,7 +1160,7 @@ else
     fi
     if test "$DRY_RUN" != true; then
         printf '# To persist in your shell: export SPECIFY_FEATURE=%q\n' "$BRANCH_NAME"
-        if test "$REPO_SHAPE" = "three-leg"; then
+        if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
             printf '#                           export SPECIFY_FEATURE_DIRECTORY=%q\n' "$FEATURE_DIR_RELATIVE"
         fi
     fi

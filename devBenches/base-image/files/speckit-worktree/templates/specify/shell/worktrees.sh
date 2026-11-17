@@ -32,6 +32,7 @@ _speckit_worktree_capture_path() {
   [ "$capture_status" -eq 0 ] || return "$capture_status"
   case "$captured" in
     *$'\n') captured="${captured%$'\n'}" ;;
+      *) : ;;
   esac
   _SPECKIT_WORKTREE_CAPTURED_PATH="$captured"
 }

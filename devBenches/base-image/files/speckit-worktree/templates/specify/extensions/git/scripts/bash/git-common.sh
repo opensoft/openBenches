@@ -27,7 +27,8 @@ _shape_set_trimmed() {
 }
 
 _shape_set_scalar() {
-    _shape_set_trimmed "$1"
+    local shape_scalar_input="$1"
+    _shape_set_trimmed "$shape_scalar_input"
     _SHAPE_SCALAR="$_SHAPE_TRIMMED"
     case "$_SHAPE_SCALAR" in
         \"*\")
@@ -38,6 +39,7 @@ _shape_set_scalar() {
             _SHAPE_SCALAR="${_SHAPE_SCALAR#\'}"
             _SHAPE_SCALAR="${_SHAPE_SCALAR%\'}"
             ;;
+        *) : ;;
     esac
 }
 
@@ -48,6 +50,7 @@ _shape_record_leg() {
     case "$role" in
         spec) _SHAPE_LEG_SPEC_PATH="${path:-spec}" ;;
         code) _SHAPE_LEG_CODE_PATH="${path:-code}" ;;
+        *) : ;;
     esac
 }
 
@@ -115,6 +118,7 @@ load_repo_shape() {
                     case "$key" in
                         role) cur_role="$value" ;;
                         path) cur_path="$value" ;;
+                        *) : ;;
                     esac
                 fi
                 continue
@@ -126,6 +130,7 @@ load_repo_shape() {
                     case "$key" in
                         role) cur_role="$value" ;;
                         path) cur_path="$value" ;;
+                        *) : ;;
                     esac
                 fi
                 continue
@@ -146,6 +151,7 @@ load_repo_shape() {
                     in_legs=true
                     key_col=-1
                     ;;
+                *) : ;;
             esac
         fi
     done < "$manifest"
@@ -196,10 +202,11 @@ SHAPE_FEATURE_BRANCHES=()
 SHAPE_FEATURE_MTIMES=()
 
 _shape_mtime_for_path() {
-    if stat -c %Y "$1" >/dev/null 2>&1; then
-        stat -c %Y "$1"
+    local shape_mtime_input="$1"
+    if stat -c %Y "$shape_mtime_input" >/dev/null 2>&1; then
+        stat -c %Y "$shape_mtime_input"
     else
-        stat -f %m "$1"
+        stat -f %m "$shape_mtime_input"
     fi
 }
 
@@ -283,6 +290,7 @@ shape_feature_paths_for() {
     SHAPE_FEATURE_DIR_RELATIVE="$SHAPE_FEATURE_DIR"
     case "$SHAPE_FEATURE_DIR" in
         "$project_root"/*) SHAPE_FEATURE_DIR_RELATIVE="${SHAPE_FEATURE_DIR#"$project_root/"}" ;;
+        *) : ;;
     esac
 }
 
@@ -438,6 +446,7 @@ _git_worktree_finalize_record() {
                 ;;
             prunable|prunable\ *) prunable=true ;;
             worktree\ *|HEAD\ *) return 1 ;;
+            *) : ;;
         esac
         index=$((index + 1))
     done
@@ -493,7 +502,7 @@ _git_worktree_parse_lines() {
             continue
         fi
         if test "$pending_blank" = true; then
-            case "$line" in worktree\ *) return 1 ;; esac
+            case "$line" in worktree\ *) return 1 ;; *) : ;; esac
         fi
         pending_blank=false
         if [[ "$line" =~ ^HEAD\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
@@ -521,10 +530,13 @@ _git_worktree_create_temp_file() {
 }
 
 _git_worktree_remove_temp_file() {
+    local removed_temp_path
     if command -v rm >/dev/null 2>&1; then
-        rm -f "$1"
+        removed_temp_path="$1"
+        rm -f "$removed_temp_path"
     elif [[ -x /bin/rm ]]; then
-        /bin/rm -f "$1"
+        removed_temp_path="$1"
+        /bin/rm -f "$removed_temp_path"
     else
         return 1
     fi

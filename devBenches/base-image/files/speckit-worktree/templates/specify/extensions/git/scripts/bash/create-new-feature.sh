@@ -720,7 +720,7 @@ SPECS_DIR="$REPO_ROOT/specs"
 DEFAULT_WORKTREE_ROOT="../$(basename "$REPO_ROOT")-worktrees"
 SPEC_BASE_REF=""
 CODE_BASE_REF=""
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     SPECS_DIR="$SPEC_LEG/specs"
     DEFAULT_WORKTREE_ROOT="worktrees"
 fi
@@ -741,7 +741,7 @@ if [[ "$BRANCH_NUMBERING" != "sequential" || -n "${BRANCH_NUMBERING#"sequential"
     exit 1
 fi
 
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     if [[ "$CHECKOUT_MODE" != "$SPECKIT_WORKTREE_MODE" || -n "${CHECKOUT_MODE#"$SPECKIT_WORKTREE_MODE"}" ]]; then
         echo "Error: a three-leg project requires checkout_mode: worktree in .specify/extensions/git/git-config.yml (got '$CHECKOUT_MODE')." >&2
         echo "Branch mode would put the feature on the assembly root, which never carries a feature branch." >&2
@@ -770,7 +770,7 @@ if [[ "$CHECKOUT_MODE" == "$SPECKIT_WORKTREE_MODE" && -z "${CHECKOUT_MODE#"$SPEC
     exit 1
 fi
 
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     # Base ref per leg: origin/<base_branch> after a best-effort fetch (failure
     # is a warning so offline work keeps working), else the local base branch.
     if [[ "$DRY_RUN" != "true" ]]; then
@@ -868,7 +868,7 @@ else
     else
         BRANCH_SCOPE_PREFIX=$(branch_scope_prefix)
         if [[ -z "$BRANCH_NUMBER" ]]; then
-            if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+            if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
                 BRANCH_NUMBER=$(shape_next_feature_number)
             elif [[ "$DRY_RUN" = "true" ]] && [[ "$HAS_GIT" = "true" ]]; then
                 BRANCH_NUMBER=$(check_existing_branches "$SPECS_DIR" true "$BRANCH_SCOPE_PREFIX")
@@ -944,7 +944,7 @@ SPEC_WORKTREE_PATH=""
 CODE_WORKTREE_PATH=""
 FEATURE_DIR=""
 FEATURE_DIR_RELATIVE=""
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     SPEC_WORKTREE_PATH="$WORKTREE_PATH/$SHAPE_SPEC_PATH"
     CODE_WORKTREE_PATH="$WORKTREE_PATH/$SHAPE_CODE_PATH"
     FEATURE_DIR="$SPEC_WORKTREE_PATH/specs/$BRANCH_NAME"
@@ -968,7 +968,7 @@ if [[ "$DRY_RUN" != "true" ]] && [[ "$HAS_GIT" = "true" ]] && [[ "$CHECKOUT_MODE
 fi
 
 if [[ "$DRY_RUN" != "true" ]]; then
-    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+    if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
         shape_create_feature_worktrees
     elif [[ "$HAS_GIT" = "true" ]]; then
         if [[ "$CHECKOUT_MODE" == "$SPECKIT_WORKTREE_MODE" && -z "${CHECKOUT_MODE#"$SPECKIT_WORKTREE_MODE"}" ]]; then
@@ -1067,13 +1067,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
     fi
 
     printf '# To persist: export SPECIFY_FEATURE=%q\n' "$BRANCH_NAME" >&2
-    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+    if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
         printf '#             export SPECIFY_FEATURE_DIRECTORY=%q\n' "$FEATURE_DIR_RELATIVE" >&2
     fi
     if [[ "$CHECKOUT_MODE" == "$SPECKIT_WORKTREE_MODE" && -z "${CHECKOUT_MODE#"$SPECKIT_WORKTREE_MODE"}" ]] && [[ -n "$WORKTREE_PATH" ]]; then
         write_last_worktree_state "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
         printf '# Feature worktree: %q\n' "$WORKTREE_PATH" >&2
-        if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+        if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
             printf '# Spec worktree: %q\n' "$SPEC_WORKTREE_PATH" >&2
             printf '# Code worktree: %q\n' "$CODE_WORKTREE_PATH" >&2
         fi
@@ -1107,7 +1107,7 @@ if $JSON_MODE; then
             _je_payload="$_je_payload$(printf ',"BASE_BRANCH":"%s","WORKTREE_PATH":"%s"' \
                 "$(json_escape "$BASE_BRANCH")" "$(json_escape "$WORKTREE_PATH")")"
         fi
-        if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+        if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
             _je_payload="$_je_payload$(printf ',"PROJECT_ROOT":"%s","SPEC_WORKTREE_PATH":"%s","CODE_WORKTREE_PATH":"%s","FEATURE_DIR":"%s"' \
                 "$(json_escape "$PROJECT_ROOT")" "$(json_escape "$SPEC_WORKTREE_PATH")" \
                 "$(json_escape "$CODE_WORKTREE_PATH")" "$(json_escape "$FEATURE_DIR")")"
@@ -1152,7 +1152,7 @@ else
         echo "BASE_BRANCH: $BASE_BRANCH"
         echo "WORKTREE_PATH: $WORKTREE_PATH"
     fi
-    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+    if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
         echo "PROJECT_ROOT: $PROJECT_ROOT"
         echo "SPEC_WORKTREE_PATH: $SPEC_WORKTREE_PATH"
         echo "CODE_WORKTREE_PATH: $CODE_WORKTREE_PATH"
@@ -1160,7 +1160,7 @@ else
     fi
     if [[ "$DRY_RUN" != "true" ]]; then
         printf '# To persist in your shell: export SPECIFY_FEATURE=%q\n' "$BRANCH_NAME"
-        if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+        if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
             printf '#                           export SPECIFY_FEATURE_DIRECTORY=%q\n' "$FEATURE_DIR_RELATIVE"
         fi
     fi

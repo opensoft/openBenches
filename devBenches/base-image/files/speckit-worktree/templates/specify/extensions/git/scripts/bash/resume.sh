@@ -126,7 +126,7 @@ CHECKOUT_MODE=$(get_config_value "checkout_mode" "branch" "SPECKIT_GIT_CHECKOUT_
 CHECKOUT_MODE=$(printf '%s' "$CHECKOUT_MODE" | tr '[:upper:]' '[:lower:]')
 BASE_BRANCH=$(get_config_value "base_branch" "main" "SPECKIT_GIT_BASE_BRANCH")
 DEFAULT_WORKTREE_ROOT="../${REPO_ROOT##*/}-worktrees"
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     DEFAULT_WORKTREE_ROOT="worktrees"
 fi
 WORKTREE_ROOT_RAW=$(get_config_value "worktree_root" "$DEFAULT_WORKTREE_ROOT" "SPECKIT_GIT_WORKTREE_ROOT")
@@ -138,7 +138,7 @@ if [[ "$CHECKOUT_MODE" != "worktree" || -n "${CHECKOUT_MODE#"worktree"}" ]]; the
     exit 1
 fi
 
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     if ! shape_leg_is_checkout "$SPEC_LEG"; then
         echo "Error: the spec leg '$SHAPE_SPEC_PATH' is not an initialised Git checkout at '$SPEC_LEG'." >&2
         echo "Run 'git submodule update --init' (or 'make bootstrap') in the project root first." >&2
@@ -331,13 +331,13 @@ collect_legs() {
         role="${MANIFEST_LEG_ROLE[$index]}"
         case "$role" in
             spec)
-                test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" || return 1
+                [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]] || return 1
                 LEG_REPOS[${#LEG_REPOS[@]}]="$SPEC_LEG"
                 LEG_MOUNTS[${#LEG_MOUNTS[@]}]="$SHAPE_SPEC_PATH"
                 LEG_TREES[${#LEG_TREES[@]}]="$WORKTREE_ROOT/$branch/$SHAPE_SPEC_PATH"
                 ;;
             code)
-                test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" || return 1
+                [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]] || return 1
                 LEG_REPOS[${#LEG_REPOS[@]}]="$CODE_LEG"
                 LEG_MOUNTS[${#LEG_MOUNTS[@]}]="$SHAPE_CODE_PATH"
                 LEG_TREES[${#LEG_TREES[@]}]="$WORKTREE_ROOT/$branch/$SHAPE_CODE_PATH"
@@ -372,7 +372,7 @@ record_refusal() {
     REFUSED_REMEDIATIONS[${#REFUSED_REMEDIATIONS[@]}]="$3"
 }
 
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" && [[ "$DRY_RUN" != "true" ]]; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]] && [[ "$DRY_RUN" != "true" ]]; then
     if [[ -L "$REPO_ROOT/.specify" ]]; then
         >&2 echo "Error: the feature selector directory is a symlink; nothing was resumed."
         exit 2
@@ -831,7 +831,7 @@ fi
 FEATURE_JSON_VALUE=""
 STATE_FILE_VALUE=""
 if [[ -n "$ACTIVE_FEATURE" ]] && [[ "$DRY_RUN" != "true" ]]; then
-    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+    if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
         shape_feature_paths_for "$REPO_ROOT" "$WORKTREE_ROOT/$ACTIVE_FEATURE" "$ACTIVE_FEATURE"
         FEATURE_JSON_VALUE="$SHAPE_FEATURE_DIR_RELATIVE"
         previous=""
@@ -879,7 +879,7 @@ PY
 fi
 
 # The recreated worktrees must not show up in the root's `git status`.
-if [[ "${#RESUMED_BRANCHES[@]}" -gt 0 ]] && test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" \
+if [[ "${#RESUMED_BRANCHES[@]}" -gt 0 ]] && [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]] \
     && ! { [[ -f "$REPO_ROOT/.gitignore" ]] \
     && grep -Eq "^/?$WORKTREE_ROOT_RAW/?$" "$REPO_ROOT/.gitignore"; }; then
     echo "[specify] Warning: '$REPO_ROOT/.gitignore' does not ignore /$WORKTREE_ROOT_RAW/; the recreated worktrees will show in \`git status\` at the root. Add the line, or re-run setup-openspeckit." >&2

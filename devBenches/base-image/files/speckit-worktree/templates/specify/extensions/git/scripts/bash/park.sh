@@ -144,7 +144,7 @@ CHECKOUT_MODE=$(get_config_value "checkout_mode" "branch" "SPECKIT_GIT_CHECKOUT_
 CHECKOUT_MODE=$(printf '%s' "$CHECKOUT_MODE" | tr '[:upper:]' '[:lower:]')
 BASE_BRANCH=$(get_config_value "base_branch" "main" "SPECKIT_GIT_BASE_BRANCH")
 DEFAULT_WORKTREE_ROOT="../${REPO_ROOT##*/}-worktrees"
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     DEFAULT_WORKTREE_ROOT="worktrees"
 fi
 WORKTREE_ROOT_RAW=$(get_config_value "worktree_root" "$DEFAULT_WORKTREE_ROOT" "SPECKIT_GIT_WORKTREE_ROOT")
@@ -156,7 +156,7 @@ if [[ "$CHECKOUT_MODE" != "worktree" || -n "${CHECKOUT_MODE#"worktree"}" ]]; the
     exit 1
 fi
 
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     if ! shape_leg_is_checkout "$SPEC_LEG"; then
         echo "Error: the spec leg '$SHAPE_SPEC_PATH' is not an initialised Git checkout at '$SPEC_LEG'." >&2
         echo "Run 'git submodule update --init' (or 'make bootstrap') in the project root first." >&2
@@ -327,7 +327,7 @@ root_relative() {
     esac
 }
 
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
     if ! shape_load_features "$WORKTREE_ROOT"; then
         echo "Error: Failed to list Git worktrees." >&2
         exit 1
@@ -468,7 +468,7 @@ detached_branch_for() {
     done
 }
 
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" && [[ "${#REQUESTED_BRANCHES[@]}" -eq 0 ]]; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]] && [[ "${#REQUESTED_BRANCHES[@]}" -eq 0 ]]; then
     scan_blocked_features() {
         local leg="$1"
         local role="$2"
@@ -684,7 +684,7 @@ build_legs() {
     LEG_REPOS=()
     LEG_TREES=()
     LEG_MOUNTS=()
-    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+    if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
         LEG_ROLES=("spec" "code")
         LEG_REPOS=("$SPEC_LEG" "$CODE_LEG")
         LEG_TREES=("$feature_dir/$SHAPE_SPEC_PATH" "$feature_dir/$SHAPE_CODE_PATH")
@@ -772,7 +772,7 @@ while [[ "$feature_index" -lt "${#PARK_BRANCHES[@]}" ]]; do
             break
         fi
         actual_branch="$(git -C "$tree" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-        if test "$actual_branch" != "$branch"; then
+        if [[ "$actual_branch" != "$branch" || -n "${actual_branch#"$branch"}" ]]; then
             >&2 echo "Error: $branch ($role leg) has checked-out branch '${actual_branch:-detached HEAD}', expected '$branch'; that feature was NOT parked."
             record_refusal "$branch" "wrong checked-out branch in $role leg" \
                 "inspect git -C $tree_print status and restore branch $branch"
@@ -964,7 +964,7 @@ while [[ "$feature_index" -lt "${#PARK_BRANCHES[@]}" ]]; do
     # Recorded, and reported.
     workspace_record_section "$RECORD_FILE" feature
     workspace_record_put "$RECORD_FILE" branch "$branch"
-    if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
+    if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]]; then
         shape_feature_paths_for "$REPO_ROOT" "$feature_dir" "$branch"
         workspace_record_put "$RECORD_FILE" _feature_directory "$SHAPE_FEATURE_DIR_RELATIVE"
     fi
@@ -1021,7 +1021,7 @@ fi
 
 # W1: feature.json disagrees. park enumerates from git, so this is a warning
 # and never a refusal.
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" && [[ -f "$REPO_ROOT/.specify/feature.json" ]]; then
+if [[ "$REPO_SHAPE" == "$SPECKIT_TRIAD_SHAPE" ]] && [[ -f "$REPO_ROOT/.specify/feature.json" ]]; then
     recorded_dir="$(python3 - "$REPO_ROOT/.specify/feature.json" <<'PY'
 import json
 import sys

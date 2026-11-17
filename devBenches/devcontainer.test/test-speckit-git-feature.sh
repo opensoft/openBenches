@@ -3494,7 +3494,7 @@ Park it again from there, which writes the record afresh, then resume here." 'RR
     (
         local spelling
         export BASH_ENV="$FIXTURE_ROOT/resume-nocasematch.bash"
-        printf '%s\n' 'shopt -s nocasematch' > "$BASH_ENV"
+        printf '%s\n' 'shopt -s nocasematch' > "$BASH_ENV" || exit 1
         for spelling in TRUE FALSE; do
             set_manifest_pushed "$manifest" spec "$spelling" || exit 1
             invoke_resume "$clone" "$stderr_file"

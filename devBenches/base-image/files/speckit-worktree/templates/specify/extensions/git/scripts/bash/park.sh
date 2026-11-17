@@ -763,8 +763,8 @@ while [[ "$feature_index" -lt "${#PARK_BRANCHES[@]}" ]]; do
         actual_root="$(git -C "$tree" rev-parse --show-toplevel 2>/dev/null || true)"
         actual_root="$(CDPATH="" cd -- "$actual_root" 2>/dev/null && pwd -P || true)"
         expected_root="$(CDPATH="" cd -- "$tree" 2>/dev/null && pwd -P || true)"
-        if [[ -z "$expected_common" ]] || test "$actual_common" != "$expected_common" \
-            || [[ -z "$expected_root" ]] || test "$actual_root" != "$expected_root"; then
+        if [[ -z "$expected_common" ]] || [[ "$actual_common" != "$expected_common" || -n "${actual_common#"$expected_common"}" ]] \
+            || [[ -z "$expected_root" ]] || [[ "$actual_root" != "$expected_root" || -n "${actual_root#"$expected_root"}" ]]; then
             >&2 echo "Error: $branch ($role leg) is not a worktree of the expected $role repository; that feature was NOT parked."
             record_refusal "$branch" "wrong $role repository" \
                 "inspect git -C $leg_print worktree list and restore the expected worktree"

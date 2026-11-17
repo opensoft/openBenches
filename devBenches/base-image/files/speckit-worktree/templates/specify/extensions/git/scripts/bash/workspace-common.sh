@@ -943,18 +943,18 @@ workspace_sync() {
     git -C "$workspace" remote get-url origin >/dev/null 2>&1 || return 0
     branch="$(git -C "$workspace" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     if [[ -z "$branch" ]] || [[ "$branch" == "HEAD" && -z "${branch#"HEAD"}" ]]; then
-        if test "$mode" = resume; then
+        if [[ "$mode" == "resume" && -z "${mode#resume}" ]]; then
             >&2 echo "Error: could not refresh workspace '$workspace': its origin is configured but it is not on a branch; nothing was resumed."
             return 1
         fi
         return 0
     fi
     fetch_ref="$branch"
-    if test "$mode" = resume; then
+    if [[ "$mode" == "resume" && -z "${mode#resume}" ]]; then
         fetch_ref="+refs/heads/$branch:refs/remotes/origin/$branch"
     fi
     if ! git -C "$workspace" fetch -q origin "$fetch_ref" >/dev/null 2>&1; then
-        if test "$mode" = resume; then
+        if [[ "$mode" == "resume" && -z "${mode#resume}" ]]; then
             >&2 echo "Error: could not refresh workspace '$workspace' from origin/$branch; cached manifest data is insufficient; nothing was resumed."
             return 1
         fi
@@ -962,7 +962,7 @@ workspace_sync() {
     fi
     git -C "$workspace" merge-base --is-ancestor "refs/remotes/origin/$branch" HEAD 2>/dev/null && return 0
     # Resume does not commit or stash the receiving workstation's edits.
-    if test "$mode" = resume \
+    if [[ "$mode" == "resume" && -z "${mode#resume}" ]] \
         && [[ -n "$(git -C "$workspace" status --porcelain --untracked-files=all 2>/dev/null)" ]]; then
         >&2 echo "Error: workspace-dirty: '$workspace' has uncommitted changes and cannot be refreshed; nothing was resumed."
         >&2 echo "Commit or stash those paths, then re-run resume."

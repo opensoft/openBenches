@@ -10,12 +10,12 @@ usage() {
 
 JSON_MODE=false
 ENV_MODE=false
-if test "$#" -gt 1; then
+if [[ "$#" -gt 1 ]]; then
     printf '%s\n' 'Error: expected at most one option.' >&2
     usage >&2
     exit 2
 fi
-if test "$#" -eq 1; then
+if [[ "$#" -eq 1 ]]; then
     case "$1" in
         --json) JSON_MODE=true ;;
         --env) ENV_MODE=true ;;

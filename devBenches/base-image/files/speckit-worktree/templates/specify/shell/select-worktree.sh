@@ -24,9 +24,9 @@ capture_path() {
 
     case "$captured" in
         *"$frame") captured="${captured%"$frame"}" ;;
-        *) test "$capture_status" -ne 0 && return "$capture_status"; return 1 ;;
+        *) [[ "$capture_status" -ne 0 ]] && return "$capture_status"; return 1 ;;
     esac
-    test "$capture_status" -eq 0 || return "$capture_status"
+    [[ "$capture_status" -eq 0 ]] || return "$capture_status"
     case "$captured" in
         *$'\n') captured="${captured%$'\n'}" ;;
         *) : ;;
@@ -38,7 +38,7 @@ print_script_dir() {
     local script_path="${BASH_SOURCE[0]}"
     local script_dir="${script_path%/*}"
 
-    test "$script_dir" != "$script_path" || script_dir=.
+    [[ "$script_dir" != "$script_path" || -n "${script_dir#"$script_path"}" ]] || script_dir=.
     CDPATH="" cd "$script_dir" && pwd
 }
 
@@ -139,7 +139,7 @@ insert_registered_worktree() {
     candidate_count=${#REGISTERED_WORKTREE_PATHS[@]}
     insert_at=$candidate_count
     index=0
-    while test "$index" -lt "$candidate_count"; do
+    while [[ "$index" -lt "$candidate_count" ]]; do
         if test "$mtime" -gt "${REGISTERED_WORKTREE_MTIMES[$index]}"; then
             insert_at=$index
             break
@@ -151,7 +151,7 @@ insert_registered_worktree() {
     REGISTERED_WORKTREE_BRANCHES+=("")
     REGISTERED_WORKTREE_MTIMES+=("")
     index=$candidate_count
-    while test "$index" -gt "$insert_at"; do
+    while [[ "$index" -gt "$insert_at" ]]; do
         previous_index=$((index - 1))
         REGISTERED_WORKTREE_PATHS[$index]="${REGISTERED_WORKTREE_PATHS[$previous_index]}"
         REGISTERED_WORKTREE_BRANCHES[$index]="${REGISTERED_WORKTREE_BRANCHES[$previous_index]}"
@@ -173,7 +173,7 @@ load_registered_worktrees_by_mtime() {
     REGISTERED_WORKTREE_MTIMES=()
     load_git_worktrees "$main_root" || return 1
     index=0
-    while test "$index" -lt "${#GIT_WORKTREE_PATHS[@]}"; do
+    while [[ "$index" -lt "${#GIT_WORKTREE_PATHS[@]}" ]]; do
         insert_registered_worktree "$root" "$main_root" \
             "${GIT_WORKTREE_PATHS[$index]}" "${GIT_WORKTREE_BRANCH_REFS[$index]}" \
             "${GIT_WORKTREE_HEADS[$index]}" "${GIT_WORKTREE_DETACHED[$index]}"
@@ -257,7 +257,7 @@ resolve_main_repo_root() {
 
     capture_path basename "$common_dir" || return 1
     common_name="$captured_path"
-    if test "$common_name" = ".git"; then
+    if [[ "$common_name" == ".git" && -z "${common_name#".git"}" ]]; then
         capture_path dirname "$common_dir" || return 1
         main_root="$captured_path"
         if [[ -d "$main_root" ]]; then
@@ -275,7 +275,7 @@ worktree_root_has_registered_worktrees() {
 
     [[ -d "$candidate" ]] || return 1
     load_registered_worktrees_by_mtime "$candidate" "$main_root" || return 2
-    test "${#REGISTERED_WORKTREE_PATHS[@]}" -gt 0
+    [[ "${#REGISTERED_WORKTREE_PATHS[@]}" -gt 0 ]]
 }
 
 resolve_worktree_root() {
@@ -294,18 +294,18 @@ resolve_worktree_root() {
     capture_path resolve_path_from_root "$main_root" "$raw_root" || return 1
     candidate="$captured_path"
     if [[ -d "$candidate" ]]; then
-        if test "$raw_root" != "$default_root"; then
+        if [[ "$raw_root" != "$default_root" || -n "${raw_root#"$default_root"}" ]]; then
             (cd "$candidate" && pwd -P)
             return 0
         elif worktree_root_has_registered_worktrees "$candidate" "$main_root"; then
             (cd "$candidate" && pwd -P)
             return 0
-        elif test "$?" -eq 2; then
+        elif [[ "$?" -eq 2 ]]; then
             return 1
         fi
     fi
 
-    if test "$raw_root" != "$default_root"; then
+    if [[ "$raw_root" != "$default_root" || -n "${raw_root#"$default_root"}" ]]; then
         printf '%s\n' "$candidate"
         return 0
     fi
@@ -318,7 +318,7 @@ resolve_worktree_root() {
         if worktree_root_has_registered_worktrees "$candidate" "$main_root"; then
             (cd "$candidate" && pwd -P)
             return 0
-        elif test "$?" -eq 2; then
+        elif [[ "$?" -eq 2 ]]; then
             return 1
         fi
     done
@@ -328,13 +328,13 @@ resolve_worktree_root() {
 }
 
 MODE="prompt"
-if test "${1:-}" = "--path"; then
+if [[ "${1:-}" == "--path" && -z "${1#"--path"}" ]]; then
     MODE="path"
-elif test "${1:-}" = "--list"; then
+elif [[ "${1:-}" == "--list" && -z "${1#"--list"}" ]]; then
     MODE="list"
-elif test "${1:-}" = "--env"; then
+elif [[ "${1:-}" == "--env" && -z "${1#"--env"}" ]]; then
     MODE="env"
-elif test $# -gt 0; then
+elif [[ $# -gt 0 ]]; then
     echo "Usage: $0 [--path|--list|--env]" >&2
     exit 1
 fi
@@ -345,7 +345,7 @@ load_repo_shape "$MAIN_REPO_ROOT"
 
 PATHS=()
 BRANCHES=()
-if test "$REPO_SHAPE" = "three-leg"; then
+if [[ "$REPO_SHAPE" = "three-leg" ]]; then
     if ! shape_leg_is_checkout "$SPEC_LEG"; then
         echo "Error: the spec leg '$SHAPE_SPEC_PATH' is not an initialised Git checkout at '$SPEC_LEG'." >&2
         echo "Run 'git submodule update --init' (or 'make bootstrap') in the project root first." >&2
@@ -365,7 +365,7 @@ if test "$REPO_SHAPE" = "three-leg"; then
         echo "Error: Failed to list Git worktrees." >&2
         exit 1
     fi
-    if test "${#SHAPE_FEATURE_PATHS[@]}" -eq 0; then
+    if [[ "${#SHAPE_FEATURE_PATHS[@]}" -eq 0 ]]; then
         echo "No Speckit worktrees found under: $WORKTREE_ROOT" >&2
         exit 1
     fi
@@ -386,7 +386,7 @@ else
         echo "Error: Failed to list Git worktrees." >&2
         exit 1
     fi
-    if test "${#REGISTERED_WORKTREE_PATHS[@]}" -eq 0; then
+    if [[ "${#REGISTERED_WORKTREE_PATHS[@]}" -eq 0 ]]; then
         echo "No Speckit worktrees found under: $WORKTREE_ROOT" >&2
         exit 1
     fi
@@ -394,7 +394,7 @@ else
     BRANCHES=("${REGISTERED_WORKTREE_BRANCHES[@]}")
 fi
 
-if test "${#PATHS[@]}" -eq 0; then
+if [[ "${#PATHS[@]}" -eq 0 ]]; then
     echo "No usable Speckit worktrees found under: $WORKTREE_ROOT" >&2
     exit 1
 fi
@@ -404,7 +404,7 @@ fi
 emit_selection() {
     local index="$1"
 
-    if test "$MODE" != "env"; then
+    if [[ "$MODE" != "env" ]]; then
         printf '%s\n' "${PATHS[$index]}"
         return 0
     fi
@@ -413,7 +413,7 @@ emit_selection() {
     printf 'PROJECT_ROOT=%q\n' "$MAIN_REPO_ROOT"
     printf 'BRANCH_NAME=%q\n' "${BRANCHES[$index]}"
     printf 'WORKTREE_PATH=%q\n' "${PATHS[$index]}"
-    if test "$REPO_SHAPE" = "three-leg"; then
+    if [[ "$REPO_SHAPE" = "three-leg" ]]; then
         shape_feature_paths_for "$MAIN_REPO_ROOT" "${PATHS[$index]}" "${BRANCHES[$index]}"
         printf 'SPEC_WORKTREE_PATH=%q\n' "$SHAPE_SPEC_WORKTREE_PATH"
         printf 'CODE_WORKTREE_PATH=%q\n' "$SHAPE_CODE_WORKTREE_PATH"
@@ -423,11 +423,11 @@ emit_selection() {
     fi
 }
 
-if test "$MODE" = "list"; then
+if [[ "$MODE" = "list" ]]; then
     for i in "${!PATHS[@]}"; do
         index=$((i + 1))
         marker=""
-        if test "$i" -eq 0; then
+        if [[ "$i" -eq 0 ]]; then
             marker=" [default]"
         fi
         printf '%d. %s%s\n' "$index" "${BRANCHES[$i]}" "$marker"
@@ -436,7 +436,7 @@ if test "$MODE" = "list"; then
     exit 0
 fi
 
-if { test "$MODE" = "path" || test "$MODE" = "env"; } && ! [[ -t 0 ]]; then
+if { [[ "$MODE" = "path" ]] || [[ "$MODE" = "env" ]]; } && ! [[ -t 0 ]]; then
     emit_selection 0
     exit 0
 fi
@@ -444,7 +444,7 @@ fi
 for i in "${!PATHS[@]}"; do
     index=$((i + 1))
     marker=""
-    if test "$i" -eq 0; then
+    if [[ "$i" -eq 0 ]]; then
         marker=" [default]"
     fi
     printf '%d. %s%s\n' "$index" "${BRANCHES[$i]}" "$marker" >&2

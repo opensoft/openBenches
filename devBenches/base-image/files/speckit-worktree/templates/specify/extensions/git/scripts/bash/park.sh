@@ -65,7 +65,7 @@ usage() {
 }
 
 i=1
-while test $i -le $#; do
+while [[ $i -le $# ]]; do
     arg="${!i}"
     case "$arg" in
         --json) JSON_MODE=true ;;
@@ -73,7 +73,7 @@ while test $i -le $#; do
         --no-push) NO_PUSH=true ;;
         --retire-parked-wip) RETIRE_PARKED_WIP=true ;;
         --feature|--lane|--message|--workspace)
-            if test $((i + 1)) -gt $#; then
+            if [[ $((i + 1)) -gt $# ]]; then
                 echo "Error: $arg requires a value" >&2
                 exit 1
             fi
@@ -150,7 +150,7 @@ fi
 WORKTREE_ROOT_RAW=$(get_config_value "worktree_root" "$DEFAULT_WORKTREE_ROOT" "SPECKIT_GIT_WORKTREE_ROOT")
 WORKTREE_ROOT=$(resolve_path_from_repo_root "$WORKTREE_ROOT_RAW")
 
-if test "$CHECKOUT_MODE" != "worktree"; then
+if [[ "$CHECKOUT_MODE" != "worktree" || -n "${CHECKOUT_MODE#"worktree"}" ]]; then
     echo "Error: checkout_mode '$CHECKOUT_MODE' has no worktree to park; nothing was parked." >&2
     echo "park and resume carry linked worktrees between workstations. Set checkout_mode: worktree in .specify/extensions/git/git-config.yml." >&2
     exit 1
@@ -173,7 +173,7 @@ if ! command -v python3 >/dev/null 2>&1; then
     echo "Error: park requires Python 3 for safe manifest and state publication." >&2
     exit 1
 fi
-if test "$JSON_MODE" = true && ! select_json_encoder >/dev/null; then
+if [[ "$JSON_MODE" = "true" ]] && ! select_json_encoder >/dev/null; then
     echo "Error: JSON output requires jq, a trusted json_escape function, or Python 3; no JSON encoder is available." >&2
     exit 1
 fi
@@ -202,10 +202,10 @@ fi
 
 WORKSPACE_RESOLVE_STATUS=0
 workspace_resolve "$WORKSPACE_ARG" "$MANIFEST_ORG" || WORKSPACE_RESOLVE_STATUS=$?
-if test "$WORKSPACE_RESOLVE_STATUS" -eq 2; then
+if [[ "$WORKSPACE_RESOLVE_STATUS" -eq 2 ]]; then
     workspace_refuse_invalid_config parked park
     exit 2
-elif test "$WORKSPACE_RESOLVE_STATUS" -ne 0; then
+elif [[ "$WORKSPACE_RESOLVE_STATUS" -ne 0 ]]; then
     workspace_refuse_no_config parked park
     exit 2
 fi
@@ -259,7 +259,7 @@ trap cleanup EXIT
 # those is silent: a feature this workstation cannot park would be dropped
 # from the block instead of carried forward, erasing the entry the other
 # workstation resumes from.
-if test "$DRY_RUN" != true; then
+if [[ "$DRY_RUN" != "true" ]]; then
     if ! workspace_lock "$WORKSPACE_PATH"; then
         >&2 echo "Error: another park or resume holds '$WORKSPACE_PATH/.workspaces.lock'; nothing was parked."
         >&2 echo "  If no other run is active, remove it:  rmdir $WORKSPACE_PATH/.workspaces.lock"
@@ -271,10 +271,10 @@ if test "$DRY_RUN" != true; then
     fi
     SYNC_STATUS=0
     workspace_sync "$WORKSPACE_PATH" || SYNC_STATUS=$?
-    if test "$SYNC_STATUS" -eq 2; then
+    if [[ "$SYNC_STATUS" -eq 2 ]]; then
         workspace_refuse_dirty "$WORKSPACE_PATH" parked
         exit 2
-    elif test "$SYNC_STATUS" -ne 0; then
+    elif [[ "$SYNC_STATUS" -ne 0 ]]; then
         exit 3
     fi
 fi
@@ -289,10 +289,10 @@ recorded_leg_index() {
     local feature
 
     RECORDED_INDEX=-1
-    while test "$index" -lt "${#MANIFEST_LEG_ROLE[@]}"; do
+    while [[ "$index" -lt "${#MANIFEST_LEG_ROLE[@]}" ]]; do
         feature="${MANIFEST_LEG_FEATURE[$index]}"
-        if test "${MANIFEST_LEG_ROLE[$index]}" = "$role" \
-            && test "${MANIFEST_FEATURE_BRANCHES[$feature]}" = "$branch"; then
+        if [[ "${MANIFEST_LEG_ROLE[$index]}" == "$role" && -z "${MANIFEST_LEG_ROLE[$index]#"$role"}" ]] \
+            && [[ "${MANIFEST_FEATURE_BRANCHES[$feature]}" == "$branch" && -z "${MANIFEST_FEATURE_BRANCHES[$feature]#"$branch"}" ]]; then
             RECORDED_INDEX=$index
             return 0
         fi
@@ -333,7 +333,7 @@ if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE"; then
         exit 1
     fi
     index=0
-    while test "$index" -lt "${#SHAPE_FEATURE_PATHS[@]}"; do
+    while [[ "$index" -lt "${#SHAPE_FEATURE_PATHS[@]}" ]]; do
         FEATURE_DIRS[${#FEATURE_DIRS[@]}]="${SHAPE_FEATURE_PATHS[$index]}"
         FEATURE_BRANCHES[${#FEATURE_BRANCHES[@]}]="${SHAPE_FEATURE_BRANCHES[$index]}"
         index=$((index + 1))
@@ -347,7 +347,7 @@ else
     SINGLE_BRANCHES=()
     SINGLE_MTIMES=()
     index=0
-    while test "$index" -lt "${#GIT_WORKTREE_PATHS[@]}"; do
+    while [[ "$index" -lt "${#GIT_WORKTREE_PATHS[@]}" ]]; do
         candidate="${GIT_WORKTREE_PATHS[$index]}"
         head="${GIT_WORKTREE_HEADS[$index]}"
         branch_ref="${GIT_WORKTREE_BRANCH_REFS[$index]}"
@@ -369,7 +369,7 @@ else
         fi
     done
     index=0
-    while test "$index" -lt "${#SINGLE_PATHS[@]}"; do
+    while [[ "$index" -lt "${#SINGLE_PATHS[@]}" ]]; do
         FEATURE_DIRS[${#FEATURE_DIRS[@]}]="${SINGLE_PATHS[$index]}"
         FEATURE_BRANCHES[${#FEATURE_BRANCHES[@]}]="${SINGLE_BRANCHES[$index]}"
         index=$((index + 1))
@@ -378,15 +378,15 @@ fi
 
 OPEN_BRANCHES=""
 index=0
-while test "$index" -lt "${#FEATURE_BRANCHES[@]}"; do
+while [[ "$index" -lt "${#FEATURE_BRANCHES[@]}" ]]; do
     OPEN_BRANCHES="$OPEN_BRANCHES ${FEATURE_BRANCHES[$index]} "
     index=$((index + 1))
 done
 
 # --feature restricts the set; a name that is not open is a usage error.
-if test "${#REQUESTED_BRANCHES[@]}" -gt 0; then
+if [[ "${#REQUESTED_BRANCHES[@]}" -gt 0 ]]; then
     index=0
-    while test "$index" -lt "${#REQUESTED_BRANCHES[@]}"; do
+    while [[ "$index" -lt "${#REQUESTED_BRANCHES[@]}" ]]; do
         case "$OPEN_BRANCHES" in
             *" ${REQUESTED_BRANCHES[$index]} "*) ;;
             *)
@@ -400,17 +400,17 @@ if test "${#REQUESTED_BRANCHES[@]}" -gt 0; then
     SELECTED_DIRS=()
     SELECTED_BRANCHES=()
     index=0
-    while test "$index" -lt "${#FEATURE_BRANCHES[@]}"; do
+    while [[ "$index" -lt "${#FEATURE_BRANCHES[@]}" ]]; do
         wanted=false
         inner=0
-        while test "$inner" -lt "${#REQUESTED_BRANCHES[@]}"; do
-            if test "${REQUESTED_BRANCHES[$inner]}" = "${FEATURE_BRANCHES[$index]}"; then
+        while [[ "$inner" -lt "${#REQUESTED_BRANCHES[@]}" ]]; do
+            if [[ "${REQUESTED_BRANCHES[$inner]}" == "${FEATURE_BRANCHES[$index]}" && -z "${REQUESTED_BRANCHES[$inner]#"${FEATURE_BRANCHES[$index]}"}" ]]; then
                 wanted=true
                 break
             fi
             inner=$((inner + 1))
         done
-        if test "$wanted" = true; then
+        if [[ "$wanted" = "true" ]]; then
             SELECTED_DIRS[${#SELECTED_DIRS[@]}]="${FEATURE_DIRS[$index]}"
             SELECTED_BRANCHES[${#SELECTED_BRANCHES[@]}]="${FEATURE_BRANCHES[$index]}"
         fi
@@ -442,8 +442,8 @@ blocked_dir_seen() {
     local wanted="$1"
     local index=0
 
-    while test "$index" -lt "${#BLOCKED_DIRS[@]}"; do
-        test "${BLOCKED_DIRS[$index]}" = "$wanted" && return 0
+    while [[ "$index" -lt "${#BLOCKED_DIRS[@]}" ]]; do
+        [[ "${BLOCKED_DIRS[$index]}" == "$wanted" && -z "${BLOCKED_DIRS[$index]#"$wanted"}" ]] && return 0
         index=$((index + 1))
     done
     return 1
@@ -468,7 +468,7 @@ detached_branch_for() {
     done
 }
 
-if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" && test "${#REQUESTED_BRANCHES[@]}" -eq 0; then
+if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" && [[ "${#REQUESTED_BRANCHES[@]}" -eq 0 ]]; then
     scan_blocked_features() {
         local leg="$1"
         local role="$2"
@@ -479,7 +479,7 @@ if test "$REPO_SHAPE" = "$SPECKIT_TRIAD_SHAPE" && test "${#REQUESTED_BRANCHES[@]
         local path branch feature_dir
 
         load_git_worktrees "$leg" || return 0
-        while test "$index" -lt "${#GIT_WORKTREE_PATHS[@]}"; do
+        while [[ "$index" -lt "${#GIT_WORKTREE_PATHS[@]}" ]]; do
             path="${GIT_WORKTREE_PATHS[$index]}"
             branch="${GIT_WORKTREE_BRANCH_REFS[$index]#refs/heads/}"
             index=$((index + 1))
@@ -575,7 +575,7 @@ count_wip_tip_commits() {
     local start="$2"
     local depth=0
 
-    while test "$depth" -lt 100; do
+    while [[ "$depth" -lt 100 ]]; do
         commit_subject_is_wip "$tree" "$start~$depth" || break
         commit_has_one_parent "$tree" "$start~$depth" || break
         depth=$((depth + 1))
@@ -617,14 +617,14 @@ emit_recorded_feature() {
     local feature_index=-1
     local index=0
 
-    while test "$index" -lt "${#MANIFEST_FEATURE_BRANCHES[@]}"; do
-        if test "${MANIFEST_FEATURE_BRANCHES[$index]}" = "$branch"; then
+    while [[ "$index" -lt "${#MANIFEST_FEATURE_BRANCHES[@]}" ]]; do
+        if [[ "${MANIFEST_FEATURE_BRANCHES[$index]}" == "$branch" && -z "${MANIFEST_FEATURE_BRANCHES[$index]#"$branch"}" ]]; then
             feature_index=$index
             break
         fi
         index=$((index + 1))
     done
-    test "$feature_index" -ge 0 || return 0
+    [[ "$feature_index" -ge 0 ]] || return 0
 
     workspace_record_section "$RECORD_FILE" feature
     workspace_record_put "$RECORD_FILE" branch "$branch"
@@ -633,8 +633,8 @@ emit_recorded_feature() {
             "${MANIFEST_FEATURE_DIRECTORIES[$feature_index]}"
     fi
     index=0
-    while test "$index" -lt "${#MANIFEST_LEG_ROLE[@]}"; do
-        if test "${MANIFEST_LEG_FEATURE[$index]}" = "$feature_index"; then
+    while [[ "$index" -lt "${#MANIFEST_LEG_ROLE[@]}" ]]; do
+        if [[ "${MANIFEST_LEG_FEATURE[$index]}" == "$feature_index" && -z "${MANIFEST_LEG_FEATURE[$index]#"$feature_index"}" ]]; then
             workspace_record_section "$RECORD_FILE" leg
             workspace_record_put "$RECORD_FILE" role "${MANIFEST_LEG_ROLE[$index]}"
             workspace_record_put "$RECORD_FILE" _remote "${MANIFEST_LEG_REMOTE[$index]}"
@@ -700,7 +700,7 @@ build_legs() {
 # The blocked directories first: they are refusals about the layout and about
 # unresolved state, not about work that could have been committed.
 index=0
-while test "$index" -lt "${#BLOCKED_DIRS[@]}"; do
+while [[ "$index" -lt "${#BLOCKED_DIRS[@]}" ]]; do
     blocked_dir="${BLOCKED_DIRS[$index]}"
     blocked_branch="${BLOCKED_BRANCHES[$index]}"
     blocked_kind="${BLOCKED_KINDS[$index]}"
@@ -708,7 +708,7 @@ while test "$index" -lt "${#BLOCKED_DIRS[@]}"; do
     blocked_mount="${BLOCKED_MOUNTS[$index]}"
     blocked_tree="${BLOCKED_TREES[$index]}"
     index=$((index + 1))
-    if test "$blocked_kind" = "detached"; then
+    if [[ "$blocked_kind" == "detached" && -z "${blocked_kind#"detached"}" ]]; then
         blocked_operation="rebase"
         if leg_in_progress_operation "$blocked_tree"; then
             blocked_operation="$LEG_OPERATION"
@@ -733,7 +733,7 @@ while test "$index" -lt "${#BLOCKED_DIRS[@]}"; do
 done
 
 feature_index=0
-while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
+while [[ "$feature_index" -lt "${#PARK_BRANCHES[@]}" ]]; do
     branch="${PARK_BRANCHES[$feature_index]}"
     feature_dir="${PARK_DIRS[$feature_index]}"
     feature_index=$((feature_index + 1))
@@ -742,7 +742,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
     # Blockers for EVERY leg before a single commit is made.
     refused=false
     leg=0
-    while test "$leg" -lt "${#LEG_ROLES[@]}"; do
+    while [[ "$leg" -lt "${#LEG_ROLES[@]}" ]]; do
         role="${LEG_ROLES[$leg]}"
         tree="${LEG_TREES[$leg]}"
         tree_print="$(root_relative "$tree")"
@@ -809,25 +809,25 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
             break
         fi
     done
-    test "$refused" = false || { emit_recorded_feature "$branch"; continue; }
+    [[ "$refused" = "false" ]] || { emit_recorded_feature "$branch"; continue; }
 
     # R8: behind origin by this workspace's own parked WIP commits.
     LEG_RETIRE_LEASE=()
     leg=0
-    while test "$leg" -lt "${#LEG_ROLES[@]}"; do
+    while [[ "$leg" -lt "${#LEG_ROLES[@]}" ]]; do
         role="${LEG_ROLES[$leg]}"
         tree="${LEG_TREES[$leg]}"
         tree_print="$(root_relative "$tree")"
         LEG_RETIRE_LEASE[leg]=""
         leg=$((leg + 1))
-        test "$NO_PUSH" = false || continue
+        [[ "$NO_PUSH" = "false" ]] || continue
         # A probe, not a requirement: on a first park the branch is not on
         # origin yet, and an unreachable origin is reported honestly by the
         # push itself (R6) rather than by a warning here. A dry run previews
         # the refusal from the remote-tracking ref it already has rather than
         # fetching: R8 is the refusal a person most wants previewed, and a dry
         # run still writes nothing at all.
-        if test "$DRY_RUN" = true; then
+        if [[ "$DRY_RUN" = "true" ]]; then
             remote_tip="$(git -C "$tree" rev-parse --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null || true)"
         else
             GIT_TERMINAL_PROMPT=0 git -C "$tree" fetch -q origin "$branch" >/dev/null 2>&1 || continue
@@ -836,24 +836,24 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
         [[ -n "$remote_tip" ]] || continue
         local_head="$(git -C "$tree" rev-parse --verify HEAD 2>/dev/null || true)"
         [[ -n "$local_head" ]] || continue
-        test "$local_head" != "$remote_tip" || continue
+        [[ "$local_head" != "$remote_tip" || -n "${local_head#"$remote_tip"}" ]] || continue
         git -C "$tree" merge-base --is-ancestor "$local_head" "$remote_tip" 2>/dev/null || continue
         behind="$(git -C "$tree" rev-list --count "$local_head..$remote_tip" 2>/dev/null || echo 0)"
-        test "$behind" -gt 0 || continue
+        [[ "$behind" -gt 0 ]] || continue
         all_wip=true
         step=0
-        while test "$step" -lt "$behind"; do
+        while [[ "$step" -lt "$behind" ]]; do
             if ! commit_subject_is_wip "$tree" "$remote_tip~$step"; then
                 all_wip=false
                 break
             fi
             step=$((step + 1))
         done
-        test "$all_wip" = true || continue
-        if ! recorded_leg_commit "$branch" "$role" || test "$RECORDED_COMMIT" != "$remote_tip"; then
+        [[ "$all_wip" = "true" ]] || continue
+        if ! recorded_leg_commit "$branch" "$role" || [[ "$RECORDED_COMMIT" != "$remote_tip" || -n "${RECORDED_COMMIT#"$remote_tip"}" ]]; then
             continue
         fi
-        if test "$RETIRE_PARKED_WIP" = true; then
+        if [[ "$RETIRE_PARKED_WIP" = "true" ]]; then
             LEG_RETIRE_LEASE[leg - 1]="$remote_tip"
             continue
         fi
@@ -868,7 +868,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
         refused=true
         break
     done
-    test "$refused" = false || { emit_recorded_feature "$branch"; continue; }
+    [[ "$refused" = "false" ]] || { emit_recorded_feature "$branch"; continue; }
 
     # Commit, then push, per leg.
     LEG_COMMIT=()
@@ -876,7 +876,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
     LEG_DEPTH=()
     LEG_PUSHED=()
     leg=0
-    while test "$leg" -lt "${#LEG_ROLES[@]}"; do
+    while [[ "$leg" -lt "${#LEG_ROLES[@]}" ]]; do
         role="${LEG_ROLES[$leg]}"
         tree="${LEG_TREES[$leg]}"
         tree_print="$(root_relative "$tree")"
@@ -888,7 +888,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
         depth=0
         parked_commit="$head_before"
         if leg_is_dirty "$tree"; then
-            if test "$DRY_RUN" = true; then
+            if [[ "$DRY_RUN" = "true" ]]; then
                 wip=true
                 depth=1
                 parked_commit="(dry-run)"
@@ -915,16 +915,16 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
             # says: recording wip: false here would disarm resume's un-commit
             # for work that is still parked.
             count_wip_tip_commits "$tree" HEAD
-            if test "$WIP_TIP_DEPTH" -gt 0; then
+            if [[ "$WIP_TIP_DEPTH" -gt 0 ]]; then
                 wip=true
                 depth="$WIP_TIP_DEPTH"
             fi
         fi
 
         pushed=false
-        if test "$NO_PUSH" = true; then
+        if [[ "$NO_PUSH" = "true" ]]; then
             pushed=false
-        elif test "$DRY_RUN" = true; then
+        elif [[ "$DRY_RUN" = "true" ]]; then
             pushed=true
         else
             if [[ -n "$lease" ]]; then
@@ -938,7 +938,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
                     push_ok=true
                 fi
             fi
-            if test "$push_ok" != true; then
+            if [[ "$push_ok" != "true" ]]; then
                 >&2 echo "Error: pushing $branch to origin refused in the $role leg; that feature was NOT parked."
                 if [[ -n "$push_error" ]]; then
                     >&2 printf '  %s\n' "$push_error"
@@ -959,7 +959,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
         LEG_DEPTH[${#LEG_DEPTH[@]}]="$depth"
         LEG_PUSHED[${#LEG_PUSHED[@]}]="$pushed"
     done
-    test "$refused" = false || { emit_recorded_feature "$branch"; continue; }
+    [[ "$refused" = "false" ]] || { emit_recorded_feature "$branch"; continue; }
 
     # Recorded, and reported.
     workspace_record_section "$RECORD_FILE" feature
@@ -970,7 +970,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
     fi
     append_report "PARKED: $branch"
     leg=0
-    while test "$leg" -lt "${#LEG_ROLES[@]}"; do
+    while [[ "$leg" -lt "${#LEG_ROLES[@]}" ]]; do
         role="${LEG_ROLES[$leg]}"
         workspace_record_section "$RECORD_FILE" leg
         workspace_record_put "$RECORD_FILE" role "$role"
@@ -979,7 +979,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
         workspace_record_put "$RECORD_FILE" wip "${LEG_WIP[$leg]}"
         workspace_record_put "$RECORD_FILE" wip_depth "${LEG_DEPTH[$leg]}"
         workspace_record_put "$RECORD_FILE" pushed "${LEG_PUSHED[$leg]}"
-        if test "${LEG_PUSHED[$leg]}" = true; then
+        if [[ "${LEG_PUSHED[$leg]}" == "true" && -z "${LEG_PUSHED[$leg]#"true"}" ]]; then
             append_report "  $role  wip ${LEG_DEPTH[$leg]}  ${LEG_COMMIT[$leg]}  pushed origin/$branch"
         else
             append_report "  $role  wip ${LEG_DEPTH[$leg]}  ${LEG_COMMIT[$leg]}  NOT pushed"
@@ -989,7 +989,7 @@ while test "$feature_index" -lt "${#PARK_BRANCHES[@]}"; do
     PARKED_COUNT=$((PARKED_COUNT + 1))
 done
 
-if test "${#PARK_BRANCHES[@]}" -eq 0 && test "${#BLOCKED_DIRS[@]}" -eq 0; then
+if [[ "${#PARK_BRANCHES[@]}" -eq 0 ]] && [[ "${#BLOCKED_DIRS[@]}" -eq 0 ]]; then
     echo "[specify] No open features under '$(root_relative "$WORKTREE_ROOT")'; nothing to park." >&2
 fi
 
@@ -1014,7 +1014,7 @@ if [[ -n "$STATE_FILE" ]] && workspace_read_state_field "$STATE_FILE" BRANCH_NAM
         *) : ;;
     esac
 fi
-if [[ -z "$ACTIVE_FEATURE" ]] && test "${#FEATURE_BRANCHES[@]}" -gt 0; then
+if [[ -z "$ACTIVE_FEATURE" ]] && [[ "${#FEATURE_BRANCHES[@]}" -gt 0 ]]; then
     ACTIVE_FEATURE="${FEATURE_BRANCHES[0]}"
     ACTIVE_FEATURE_SOURCE="worktree_root_fallback"
 fi
@@ -1040,15 +1040,15 @@ PY
     if [[ -n "$recorded_dir" ]]; then
         known=false
         index=0
-        while test "$index" -lt "${#FEATURE_DIRS[@]}"; do
+        while [[ "$index" -lt "${#FEATURE_DIRS[@]}" ]]; do
             shape_feature_paths_for "$REPO_ROOT" "${FEATURE_DIRS[$index]}" "${FEATURE_BRANCHES[$index]}"
-            if test "$SHAPE_FEATURE_DIR_RELATIVE" = "$recorded_dir"; then
+            if [[ "$SHAPE_FEATURE_DIR_RELATIVE" == "$recorded_dir" && -z "${SHAPE_FEATURE_DIR_RELATIVE#"$recorded_dir"}" ]]; then
                 known=true
                 break
             fi
             index=$((index + 1))
         done
-        if test "$known" = false; then
+        if [[ "$known" = "false" ]]; then
             echo "[specify] Warning: .specify/feature.json names '$recorded_dir', which is not an open feature under '$(root_relative "$WORKTREE_ROOT")'." >&2
             echo "[specify] Recorded active_feature_source: stale-feature-json; resume will select '$ACTIVE_FEATURE' instead." >&2
             ACTIVE_FEATURE_SOURCE="stale-feature-json"
@@ -1078,7 +1078,7 @@ PROJECT_REPOSITORY="$WORKSPACE_PROJECT_REPOSITORY"
     printf 'manifest_path\t%s\n' "$MANIFEST_RELATIVE"
     printf 'active_feature\t%s\n' "$ACTIVE_FEATURE"
     printf 'active_feature_source\t%s\n' "$ACTIVE_FEATURE_SOURCE"
-    if test "${#REQUESTED_BRANCHES[@]}" -gt 0; then
+    if [[ "${#REQUESTED_BRANCHES[@]}" -gt 0 ]]; then
         selected_scope="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PARK_BRANCHES[@]}")"
         printf '_selected_branches\t%s\n' "$selected_scope"
     fi
@@ -1091,13 +1091,13 @@ PROJECT_REPOSITORY="$WORKSPACE_PROJECT_REPOSITORY"
     printf '_parked_at\t%s\n' "$TIMESTAMP"
     printf '_parked_on\t%s\n' "$WORKSTATION"
     printf '_parked_by_lane\t%s\n' "$LANE"
-    if test "$DRY_RUN" = true; then
+    if [[ "$DRY_RUN" = "true" ]]; then
         printf 'dry_run\ttrue\n'
     fi
 } > "$HEADER_FILE"
 cat "$RECORD_FILE" >> "$HEADER_FILE"
 index=0
-while test "$index" -lt "${#REFUSED_BRANCHES[@]}"; do
+while [[ "$index" -lt "${#REFUSED_BRANCHES[@]}" ]]; do
     {
         printf '[refused]\n'
         printf 'branch\t%s\n' "${REFUSED_BRANCHES[$index]}"
@@ -1111,14 +1111,14 @@ mv "$HEADER_FILE" "$RECORD_FILE"
 MANIFEST_STATE="dry-run"
 MANIFEST_COMMIT=""
 PUSH_STATE="not-pushed"
-if test "$DRY_RUN" != true; then
+if [[ "$DRY_RUN" != "true" ]]; then
     # The lock is still held and this is still the checkout that was synced
     # above, so the write lands on what origin already holds.
     if ! MANIFEST_STATE="$(workspace_write_manifest "$MANIFEST_PATH" "$RECORD_FILE")"; then
         >&2 echo "Error: could not write '$MANIFEST_PATH'; nothing was recorded."
         exit 3
     fi
-    if test "$MANIFEST_STATE" = "changed"; then
+    if [[ "$MANIFEST_STATE" = "changed" ]]; then
         if ! workspace_only_our_file_changed "$WORKSPACE_PATH" "$MANIFEST_RELATIVE"; then
             >&2 echo "Error: writing '$MANIFEST_RELATIVE' left other changes under '$WORKSPACE_PATH/workspaces'; nothing was committed."
             >&2 echo "  look:  git -C $WORKSPACE_PATH status --porcelain -- workspaces"
@@ -1137,7 +1137,7 @@ if test "$DRY_RUN" != true; then
         PUSH_STATE="$WORKSPACE_PUSH_RESULT"
     else
         PUSH_STATE="$WORKSPACE_PUSH_RESULT"
-        if test "$PUSH_STATE" = "dirty"; then
+        if [[ "$PUSH_STATE" == "dirty" && -z "${PUSH_STATE#"dirty"}" ]]; then
             workspace_refuse_dirty "$WORKSPACE_PATH" parked
             workspace_unlock
             exit 2
@@ -1151,7 +1151,7 @@ fi
 # ---------------------------------------------------------------------------
 # Output.
 # ---------------------------------------------------------------------------
-if test "$JSON_MODE" = true; then
+if [[ "$JSON_MODE" = "true" ]]; then
     workspace_emit_json "$RECORD_FILE" PARKED
 else
     echo "REPO_SHAPE: $REPO_SHAPE"
@@ -1165,14 +1165,14 @@ else
         echo "ACTIVE_FEATURE: $ACTIVE_FEATURE ($ACTIVE_FEATURE_SOURCE)"
     fi
     index=0
-    while test "$index" -lt "${#REFUSED_BRANCHES[@]}"; do
+    while [[ "$index" -lt "${#REFUSED_BRANCHES[@]}" ]]; do
         echo "REFUSED: ${REFUSED_BRANCHES[$index]} — ${REFUSED_REASONS[$index]}"
         index=$((index + 1))
     done
-    if test "$DRY_RUN" = true; then
+    if [[ "$DRY_RUN" = "true" ]]; then
         echo "COMMITTED: nothing (--dry-run)"
-    elif test "$MANIFEST_STATE" = "changed"; then
-        if test "$PUSH_STATE" = "pushed"; then
+    elif [[ "$MANIFEST_STATE" = "changed" ]]; then
+        if [[ "$PUSH_STATE" == "pushed" && -z "${PUSH_STATE#"pushed"}" ]]; then
             echo "COMMITTED: $MANIFEST_RELATIVE @ $MANIFEST_COMMIT (pushed)"
         else
             echo "COMMITTED: $MANIFEST_RELATIVE @ $MANIFEST_COMMIT (not pushed)"
@@ -1182,10 +1182,10 @@ else
     fi
 fi
 
-if test "${#REFUSED_BRANCHES[@]}" -eq 0; then
+if [[ "${#REFUSED_BRANCHES[@]}" -eq 0 ]]; then
     exit 0
 fi
-if test "$PARKED_COUNT" -eq 0; then
+if [[ "$PARKED_COUNT" -eq 0 ]]; then
     exit 2
 fi
 exit 3

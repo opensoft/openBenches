@@ -718,9 +718,9 @@ call_ai_cli() {
     case "$provider" in
         codex)
             if [ "$output_format" = "json" ]; then
-                codex exec --output-last-message --json "$prompt"
+                codex-exec --output-last-message --json "$prompt"
             else
-                codex exec --output-last-message "$prompt"
+                codex-exec --output-last-message "$prompt"
             fi
             ;;
         claude)

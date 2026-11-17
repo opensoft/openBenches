@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Automated Codex work must select an account, never use the default login.
+set -euo pipefail
+profile="${CODEX_PROFILE_NAME:-${CLAUDE_PROFILE_NAME:-}}"
+[[ -n "$profile" ]] || {
+  echo 'codex-exec: select CODEX_PROFILE_NAME or launch from a selected lane account; refusing default-account fallback.' >&2
+  exit 2
+}
+launcher_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+launcher="$launcher_dir/codex-profile"
+[[ -x "$launcher" ]] || launcher="$(command -v codex-profile || true)"
+[[ -n "$launcher" ]] || { echo 'codex-exec: codex-profile is not installed.' >&2; exit 2; }
+# Also accept the original binary-call shape used by generated launch scripts.
+case "${1:-}" in exec|e) shift ;; esac
+export WORKBENCHES_CODEX_AUTOMATED=1
+unset OPENAI_API_KEY CODEX_ACCESS_TOKEN
+exec "$launcher" run "$profile" exec "$@"

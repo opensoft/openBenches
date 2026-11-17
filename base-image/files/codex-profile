@@ -79,7 +79,7 @@ profile_metadata() {
 }
 
 action="${1:-list}"
-if [[ "$action" == "list" || "$action" == "login" || "$action" == "status" || "$action" == "logout" || "$action" == "run" ]]; then
+if [[ "$action" == "list" || "$action" == "login" || "$action" == "status" || "$action" == "logout" || "$action" == "run" || "$action" == "home" ]]; then
   [[ $# -eq 0 ]] || shift
 else
   action="run"
@@ -96,13 +96,17 @@ case "$action" in
       done < <(find "$base/profiles" -mindepth 2 -type f -name .profile.json -print0 2>/dev/null || true)
     } | awk -F '\t' '!seen[tolower($1)]++'
     ;;
-  login|status|logout|run)
+  login|status|logout|run|home)
     profile="${1:?Usage: codex-profile $action PROFILE [arguments]}"; shift
     row="$(profile_metadata "$profile" || true)"
     [[ -n "$row" ]] || { echo "Unknown Codex profile: $profile" >&2; exit 2; }
     IFS=$'\t' read -r profile email family profile_path <<<"$row"
     config_dir="$base/profiles/$profile_path"
     [[ -d "$config_dir" ]] || { echo "Codex profile is not configured: $config_dir" >&2; exit 2; }
+    if [[ "$action" == home ]]; then
+      printf '%s\n' "$config_dir"
+      exit 0
+    fi
     [[ -n "$codex_bin" ]] || { echo "Codex CLI not found." >&2; exit 1; }
 
     export CODEX_PROFILE_NAME="$profile"
@@ -185,6 +189,39 @@ case "$action" in
           exit "$command_status"
         fi
         wb_sync_before "$config_dir/auth.json" run
+        if [[ "${WORKBENCHES_CODEX_AUTOMATED:-0}" == 1 ]]; then
+          # Validate after credential synchronization and before starting Codex.
+          python3 -I - "$config_dir/auth.json" "$email" <<'PY'
+import base64
+import json
+import sys
+from pathlib import Path
+
+try:
+    data = json.loads(Path(sys.argv[1]).read_text())
+    if data.get('OPENAI_API_KEY') or data.get('auth_mode', 'chatgpt') != 'chatgpt':
+        raise ValueError('selected profile does not use ChatGPT subscription authentication')
+    tokens = data.get('tokens') or {}
+    emails = set()
+    for key in ('id_token', 'access_token'):
+        token = tokens.get(key)
+        if not isinstance(token, str) or token.count('.') != 2:
+            continue
+        body = token.split('.')[1]
+        claims = json.loads(base64.urlsafe_b64decode(body + '=' * (-len(body) % 4)))
+        email = claims.get('email') or (claims.get('https://api.openai.com/profile') or {}).get('email')
+        if email:
+            emails.add(email.casefold())
+    if not tokens.get('access_token') or emails != {sys.argv[2].casefold()}:
+        raise ValueError('credential identity does not match the selected profile')
+except Exception:
+    print('codex-exec: missing or mismatched ChatGPT credentials for the selected profile; '
+          'run codex-profile login PROFILE. Refusing default-account fallback.', file=sys.stderr)
+    sys.exit(2)
+PY
+          unset OPENAI_API_KEY CODEX_ACCESS_TOKEN
+          printf 'codex-exec: account %s (%s)\n' "$profile" "$email" >&2
+        fi
         CODEX_HOME="$config_dir" exec "$codex_bin" \
           "${codex_auth_config[@]}" \
           "${codex_runtime_config[@]}" \
@@ -192,5 +229,5 @@ case "$action" in
         ;;
     esac
     ;;
-  *) echo "Usage: codex-profile {list|login|status|logout|run} [PROFILE]" >&2; exit 2 ;;
+  *) echo "Usage: codex-profile {list|login|status|logout|run|home} [PROFILE]" >&2; exit 2 ;;
 esac

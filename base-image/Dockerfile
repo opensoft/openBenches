@@ -206,6 +206,7 @@ COPY files/claude-profile /usr/local/bin/claude-profile
 COPY files/pclaude /usr/local/bin/pclaude
 COPY files/lclaude /usr/local/bin/lclaude
 COPY files/codex-profile /usr/local/bin/codex-profile
+COPY --chmod=0755 files/codex-exec /usr/local/bin/codex-exec
 COPY files/opencode-profile /usr/local/bin/opencode-profile
 COPY files/workbenches-mcp-sync /usr/local/bin/workbenches-mcp-sync
 COPY --chmod=0644 files/company-profile-sync.sh /usr/local/share/workbenches/company-profile-sync.sh

@@ -1,0 +1,13 @@
+Validation 2026-11-17
+- Account-binding unittest suite: 10 tests passed; fake providers only.
+- Claude binary-selection regression: 122 assertions passed.
+- Claude lane-start regression: 27 assertions passed.
+- Claude model-preservation regression: 6 assertions passed.
+- Codex profile runtime overrides: passed.
+- OpenSpec strict validation: passed.
+- Bash syntax checks and git diff --check: passed.
+- Installed codex-exec refused absent selection before provider execution.
+- All 41 affected host-local generated launchers passed syntax and routing readback.
+- Active Claude launcher retained unrelated effort changes and gained only account binding.
+- Backups and a machine-specific installation manifest are held in user-local state, outside Git.
+- No credentials changed, no processes restarted, no model requests made by validation.

@@ -3488,7 +3488,21 @@ Park it again from there, which writes the record afresh, then resume here." 'RR
             "$(<"$stderr_file")" >&2
         return 1
     fi
-    assert_file_absent "$clone/worktrees/001-routing-core" 'the valueless-pushed feature directory'
+    assert_file_absent "$clone/worktrees/001-routing-core" 'the valueless-pushed feature directory' || return 1
+
+    # Raw manifest tokens stay case-exact when the caller enables nocasematch.
+    (
+        local spelling
+        export BASH_ENV="$FIXTURE_ROOT/resume-nocasematch.bash"
+        printf '%s\n' 'shopt -s nocasematch' > "$BASH_ENV" || exit 1
+        for spelling in TRUE FALSE; do
+            set_manifest_pushed "$manifest" spec "$spelling" || exit 1
+            invoke_resume "$clone" "$stderr_file"
+            assert_equal '2' "$RESUME_STATUS" 'mixed-case pushed resume exit code' || exit 1
+            grep -Fq -- "says '$spelling', which is neither true nor false" "$stderr_file" || exit 1
+            assert_file_absent "$clone/worktrees/001-routing-core" 'the mixed-case-pushed feature directory' || exit 1
+        done
+    )
 }
 
 # NO `pushed:` AT ALL is a different thing for a record to say than a value

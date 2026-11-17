@@ -10,3 +10,23 @@ Candidate qualification: all nine scripts pass bash syntax; 728 optional ShellCh
 Independent review found that the first candidate relaxed equality under inherited nocasematch. That candidate is retained in history and is not accepted. The corrected recipe uses 292 unary double-bracket predicates, 179 strict-decimal test predicates and 257 case-sensitive string test predicates. Existing fixture results on the first candidate do not qualify this correction; rebind review and rerun affected fixtures.
 
 The new exact-branch regression fails on the first candidate and passes on the correction, using real bare/local fixture worktrees. It also verifies the sourced helper leaves nocasematch enabled for its caller. The source directive in that regression names the actual canonical dependency for static analysis; no rule is disabled.
+
+## Follow-up for the Sonar shell predicate rule
+
+The complete wallet analysis reports the explicit test command introduced by
+the first predicate pass. Use double brackets for shell counters, lengths,
+statuses and values already normalized to signed decimal. Use double brackets
+for closed flags and punctuation markers. For raw names and configuration
+values, combine the quoted comparison with quoted literal prefix removal.
+This preserves exact case and metacharacters under inherited nocasematch and
+leaves the caller's shell options intact.
+
+Retain the strict integer builtin at input boundaries that accept decimal
+strings, including interactive selections and stored WIP depths. These values
+can contain leading zeroes or lie outside the supported signed range. The
+mtime comparisons retain the strict builtin at their external-output boundary.
+This preserves their return statuses and diagnostics.
+
+Qualify canonical source first with the existing fixture suites and compare
+the installed versions without upgrading the hooks. Main analysis supplies
+the actual finding dispositions.

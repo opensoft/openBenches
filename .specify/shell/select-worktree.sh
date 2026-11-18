@@ -270,8 +270,11 @@ while true; do
             ;;
     esac
 
-    if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le "${#PATHS[@]}" ]; then
-        printf '%s\n' "${PATHS[$((selection - 1))]}"
+    # Parse once as decimal so the bound and the index use the same value.
+    if [[ "$selection" =~ ^0*([1-9][0-9]*)$ ]] &&
+        printf -v choice '%d' "${BASH_REMATCH[1]}" 2>/dev/null &&
+        [[ "$choice" == "${BASH_REMATCH[1]}" && "$choice" -le "${#PATHS[@]}" ]]; then
+        printf '%s\n' "${PATHS[$((choice - 1))]}"
         exit 0
     fi
 

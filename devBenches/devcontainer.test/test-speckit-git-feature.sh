@@ -4365,6 +4365,37 @@ test_get_last_worktree_breaks_mtime_ties_by_path() {
     assert_equal "$first" "$(json_field "$output" WORKTREE_PATH)" 'equal mtime uses path order, not Git enumeration'
 }
 
+test_select_worktree_uses_decimal_choices() {
+    local repo="$FIXTURE_ROOT/decimal-selection"
+    local config=$'checkout_mode: worktree\nbase_branch: main\nworktree_root: worktrees'
+    local index slot minute output
+    local stderr_file="$FIXTURE_ROOT/decimal-selection.stderr"
+
+    initialize_fixture "$repo" "$config" || return 1
+    install_discovery_scripts "$repo" || return 1
+    for ((index=1; index<=10; index++)); do
+        printf -v slot '%02d' "$index"
+        printf -v minute '%02d' "$((11 - index))"
+        git -C "$repo" worktree add -q -b "feature/choice-$slot" "$repo/worktrees/$slot" main || return 1
+        touch -t "2020010101$minute" "$repo/worktrees/$slot" || return 1
+    done
+
+    if ! output="$(printf '%s\n' '08' | bash "$repo/.specify/shell/select-worktree.sh" 2>"$stderr_file")"; then
+        cat "$stderr_file" >&2
+        return 1
+    fi
+    assert_equal "$repo/worktrees/08" "$output" 'padded decimal eight selects slot eight' || return 1
+
+    if ! output="$(printf '%s\n' 0 11 18446744073709551617 ' 010 ' |
+        bash "$repo/.specify/shell/select-worktree.sh" 2>"$stderr_file")"; then
+        cat "$stderr_file" >&2
+        return 1
+    fi
+    assert_equal "$repo/worktrees/10" "$output" 'padded decimal ten selects slot ten' || return 1
+    assert_equal 3 "$(grep -Fc 'Invalid selection. Enter 1-10 or q.' "$stderr_file")" \
+        'zero, out-of-range and overflow selections are refused before retry'
+}
+
 failures=0
 run_scenario() {
     local name="$1"
@@ -4385,6 +4416,7 @@ run_scenario 'last-worktree rejects malformed arguments before Git discovery' te
 run_scenario 'last-worktree keeps shell-like invalid options literal' test_get_last_worktree_keeps_invalid_option_literal
 run_scenario 'last-worktree reads a successful mtime once and rejects invalid timestamps' test_get_last_worktree_reads_mtime_once
 run_scenario 'last-worktree breaks equal modification times by canonical path' test_get_last_worktree_breaks_mtime_ties_by_path
+run_scenario 'interactive selection uses bounded decimal choices' test_select_worktree_uses_decimal_choices
 run_scenario 'default sequential worktree with apostrophe description' test_default_sequential_worktree
 run_scenario 'branch_template with {number}-{slug} final segment' test_branch_template
 run_scenario 'namespaced sequential numbering' test_namespaced_numbering

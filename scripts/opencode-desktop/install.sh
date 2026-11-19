@@ -3,6 +3,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/../lib/setup-terminal.sh"
+source "$here/../lib/windows-powershell.sh"
 runtime="$HOME/.local/lib/workbenches/opencode-desktop"
 state="$HOME/.local/state/opencode-desktop-profiles"
 launcher="$runtime/setup_profiles.py"
@@ -24,14 +25,7 @@ fi
 run_windows() {
     local mode="$1" windows_script powershell
     shift
-    if ! powershell="$(command -v powershell.exe)"; then
-        # WSL can leave Windows executables off PATH while interop still works.
-        powershell="$(wslpath -u "${SystemRoot:-C:\Windows}\System32\WindowsPowerShell\v1.0\powershell.exe")" || return 1
-        if [[ ! -x "$powershell" ]]; then
-            echo 'Windows PowerShell is unavailable to the OpenCode Desktop installer.' >&2
-            return 1
-        fi
-    fi
+    powershell="$(windows_powershell_path)" || return 1
     windows_script="$(wslpath -w "$here/install-windows.ps1")"
     "$powershell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$windows_script" \
         -Action "$mode" -Distribution "$WSL_DISTRO_NAME" "$@" | tr -d '\r'
@@ -63,6 +57,8 @@ trap 'rm -f -- "$temp/opencode.tar.gz" "$temp/opencode" "$temp/claude-install.sh
 supports_profiles() {
     local current
     [[ -x "$1" ]] && current="$(timeout 15s "$1" --version 2>/dev/null)" || return 1
+    current="${current#opencode }"
+    current="${current#v}"
     [[ "$current" =~ ^2\.([0-9]+)\.([0-9]+)([-+].*)?$ ]] || return 1
     (( BASH_REMATCH[1] > 3 || (BASH_REMATCH[1] == 3 && BASH_REMATCH[2] >= 1) ))
 }
@@ -99,7 +95,11 @@ if ! supports_profiles "$opencode"; then
 fi
 
 report_step 'Checking the Claude Code runtime'
-claude="${WORKBENCH_CLAUDE_BINARY:-$(command -v claude || true)}"
+claude="${WORKBENCH_CLAUDE_BINARY:-}"
+if [[ -z "$claude" ]]; then
+    claude="$(command -v claude || true)"
+    [[ -x "$claude" ]] || claude="$HOME/.local/bin/claude"
+fi
 if [[ ! -x "$claude" ]]; then
     report_step 'Downloading the Claude Code installer' "$temp/claude-install.sh"
     curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 60 \

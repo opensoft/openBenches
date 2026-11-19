@@ -104,6 +104,11 @@ class Backend(BaseHTTPRequestHandler):
 
 
 class SessionGateTests(unittest.TestCase):
+    def test_launcher_accepts_the_published_v2_version_banner(self):
+        self.assertEqual(profiles.opencode_v2_version('opencode v2.3.2\n'), (3, 2))
+        self.assertEqual(profiles.opencode_v2_version('2.4.0'), (4, 0))
+        self.assertIsNone(profiles.opencode_v2_version('opencode v1.9.0'))
+
     @contextmanager
     def fixture(self):
         with TemporaryDirectory() as temp:

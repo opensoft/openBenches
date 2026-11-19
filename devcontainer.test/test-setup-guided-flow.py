@@ -337,6 +337,39 @@ source "$1" --status
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'not installed\n')
 
+    def test_opencode_desktop_reuses_the_versioned_runtime_and_local_claude(self):
+        binaries = self.home / 'bin'
+        opencode = self.home / '.opencode/bin/opencode'
+        claude = self.home / '.local/bin/claude'
+        scripts = {
+            opencode: 'printf "opencode v2.3.2\\n"',
+            claude: 'exit 0',
+            binaries / 'curl': 'echo "Unexpected download" >&2; exit 77',
+            binaries / 'powershell.exe': 'echo "Reached Windows task registration"; exit 74',
+            binaries / 'wslpath': "printf '%s\\n' 'C:\\fixture\\install-windows.ps1'",
+        }
+        for path, script in scripts.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('#!/bin/bash\n' + script + '\n')
+            path.chmod(0o700)
+        env = dict(self.env, WSL_DISTRO_NAME='Ubuntu-24.04', WORKBENCH_OPENCODE_BINARY='',
+                   WORKBENCH_CLAUDE_BINARY='', WORKBENCH_OPENCODE_ACCOUNT='',
+                   PATH=str(binaries) + ':' + os.environ['PATH'])
+        command = r'''command() {
+    if [[ "$1" == -v && "$2" == claude ]]; then return 1; fi
+    builtin command "$@"
+}
+source "$1" install
+'''
+        result = subprocess.run(['bash', '-c', command, 'opencode-install',
+                                 str(ROOT / 'scripts/opencode-desktop/install.sh')],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 74, result.stdout + result.stderr)
+        self.assertIn('Reached Windows task registration', result.stdout)
+        self.assertNotIn('Unexpected download', result.stderr)
+        state = json.loads((self.home / '.local/state/opencode-desktop-profiles/workstation.json').read_text())
+        self.assertEqual((state['opencode_binary'], state['claude_binary']), (str(opencode), str(claude)))
+
     def test_selected_codex_does_not_create_pi_or_other_profile_homes(self):
         self.manifest()
         result = subprocess.run(['bash', str(ROOT / 'scripts/setup-ai-profiles.sh'), '--apply-existing'],

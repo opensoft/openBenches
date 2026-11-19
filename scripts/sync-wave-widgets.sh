@@ -4,6 +4,7 @@ set -o pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 source "$root/bootstrap.sh"
+source "$root/scripts/lib/windows-powershell.sh"
 
 if [[ "${WORKBENCHES_SKIP_WAVE_WIDGETS:-}" == 1 ]]; then
     echo 'Wave Terminal widget setup skipped by WORKBENCHES_SKIP_WAVE_WIDGETS=1.'
@@ -15,7 +16,8 @@ config_dir="${WAVETERM_CONFIG_DIR:-}"
 distro="${WSL_DISTRO_NAME:-}"
 if [[ -z "$config_dir" ]]; then
     if [[ -n "$distro" ]] || grep -qi microsoft /proc/version 2>/dev/null; then
-        windows_profile="$(powershell.exe -NoProfile -Command '
+        powershell="$(windows_powershell_path)" || exit 1
+        windows_profile="$("$powershell" -NoProfile -Command '
             $paths = @(
                 "$env:ProgramFiles\Wave\Wave.exe"
                 "$env:LOCALAPPDATA\Programs\waveterm\Wave.exe"

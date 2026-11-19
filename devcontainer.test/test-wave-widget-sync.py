@@ -96,6 +96,17 @@ exec {shlex.quote(shutil.which('grep'))} "$@"
                               env=dict(self.env, **overrides), stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=10)
 
+    def test_windows_probe_can_find_powershell_without_windows_path(self):
+        binaries = Path(self.env['PATH'].split(os.pathsep)[0])
+        powershell = self.home / 'Windows PowerShell' / 'powershell.exe'
+        powershell.parent.mkdir()
+        marker = self.home / 'wave-probe-ran'
+        self.wrapper(powershell, f'touch {shlex.quote(str(marker))}\n')
+        self.wrapper(binaries / 'wslpath', f'printf "%s\\n" {shlex.quote(str(powershell))}\n')
+        result = self.sync(WAVETERM_CONFIG_DIR='', WSL_DISTRO_NAME='Ubuntu-24.04')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+
     def test_reconciles_owned_widgets_and_is_idempotent(self):
         old_cloud = widget({'cmd:initscript': 'exec /old/scripts/wave-container-shell.sh '
                             '--workbenches-root /old --title cloudBench cloudBench'})

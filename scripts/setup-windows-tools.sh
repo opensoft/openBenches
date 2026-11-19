@@ -181,8 +181,8 @@ install_pi_terminal() {
 
 usage() {
     cat <<'USAGE'
-Usage: setup-windows-tools.sh [vscode|warp|wave|pi_terminal|all]...
-       setup-windows-tools.sh --uninstall [vscode|warp|wave|amnezia|0dcloud]...
+Usage: setup-windows-tools.sh [vscode|warp|wave|pi_terminal|opencode_desktop|all]...
+       setup-windows-tools.sh --uninstall [vscode|warp|wave|amnezia|0dcloud|opencode_desktop]...
 
 Installs or removes Windows workstation tools from WSL using winget.
 USAGE
@@ -213,6 +213,9 @@ main() {
                 vscode) package=Microsoft.VisualStudioCode ;;
                 warp) package=Warp.Warp ;;
                 wave) package=CommandLine.Wave ;;
+                opencode_desktop)
+                    bash "$SCRIPT_DIR/opencode-desktop/install.sh" --disable || failed=1
+                    continue ;;
                 amnezia) package=AmneziaVPN.AmneziaVPN ;;
                 0dcloud)
                     run_winget "uninstall --exact --name '0dcloud' --accept-source-agreements" || failed=1
@@ -235,6 +238,7 @@ main() {
             vscode) install_vscode || failed=1 ;;
             warp) install_warp || failed=1 ;;
             wave) install_wave || failed=1 ;;
+            opencode_desktop) bash "$SCRIPT_DIR/opencode-desktop/install.sh" || failed=1 ;;
             pi_terminal|pi) install_pi_terminal || failed=1 ;;
             -h|--help) usage; exit 0 ;;
             *)

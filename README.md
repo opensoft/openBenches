@@ -456,12 +456,33 @@ The TUI Tools column includes editor, terminal, and local agent tooling:
 | Warp Terminal | Windows/WSL winget, Linux/manual fallback | Windows terminal |
 | Wave Terminal | Windows/WSL winget, Linux/manual fallback | AI terminal |
 | Pi Terminal | Windows and WSL/Linux npm | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`; use isolated `ppi PROFILE` or standard `pi` |
+| OpenCode Desktop + WSL profiles | Opt-in Windows Desktop installer and per-user Windows logon tasks | Claude and OpenAI profiles on `127.0.0.1:4096` and `127.0.0.1:4097` |
 | AmneziaVPN | Windows/WSL winget | Amnezia/AmneziaWG client access |
 | 0dcloud VPN | local installer/manual + local patch | 0dcloud detection and MTU fix |
 
 On a Windows workstation running setup from WSL, the TUI calls
 `scripts/setup-windows-tools.sh` so Windows apps are installed into Windows
 rather than into the Linux distro.
+
+### OpenCode Desktop profiles on Windows
+
+Select **OpenCode Desktop + WSL profiles** in the Tools column or run `bash scripts/setup-windows-tools.sh opencode_desktop` from your normal WSL workstation account. Setup reuses compatible installations and keeps the existing `popencode` launcher and login state. It installs Windows logon tasks under the current user and starts both WSL listeners. Each task keeps its profile in the foreground so closing the Ubuntu terminal does not stop it. The tasks start at sign-in and have independent restart policies.
+
+Add the local servers to Desktop once:
+
+| Profile | Desktop address | First-time provider setup |
+| --- | --- | --- |
+| Claude | `http://127.0.0.1:4096` | Choose Claude Agent. The installer records the selected `CLAUDE_CONFIG_DIR` if set. Otherwise sign in with `CLAUDE_CONFIG_DIR="$HOME/.local/state/opencode-desktop-profiles/claude/.claude" claude auth login`. |
+| OpenAI | `http://127.0.0.1:4097` | Use ChatGPT sign-in under Providers. Setup uses the last recorded `popencode` account as the account to sign in with, when available. Set `WORKBENCH_OPENCODE_ACCOUNT` when installing to select another registered account. |
+
+For HTTP Basic authentication, use username `opencode` and the profile-specific `server-password` in `~/.local/state/opencode-desktop-profiles/<profile>/`. Each profile has its own session database and credentials. Existing OmO configuration is read from `~/.omo/omo.jsonc`; a workstation without that file gets the default OmO agent roster. The Claude profile uses the `opus`, `sonnet`, and `haiku` aliases. The OpenAI profile checks for newer stable models in each tier before session creation and applies upgrades when idle.
+
+```bash
+python3 ~/.local/lib/workbenches/opencode-desktop/setup_profiles.py health
+python3 ~/.local/lib/workbenches/opencode-desktop/setup_profiles.py verify
+```
+
+`health` checks the authenticated loopback listeners. After sign-in, `verify` checks model availability and agent bindings without sending inference. Logs are in the corresponding profile directory. To disable future autostart, run `bash scripts/setup-windows-tools.sh --uninstall opencode_desktop`. This preserves the app, current sessions, and provider sign-ins.
 
 ## Amnezia Endpoint Wrapper
 

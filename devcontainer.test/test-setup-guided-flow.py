@@ -261,6 +261,34 @@ save_selection
         self.assertEqual({(entry['key'], entry['action']) for entry in selection.load(plan)[0]},
                          {('opencode_cli', 'install'), ('opencode_desktop', 'install')})
 
+    def test_opencode_desktop_status_finds_powershell_without_windows_path(self):
+        windows = self.home / 'Windows PowerShell'
+        windows.mkdir()
+        powershell = windows / 'powershell.exe'
+        powershell.write_text('#!/bin/bash\nprintf "not installed\\r\\n"\n')
+        powershell.chmod(0o755)
+        command = r'''unset WORKBENCHES_HOST_RPC
+command() {
+    if [[ "$1" == -v && "$2" == powershell.exe ]]; then return 1; fi
+    builtin command "$@"
+}
+wslpath() {
+    case "$1" in
+        -u) [[ "$2" == *'\WindowsPowerShell\v1.0\powershell.exe' ]] || return 2
+            printf '%s\n' "$fixture_powershell" ;;
+        -w) printf '%s\n' 'C:\fixture\install-windows.ps1' ;;
+    esac
+}
+# Source to keep the mock commands in the installer's shell.
+source "$1" --status
+'''
+        result = subprocess.run(['bash', '-c', command, 'opencode-status',
+                                 str(ROOT / 'scripts/opencode-desktop/install.sh')],
+                                env=dict(self.env, WSL_DISTRO_NAME='Ubuntu-24.04', fixture_powershell=str(powershell)),
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'not installed\n')
+
     def test_selected_codex_does_not_create_pi_or_other_profile_homes(self):
         self.manifest()
         result = subprocess.run(['bash', str(ROOT / 'scripts/setup-ai-profiles.sh'), '--apply-existing'],

@@ -21,10 +21,18 @@ if [[ -z "${WSL_DISTRO_NAME:-}" || $(id -u) -eq 0 ]]; then
 fi
 
 run_windows() {
-    local mode="$1" windows_script
+    local mode="$1" windows_script powershell
     shift
+    if ! powershell="$(command -v powershell.exe)"; then
+        # WSL can leave Windows executables off PATH while interop still works.
+        powershell="$(wslpath -u "${SystemRoot:-C:\Windows}\System32\WindowsPowerShell\v1.0\powershell.exe")" || return 1
+        if [[ ! -x "$powershell" ]]; then
+            echo 'Windows PowerShell is unavailable to the OpenCode Desktop installer.' >&2
+            return 1
+        fi
+    fi
     windows_script="$(wslpath -w "$here/install-windows.ps1")"
-    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$windows_script" \
+    "$powershell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$windows_script" \
         -Action "$mode" -Distribution "$WSL_DISTRO_NAME" "$@" | tr -d '\r'
 }
 

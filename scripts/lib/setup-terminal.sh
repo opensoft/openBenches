@@ -37,6 +37,45 @@ draw_setup_banner() {
     printf '\n'
 }
 
+setup_install_phase() {
+    [[ "${WORKBENCHES_INSTALL_SCREEN:-}" == 1 && -n "${WORKBENCHES_INSTALL_PHASE_FILE:-}" ]] || return 0
+    local pending="$WORKBENCHES_INSTALL_PHASE_FILE.$BASHPID"
+    # The parent may remove the footer and its state during a terminal resize.
+    { printf '%s\n%s\n' "$1" "${2:-}" > "$pending" && mv -f -- "$pending" "$WORKBENCHES_INSTALL_PHASE_FILE"; } 2>/dev/null || :
+}
+
+setup_install_clock() {
+    trap 'exit 0' TERM
+    local row="$1" width="$2" started=$SECONDS changed=$SECONDS
+    local phase='Preparing installation' suggested download elapsed state bytes log_size last_size='' quiet
+    while true; do
+        elapsed=$((SECONDS - started))
+        download=''
+        if [[ -r "$WORKBENCHES_INSTALL_PHASE_FILE" ]]; then
+            {
+                if IFS= read -r suggested && [[ -n "$suggested" ]]; then phase="$suggested"; fi
+                IFS= read -r download || :
+            } < "$WORKBENCHES_INSTALL_PHASE_FILE"
+        fi
+        quiet=''
+        if [[ -n "${WORKBENCHES_SETUP_LOG_FILE:-}" && -r "$WORKBENCHES_SETUP_LOG_FILE" ]]; then
+            log_size="$(wc -c < "$WORKBENCHES_SETUP_LOG_FILE" 2>/dev/null)" || log_size=''
+            if [[ "$last_size" != "$log_size" ]]; then changed=$SECONDS; last_size="$log_size"; fi
+            if (( SECONDS - changed >= 10 )); then quiet=" | Log quiet $((SECONDS - changed))s"; fi
+        fi
+        printf -v state 'Ctrl+C to cancel | %02d:%02d | %s' "$((elapsed / 60))" "$((elapsed % 60))" "$phase"
+        if [[ -n "$download" && -f "$download" ]]; then
+            bytes="$(stat -c %s -- "$download" 2>/dev/null)" || bytes=''
+            if [[ "$bytes" =~ ^[[:space:]]*[0-9]+$ ]]; then
+                state+=" | $((bytes / 1048576)) MiB received"
+            fi
+        fi
+        # Update only the fixed footer and restore the output or prompt cursor.
+        printf '\0337\033[%d;1H\033[0m\033[2K  %.*s\0338' "$row" "$width" "$state$quiet"
+        sleep 1
+    done
+}
+
 start_setup_install_screen() {
     [[ -t 0 && -t 1 && -n "${TERM:-}" && "$TERM" != dumb ]] || return 0
 
@@ -64,12 +103,27 @@ start_setup_install_screen() {
     printf '\033[0m\033[2J\033[H%s\n\033[2m%s\033[0m' "$header" "${rule// /─}"
     printf '\033[%d;1H\033[2m  Ctrl+C to cancel\033[0m%s\033[%d;1H\033[?25h' \
         "$rows" "$region" "$log_top"
+    if setup_install_clock_dir="$(mktemp -d "${TMPDIR:-/tmp}/openbenches-install.XXXXXX")"; then
+        export WORKBENCHES_INSTALL_PHASE_FILE="$setup_install_clock_dir/phase"
+        setup_install_phase 'Preparing installation'
+        setup_install_clock "$rows" "$((columns - 3))" &
+        setup_install_clock_pid=$!
+    fi
 }
 
 restore_setup_install_screen() {
     [[ "${setup_install_screen_active:-}" == true ]] || return 0
     setup_install_screen_active=false
     trap - WINCH
+    if [[ -n "${setup_install_clock_pid:-}" ]]; then
+        kill "$setup_install_clock_pid" 2>/dev/null || :
+        wait "$setup_install_clock_pid" 2>/dev/null || :
+    fi
+    if [[ -n "${setup_install_clock_dir:-}" ]]; then
+        rm -f -- "$setup_install_clock_dir"/phase "$setup_install_clock_dir"/phase.*
+        rmdir -- "$setup_install_clock_dir" 2>/dev/null || :
+    fi
+    unset WORKBENCHES_INSTALL_PHASE_FILE setup_install_clock_pid setup_install_clock_dir
     printf '\033[r\033[999;1H\033[0m\033[2K\033[?25h'
 }
 

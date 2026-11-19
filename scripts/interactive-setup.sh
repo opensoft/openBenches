@@ -2557,7 +2557,10 @@ process_selections() {
 
                 case "$item" in
                     opencode_desktop)
-                        if bash "$script_dir/setup-windows-tools.sh" opencode_desktop; then
+                        bash "$script_dir/setup-windows-tools.sh" opencode_desktop 2>&1 | tee -a "$LOG_FILE"
+                        local desktop_status=${PIPESTATUS[0]}
+                        setup_propagate_cancel "$desktop_status"
+                        if [[ "$desktop_status" -eq 0 ]]; then
                             ((success_count++))
                         else
                             failed_components[$active_component]=true; ((fail_count++))
@@ -2642,6 +2645,7 @@ process_selections() {
 
     # Verify selected applications against fresh installation evidence. A
     # successful installer exit alone must never report a missing tool as ready.
+    setup_install_phase 'Verifying selected components'
     refresh_component_statuses
     local verified_item final_status
     for verified_item in "${!component_action[@]}"; do

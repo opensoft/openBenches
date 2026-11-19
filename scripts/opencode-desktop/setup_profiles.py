@@ -484,6 +484,12 @@ def start(home, root, binary, name, source, claude_config_dir):
             raise
 
 
+def opencode_v2_version(output):
+    version = output.strip().removeprefix("opencode ").removeprefix("v")
+    release = re.fullmatch(r"2\.(\d+)\.(\d+)(?:[-+].*)?", version)
+    return tuple(map(int, release.groups())) if release else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("start", "supervise", "health", "verify", "refresh"))
@@ -516,10 +522,10 @@ def main():
         settings = read_settings(root)
         binary = Path(os.environ.get("OPENCODE_BIN") or settings.get("opencode_binary") or home / ".opencode/bin/opencode")
         version = subprocess.check_output([str(binary), "--version"], text=True).strip()
-        release = re.fullmatch(r"2\.(\d+)\.(\d+)(?:[-+].*)?", version)
-        if not release or tuple(map(int, release.groups())) < (2, 3):
+        release = opencode_v2_version(version)
+        if not release or release < (2, 3):
             raise RuntimeError(f"Expected OpenCode v2.2.3 or later in the v2 line; got {version!r}")
-        if "openai" in names and tuple(map(int, release.groups())) < (3, 1):
+        if "openai" in names and release < (3, 1):
             raise RuntimeError(f"The OpenAI profile requires OpenCode v2.3.1 or later for GPT-6.2 with ChatGPT sign-in; got {version!r}")
         source = source_roster(home)
         claude_config_dir = (args.claude_config_dir or Path(os.environ.get("CLAUDE_CONFIG_DIR")

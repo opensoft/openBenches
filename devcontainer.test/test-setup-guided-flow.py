@@ -117,6 +117,54 @@ esac
                 if action == 'resize':
                     self.assertLess(output.index('\x1b[r'), output.index('Output after resize'))
 
+    def test_install_display_updates_during_a_quiet_download(self):
+        command = r'''source "$1"
+stty rows 24 cols 116
+trap 'finish_setup_install_screen "$?"' EXIT
+start_setup_install_screen 1.6.1
+download="$WORKBENCHES_INSTALL_PHASE_FILE.download"
+setup_install_phase 'Downloading OpenCode' "$download"
+truncate -s 1048576 "$download"
+sleep 1.2
+truncate -s 3145728 "$download"
+sleep 1.2
+rm -f -- "$download"
+setup_install_phase 'Verifying OpenCode'
+sleep 1.2
+'''
+        args = ['bash', '-c', command, 'screen', str(ROOT / 'scripts/lib/setup-terminal.sh')]
+        status, output = terminal_run(args, dict(self.env, TERM='xterm'), [])
+        self.assertEqual(status, 0, output)
+        self.assertIn('Downloading OpenCode | 1 MiB received', output)
+        self.assertIn('Downloading OpenCode | 3 MiB received', output)
+        self.assertRegex(output, r'00:0[23] \| Verifying OpenCode')
+        self.assertTrue(output.rstrip().endswith('Setup complete'), output)
+
+    def test_open_code_installer_failure_is_recorded_in_the_setup_log(self):
+        command = f'''source "{ROOT}/scripts/interactive-setup.sh"
+export WSL_DISTRO_NAME=Ubuntu-24.04
+export WORKBENCHES_INSTALL_SCREEN=1
+init_components --loading
+component_checked[opencode_desktop]=true
+component_action[opencode_desktop]=install
+component_status[opencode_desktop]='not installed'
+bash() {{
+    [[ "$1" == */setup-windows-tools.sh && "$2" == opencode_desktop ]] || return 88
+    echo 'Fixture: OpenCode Linux runtime download failed' >&2
+    return 7
+}}
+refresh_component_statuses() {{ :; }}
+show_pending_authentication() {{ :; }}
+process_selections
+'''
+        log = self.home / 'setup.log'
+        result = subprocess.run(['bash', '-c', command],
+                                env=dict(self.env, WORKBENCHES_SETUP_LOG_FILE=str(log)),
+                                capture_output=True, text=True, timeout=8)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Fixture: OpenCode Linux runtime download failed', result.stdout)
+        self.assertIn('Fixture: OpenCode Linux runtime download failed', log.read_text())
+
     def manifest(self, names=('personal-1',)):
         data = {'version': 1, 'families': ['personal'], 'profiles': [
             {'name': name, 'email': name + '@example.com', 'family': 'personal', 'profilePath': 'personal/' + name, 'aliases': []}

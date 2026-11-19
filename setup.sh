@@ -61,6 +61,7 @@ ls -t "$LOG_DIR"/setup-*.log 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null
 
 # Wave shortcuts are a best-effort desktop convenience.
 sync_wave_widgets() {
+    setup_install_phase 'Updating Wave shortcuts'
     run_logged "WAVE TERMINAL WIDGETS" bash "$SCRIPT_DIR/scripts/sync-wave-widgets.sh" </dev/null ||
         echo "Wave Terminal widget sync could not finish. See $LOG_FILE for details."
 }
@@ -75,7 +76,7 @@ fi
 ensure_setup_platform || exit "$?"
 if [[ ! -t 0 || ! -t 1 ]]; then ensure_workstation_requirements || exit "$?"; fi
 selection_file="$(mktemp "${TMPDIR:-/tmp}/workbenches-selection.XXXXXX")" || exit 1
-unset WORKBENCHES_INSTALL_SCREEN
+unset WORKBENCHES_INSTALL_SCREEN WORKBENCHES_INSTALL_PHASE_FILE
 trap 'setup_status=$?; finish_setup_install_screen "$setup_status"; rm -f "$selection_file"' EXIT
 "${SCRIPT_DIR}/scripts/interactive-setup.sh" --select-only "$selection_file" || exit "$?"
 # The child TUI owns startup checks; adopt its ready runtime for applying the plan.
@@ -103,6 +104,7 @@ export WORKBENCHES_PROFILE_PROVIDERS="$(python3 -c 'import os; print(",".join(p 
 # Verify local prerequisites before host installers, account onboarding,
 # credential recovery or any image build can run.
 log_header "DOCKER CHECK"
+setup_install_phase 'Checking Docker'
 if ensure_docker; then
     :
 else
@@ -117,6 +119,7 @@ fi
 
 # Enter in the TUI authorizes the selected changes. Account setup is opt-in.
 python3 "$SCRIPT_DIR/scripts/setup_selection.py" review "$selection_file" || exit "$?"
+setup_install_phase 'Checking selected dependencies'
 export WORKBENCHES_AUTH_ROUTE=later
 unset WORKBENCHES_AUTH_ROUTE_FILE
 "${SCRIPT_DIR}/scripts/interactive-setup.sh" --dependencies-plan "$selection_file" || exit "$?"
@@ -179,6 +182,7 @@ log_header "LAYER 0 BUILD"
 if [[ -z "$selected_bench_paths" ]]; then
     echo "No bench images selected; skipping Layer 0."
 else
+    setup_install_phase 'Preparing the Layer 0 bench image'
     run_logged "BENCH HOME PREPARATION" python3 "${SCRIPT_DIR}/scripts/setup-bench-home.py" || exit "$?"
     if python3 "${SCRIPT_DIR}/scripts/shared-images.py" ensure base; then
         echo "Layer 0 is ready."
@@ -235,6 +239,7 @@ fi
 
 if [ "$BUILD_FAILED" = false ]; then
     log_header "INTERACTIVE SETUP"
+    setup_install_phase 'Applying selected components'
     if run_interactive_setup; then
         :
     else

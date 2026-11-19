@@ -2,6 +2,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$here/../lib/setup-terminal.sh"
 runtime="$HOME/.local/lib/workbenches/opencode-desktop"
 state="$HOME/.local/state/opencode-desktop-profiles"
 launcher="$runtime/setup_profiles.py"
@@ -61,11 +62,17 @@ trap 'rm -f -- "$temp/opencode.tar.gz" "$temp/opencode" "$temp/claude-install.sh
 
 supports_profiles() {
     local current
-    [[ -x "$1" ]] && current="$("$1" --version 2>/dev/null)" || return 1
+    [[ -x "$1" ]] && current="$(timeout 15s "$1" --version 2>/dev/null)" || return 1
     [[ "$current" =~ ^2\.([0-9]+)\.([0-9]+)([-+].*)?$ ]] || return 1
     (( BASH_REMATCH[1] > 3 || (BASH_REMATCH[1] == 3 && BASH_REMATCH[2] >= 1) ))
 }
 
+report_step() {
+    setup_install_phase "$@"
+    printf '%s\n' "$1"
+}
+
+report_step 'Checking the WSL OpenCode runtime'
 opencode="${WORKBENCH_OPENCODE_BINARY:-$HOME/.opencode/bin/opencode}"
 if ! supports_profiles "$opencode"; then
     opencode="$runtime/opencode"
@@ -75,25 +82,35 @@ if ! supports_profiles "$opencode"; then
             aarch64) arch=arm64; checksum=9d10185acdb72336e086e699ca363a6065f410fd3c1caed0dc8046e95ac06ccb ;;
             *) echo 'No OpenCode workstation binary for this WSL architecture.' >&2; exit 2 ;;
         esac
-        curl --fail --location --silent --show-error --retry 2 \
+        report_step 'Downloading the OpenCode Linux runtime' "$temp/opencode.tar.gz"
+        curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 900 \
+            --speed-limit 1 --speed-time 60 \
             "$release_url/opencode-linux-$arch.tar.gz" --output "$temp/opencode.tar.gz"
-        printf '%s  %s\n' "$checksum" "$temp/opencode.tar.gz" | sha256sum --check --status
+        report_step 'Verifying and unpacking the OpenCode Linux runtime'
+        if ! printf '%s  %s\n' "$checksum" "$temp/opencode.tar.gz" | sha256sum --check --status; then
+            echo 'The downloaded OpenCode Linux archive did not match the release checksum.' >&2
+            exit 1
+        fi
         tar -xOzf "$temp/opencode.tar.gz" opencode > "$temp/opencode"
         chmod 0700 "$temp/opencode"
-        supports_profiles "$temp/opencode"
+        supports_profiles "$temp/opencode" || { echo 'The unpacked OpenCode runtime failed its version check.' >&2; exit 1; }
         mv -f -- "$temp/opencode" "$opencode"
     fi
 fi
 
+report_step 'Checking the Claude Code runtime'
 claude="${WORKBENCH_CLAUDE_BINARY:-$(command -v claude || true)}"
 if [[ ! -x "$claude" ]]; then
-    curl --fail --location --silent --show-error --retry 2 \
+    report_step 'Downloading the Claude Code installer' "$temp/claude-install.sh"
+    curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 60 \
         https://claude.ai/install.sh --output "$temp/claude-install.sh"
+    report_step 'Installing Claude Code in WSL'
     bash "$temp/claude-install.sh"
     claude="$HOME/.local/bin/claude"
     [[ -x "$claude" ]] || { echo 'Claude Code did not install for this user.' >&2; exit 1; }
 fi
 
+report_step 'Staging the Claude and OpenAI server profiles'
 for file in setup_profiles.py model_session_gate.py; do
     install -m 0600 "$here/$file" "$temp/$file"
     mv -f -- "$temp/$file" "$runtime/$file"
@@ -121,7 +138,9 @@ source_roster(Path.home())['[opencode]']
 json_file(state / 'workstation.json', settings)
 PY
 
+report_step 'Checking OpenCode Desktop and registering Windows sign-in tasks'
 run_windows Install -LinuxUser "$(id -un)" -Launcher "$launcher"
+report_step 'Waiting for the Claude and OpenAI listeners'
 for _ in {1..30}; do
     if "$host_python" -B "$launcher" health 2>/dev/null; then exit 0; fi
     sleep 1

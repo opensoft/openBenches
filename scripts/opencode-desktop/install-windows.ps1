@@ -63,7 +63,10 @@ if ($Action -eq 'Disable') {
 
 if (!$LinuxUser -or !$Launcher) { throw 'Install requires the Linux user and staged launcher path.' }
 
-if (!(Get-Desktop)) {
+if (Get-Desktop) {
+    Write-Output 'Reusing the installed OpenCode Desktop application.'
+} else {
+    Write-Output 'Downloading OpenCode Desktop for Windows.'
     $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { 'arm64' } else { 'x64' }
     $digests = @{
         x64 = '1e73b4f49f591971f4ad61c5a39b284bf74d41f50ca1b84e68ccf2ab2be91e8d'
@@ -76,6 +79,7 @@ if (!(Get-Desktop)) {
         if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $digests[$arch]) {
             throw 'OpenCode Desktop installer SHA-256 does not match the published release.'
         }
+        Write-Output 'Running the verified OpenCode Desktop installer.'
         $setup = Start-Process -FilePath $installer -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
         if ($setup.ExitCode -ne 0 -or !(Get-Desktop)) { throw "OpenCode Desktop installation did not verify (exit $($setup.ExitCode))." }
     }

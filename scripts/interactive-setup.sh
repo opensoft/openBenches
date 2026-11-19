@@ -313,16 +313,13 @@ init_components() {
         "vscode"
         "warp"
         "wave"
-        "amnezia_vpn"
-        "0dcloud_vpn"
-        "host_shell"
-        "workspace_repo"
     )
     if is_wsl_windows; then
         tool_items+=(opencode_desktop)
         component_checked[opencode_desktop]=false
-        component_description[opencode_desktop]="OpenCode Desktop + WSL profiles"
+        component_description[opencode_desktop]="OpenCode Desktop"
     fi
+    tool_items+=(amnezia_vpn 0dcloud_vpn host_shell workspace_repo)
 
     # Initialize tool items
     component_checked["vscode"]=false

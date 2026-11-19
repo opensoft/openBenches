@@ -5,8 +5,15 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 runtime="$HOME/.local/lib/workbenches/opencode-desktop"
 state="$HOME/.local/state/opencode-desktop-profiles"
 launcher="$runtime/setup_profiles.py"
+host_python=/usr/bin/python3
 release=v2.3.2
 release_url="https://github.com/anomalyco/opencode/releases/download/$release"
+
+# The asynchronous Tools inventory runs in a container. Check Windows and
+# Linux loopback from the WSL host through the existing workstation broker.
+if [[ "${1:-}" == --status && -n "${WORKBENCHES_HOST_RPC:-}" ]]; then
+    exec python3 -c 'import sys, workbenches_host; sys.exit(workbenches_host.run(["bash", sys.argv[1], "--status"], env={"WORKBENCHES_HOST_RPC": ""}).returncode)' "$here/install.sh"
+fi
 
 if [[ -z "${WSL_DISTRO_NAME:-}" || $(id -u) -eq 0 ]]; then
     echo 'Run the OpenCode Desktop installer as your workstation user in WSL.' >&2
@@ -24,7 +31,7 @@ run_windows() {
 case "${1:-install}" in
     --status)
         status="$(run_windows Status)"
-        if [[ "$status" == installed ]] && ! python3 "$launcher" health >/dev/null 2>&1; then
+        if [[ "$status" == installed ]] && ! "$host_python" -B "$launcher" health >/dev/null 2>&1; then
             status='needs check'
         fi
         printf '%s\n' "$status"
@@ -38,6 +45,7 @@ case "${1:-install}" in
     *) echo 'Usage: install.sh [install|--status|--disable]' >&2; exit 2 ;;
 esac
 
+[[ -x "$host_python" ]] || { echo 'Install the Ubuntu python3 package for the OpenCode logon tasks.' >&2; exit 1; }
 umask 077
 install -d -m 0700 "$runtime" "$state"
 temp="$(mktemp -d "$runtime/install.XXXXXXXX")"
@@ -83,7 +91,7 @@ for file in setup_profiles.py model_session_gate.py; do
     mv -f -- "$temp/$file" "$runtime/$file"
 done
 
-python3 -B - "$runtime" "$state" "$opencode" "$claude" <<'PY'
+"$host_python" -B - "$runtime" "$state" "$opencode" "$claude" <<'PY'
 import os
 from pathlib import Path
 import sys
@@ -107,7 +115,7 @@ PY
 
 run_windows Install -LinuxUser "$(id -un)" -Launcher "$launcher"
 for _ in {1..30}; do
-    if python3 -B "$launcher" health 2>/dev/null; then exit 0; fi
+    if "$host_python" -B "$launcher" health 2>/dev/null; then exit 0; fi
     sleep 1
 done
 echo "Autostart was registered, but both listeners could not be verified. See $state/{claude,openai}/server.log." >&2

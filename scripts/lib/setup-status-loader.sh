@@ -61,7 +61,9 @@ status_collect_inventory() {
     refresh_host_tool_inventory
     # Windows desktop checks need the native PowerShell probes.
     if is_wsl_windows; then
-        for key in vscode warp wave amnezia_vpn 0dcloud_vpn; do status_publish "$key" "$(check_component_status "$key")"; done
+        for key in vscode warp wave opencode_desktop amnezia_vpn 0dcloud_vpn; do
+            status_publish "$key" "$(check_component_status "$key")"
+        done
     fi
 }
 

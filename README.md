@@ -456,7 +456,7 @@ The TUI Tools column includes editor, terminal, and local agent tooling:
 | Warp Terminal | Windows/WSL winget, Linux/manual fallback | Windows terminal |
 | Wave Terminal | Windows/WSL winget, Linux/manual fallback | AI terminal |
 | Pi Terminal | Windows and WSL/Linux npm | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`; use isolated `ppi PROFILE` or standard `pi` |
-| OpenCode Desktop + WSL profiles | Opt-in Windows Desktop installer and per-user Windows logon tasks | Claude and OpenAI profiles on `127.0.0.1:4096` and `127.0.0.1:4097` |
+| OpenCode Desktop | Opt-in Windows Desktop installer and per-user Windows logon tasks | Claude and OpenAI profiles on `127.0.0.1:4096` and `127.0.0.1:4097` |
 | AmneziaVPN | Windows/WSL winget | Amnezia/AmneziaWG client access |
 | 0dcloud VPN | local installer/manual + local patch | 0dcloud detection and MTU fix |
 
@@ -466,7 +466,7 @@ rather than into the Linux distro.
 
 ### OpenCode Desktop profiles on Windows
 
-Select **OpenCode Desktop + WSL profiles** in the Tools column or run `bash scripts/setup-windows-tools.sh opencode_desktop` from your normal WSL workstation account. Setup reuses compatible installations and keeps the existing `popencode` launcher and login state. It installs Windows logon tasks under the current user and starts both WSL listeners. Each task keeps its profile in the foreground so closing the Ubuntu terminal does not stop it. The tasks start at sign-in and have independent restart policies.
+Select **OpenCode Desktop** in the Tools column or run `bash scripts/setup-windows-tools.sh opencode_desktop` from your normal WSL workstation account. **OpenCode CLI** is a separate choice under AI Assistants. Desktop setup reuses compatible installations and keeps the existing `popencode` launcher and login state. It installs Windows logon tasks under the current user and starts both WSL listeners. Each task keeps its profile in the foreground so closing the Ubuntu terminal does not stop it. The tasks start at sign-in and have independent restart policies.
 
 Add the local servers to Desktop once:
 

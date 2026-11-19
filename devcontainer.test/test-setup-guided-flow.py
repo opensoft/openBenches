@@ -241,6 +241,26 @@ esac
         with self.assertRaises(ValueError):
             selection.load(plan)
 
+    def test_wsl_opencode_cli_and_desktop_are_independent_menu_choices(self):
+        plan = self.home / 'selection.json'
+        command = f'''source "{ROOT}/scripts/interactive-setup.sh"
+init_components --loading
+[[ " ${{ai_items[*]}} " == *" opencode_cli "* && " ${{ai_items[*]}} " != *" opencode_desktop "* ]] || exit 20
+[[ " ${{tool_items[*]}} " == *" opencode_desktop "* && " ${{tool_items[*]}} " != *" opencode_cli "* ]] || exit 21
+[[ "${{component_description[opencode_cli]}}" == 'OpenCode CLI' ]] || exit 22
+[[ "${{component_description[opencode_desktop]}}" == 'OpenCode Desktop' ]] || exit 23
+selection_file="$1"
+component_checked[opencode_cli]=true; component_action[opencode_cli]=install
+component_checked[opencode_desktop]=true; component_action[opencode_desktop]=install
+save_selection
+'''
+        result = subprocess.run(['bash', '-c', command, 'opencode-menu', str(plan)],
+                                env=dict(self.env, WSL_DISTRO_NAME='Ubuntu-24.04'),
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual({(entry['key'], entry['action']) for entry in selection.load(plan)[0]},
+                         {('opencode_cli', 'install'), ('opencode_desktop', 'install')})
+
     def test_selected_codex_does_not_create_pi_or_other_profile_homes(self):
         self.manifest()
         result = subprocess.run(['bash', str(ROOT / 'scripts/setup-ai-profiles.sh'), '--apply-existing'],

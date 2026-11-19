@@ -313,11 +313,13 @@ init_components() {
         "vscode"
         "warp"
         "wave"
-        "amnezia_vpn"
-        "0dcloud_vpn"
-        "host_shell"
-        "workspace_repo"
     )
+    if is_wsl_windows; then
+        tool_items+=(opencode_desktop)
+        component_checked[opencode_desktop]=false
+        component_description[opencode_desktop]="OpenCode Desktop"
+    fi
+    tool_items+=(amnezia_vpn 0dcloud_vpn host_shell workspace_repo)
 
     # Initialize tool items
     component_checked["vscode"]=false
@@ -699,6 +701,9 @@ check_component_status() {
                 python3 "$SCRIPT_DIR/setup-components.py" tool-status wave
             fi
             ;;
+        opencode_desktop)
+            bash "$SCRIPT_DIR/opencode-desktop/install.sh" --status || echo 'needs check'
+            ;;
         amnezia_vpn)
             if [ -n "$WSL_DISTRO_NAME" ] || grep -qi microsoft /proc/version 2>/dev/null; then
                 if windows_file_exists "C:\\Program Files\\AmneziaVPN\\AmneziaVPN.exe" ||
@@ -811,7 +816,7 @@ refresh_component_statuses() {
 
 uninstall_component() {
     local item="$1" removal_status=0
-    if is_wsl_windows && [[ "$item" =~ ^(vscode|warp|wave|amnezia_vpn|0dcloud_vpn)$ ]]; then
+    if is_wsl_windows && [[ "$item" =~ ^(vscode|warp|wave|amnezia_vpn|0dcloud_vpn|opencode_desktop)$ ]]; then
         local target="$item"
         [[ "$item" != amnezia_vpn ]] || target=amnezia
         [[ "$item" != 0dcloud_vpn ]] || target=0dcloud
@@ -2551,6 +2556,13 @@ process_selections() {
                 echo -e "${BOLD}${CYAN}▶ Installing: $desc${NC}"
 
                 case "$item" in
+                    opencode_desktop)
+                        if bash "$script_dir/setup-windows-tools.sh" opencode_desktop; then
+                            ((success_count++))
+                        else
+                            failed_components[$active_component]=true; ((fail_count++))
+                        fi
+                        ;;
                     vscode)
                         # Check if running in WSL
                         if [ -n "$WSL_DISTRO_NAME" ] || grep -qi microsoft /proc/version 2>/dev/null; then

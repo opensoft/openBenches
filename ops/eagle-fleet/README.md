@@ -17,8 +17,9 @@ answers and connects to validated numeric addresses. Fork approval and protected
 environment approval remain GitHub's existing controls. Containers share Eagle's
 kernel; this architecture does not provide a VM boundary.
 
-One fleet worker runs at a time, with an 8 GiB backend limit and four CPUs.
-Admission requires 10 GiB of Linux MemAvailable. No bench is stopped or restarted.
+The primary controller runs one worker with an 8 GiB backend limit and four CPUs.
+Its admission requires 10 GiB of Linux MemAvailable. An optional second Ubuntu 24
+slot uses the same qualified images and profiles. No bench is stopped or restarted.
 The host enforces a 7.5-hour job deadline independently of code running inside
 the sandbox; GitHub's original job timeout still applies. A root-owned pre-job
 hook waits for the Windows controller to persist that deadline before any service
@@ -68,3 +69,33 @@ a unique immutable tag before rebuilding the convenience tag; Docker Desktop
 may discard the old index when its last tag is replaced. Verify the new digest,
 qualify its tools and transport, then atomically change the host configuration.
 Existing disposable workers finish on their original imported image.
+
+## Optional second Ubuntu 24 slot
+
+`parallel.py` and `Watch-Parallel.ps1` add one worker without restarting the primary.
+Set the host-local `parallel_capacity` object to `{"enabled":true,"ubuntu24_workers":2}`.
+Its optional `host_disk_roots` list must include the actual disks backing the host
+and Docker when they differ from the service drive; keep these machine paths in
+host-local configuration outside Git. The default checks the service drive.
+Preserve every existing pool, profile and image pin. This does not restore removed
+profiles, expand repository access, or change the separate .NET pilot.
+
+Before each sandbox, the second slot requires 18 GiB Linux MemAvailable (or the
+configured primary reserve plus 8 GiB, whichever is larger), 12 GiB Windows physical
+memory available, 80 GiB free on every configured host disk and Docker's filesystem,
+at least 16 logical CPUs, and measured CPU utilization plus four CPUs below 80%.
+Engine/guard identities, including incomplete creates, reserve capacity; two is
+the maximum. Pressure pauses new work and never cancels an assigned job. Measurements
+fail closed. These are admission reserves, not guarantees against unrelated future
+host resource consumption. The existing primary keeps its original admission policy.
+
+Run the new watcher using native PowerShell 7, an explicit Python executable, and
+a separate current-user interactive AtLogon task with MultipleInstances IgnoreNew.
+It reads the existing same-user DPAPI file; do not copy credentials or put them in
+arguments. State, logs and an exclusive lock live in `slots/ubuntu24-2`. The primary
+journal is untouched. Recovery precedes admission and drain checks. Put `STOP` in
+that slot directory to drain only the second slot; service-root `STOP` drains both.
+To resume, remove STOP, enable the setting and start the task. Disable the setting
+after draining to retain a one-worker configuration. Do not forcibly end the task
+or stop its engine to resize capacity. Acceptance requires actual overlapping
+GitHub jobs on distinct runner names and successful per-job cleanup.

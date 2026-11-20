@@ -174,3 +174,64 @@ label array. The transformer now preserves such structured expressions and
 the audit flags them for owning-provider review instead of treating arrays as
 scalar map keys. Known generated scalar mappings still upgrade idempotently.
 All 38 fleet tests pass, including structured-selector preservation/audit cases.
+
+
+## Second Ubuntu 24 slot — 2026-11-20
+
+User authorization: increase Ubuntu 24 CI capacity, check resources and preserve
+active jobs; no application deployment or merge. The canonical controller/backend
+matched the installed host source before editing. The existing primary task and
+.NET pilot task were preserved. Added `Eagle Ubuntu 24 parallel worker`, a current-user
+interactive logon task using native PowerShell 7, a separate mutex, process lock,
+state and log, and the existing host-only DPAPI authentication. No bench, WSL,
+Docker, image, repository access or workflow restart/change was required.
+
+Activation at 18:46:27 UTC: Windows 32 logical CPUs, available physical memory
+16,324,603,904 bytes, CPU 43.55%; Linux MemAvailable 47,084,433,408 bytes;
+Docker free 421,542,559,744 bytes; minimum configured Windows disk free
+257,447,845,888 bytes. Host total physical memory is 119,880,355,840 bytes.
+Admission reserves the full 8 GiB additional backend plus at least 4 GiB Windows
+and 10 GiB Linux headroom, four CPU capacity below 80% sampled CPU utilization,
+80 GiB disk headroom and no more than two regular fleet sandboxes. Pressure
+pauses new admissions and never cancels an assigned job. The primary retains its
+existing admission policy; the additional slot only uses existing Ubuntu 24 profiles.
+
+Validation: 50 fleet unit tests passed in py-bench, including 12 added capacity,
+resource pressure, profile preservation, drain and primary-journal preservation
+tests. All 32 Windows runtime tests (controller, backend, proxy and parallel)
+passed. The Windows all-tests command could not load the routing tests because
+PyYAML is absent there; those tests passed in the Linux bench. PowerShell watcher
+syntax parsed without errors; strict OpenSpec validation and git diff --check passed.
+The running primary job was verified before activation and again afterward on
+`eagle-fleet-969a4c8f3ed1`: Tenant run 44783182170 / job 136450984527.
+
+Live overlap was verified at approximately 18:54 UTC. GitHub reported both runners
+online and busy in group 11 (`Eagle Linux`), with both exact jobs `in_progress`:
+
+- Existing `platform-validate`: [44783182170 / 136450984527](https://github.com/opensoft/Opensoft-Tenant/actions/runs/44783182170/job/136450984527), runner `eagle-fleet-969a4c8f3ed1` (ID 3322), started 18:39:12 UTC.
+- Additional `validate`: [44669943383 / 136068233161](https://github.com/opensoft/Opensoft-Tenant/actions/runs/44669943383/job/136068233161), runner `eagle-fleet-fd8427d3ac05` (ID 3325), started 18:53:58 UTC.
+
+The new runner reports Ubuntu 24.04.5 LTS. Both backend resource limits read back
+8,589,934,592 bytes and 4,000,000,000 NanoCPUs. The new backend has no host bind
+mounts or published ports and `Privileged=false`, `User=rootless`. Both controller
+locks were proven exclusive without changing either journal. The installed source
+hashes matched the reviewed files, and original configuration objects (profiles,
+pools and image pins) were unchanged. Admission with two existing sandboxes
+returned `allowed=false`, `reason=worker-limit`. At that sample, Windows available
+physical memory was 14,515,978,240 bytes; Linux MemAvailable 44,946,595,840 bytes;
+Docker free 414,282,059,776 bytes. The separate .NET pilot remained running.
+
+The additional `validate` job completed successfully at 19:02:06 UTC (8m08s).
+The controller observed exact listener exit with code 0 at 19:02:22 and recorded
+`cleanup-verified` at 19:02:42. Independent readback at 19:02:57 verified the exact
+runner registration, engine, guard and both captured private volumes absent, and
+secondary state `ready`. At that same readback the original platform job remained
+`in_progress` on its unchanged runner, started at 18:39:12. No assigned job was
+cancelled or moved. The second task remains enabled for demand-driven replenishment.
+
+Host-local activation backup, scheduled-task export, installation hashes, overlap
+readback and independent cleanup receipt are preserved under
+the host-local capacity evidence directory (`$FLEET_CAPACITY_EVIDENCE`). No credentials were copied
+into that evidence directory. No application deployment, merge or workflow dispatch
+was performed for this capacity acceptance. Source publication is a separate review step; this acceptance did not
+merge or deploy application changes.

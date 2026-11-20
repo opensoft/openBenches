@@ -51,3 +51,13 @@ The system SHALL bound aggregate execution resources, preserve busy jobs on cont
 
 - **WHEN** the controller restarts while a job is active
 - **THEN** it preserves that job and reconciles exact resources before dispatching another worker.
+
+#### Scenario: Ubuntu 24 jobs overlap within host headroom
+
+- **WHEN** multiple compatible Ubuntu 24 CI jobs are queued and Windows, Linux, CPU and disk admission checks permit a second worker
+- **THEN** at most two regular Ubuntu workers execute concurrently, each with its own disposable backend and ownership journal, while existing assigned jobs continue.
+
+#### Scenario: Headroom falls while a worker is active
+
+- **WHEN** available memory, CPU or disk falls below the admission reserve
+- **THEN** new provisioning pauses and the assigned job is preserved until its normal completion or existing job deadline.

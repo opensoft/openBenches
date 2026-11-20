@@ -123,7 +123,7 @@ def validate_pool(pool):
         {r['full_name'].lower() for r in repos} != {r.lower() for r in pool['repositories']}):
         raise RuntimeError('Runner group scope drift')
 
-def execute(candidate,config):
+def execute(candidate,config,drain_requested=None):
     _,pool,profile,repo,run,job=candidate
     validate_pool(pool)
     # Validation cannot create a job sandbox. Persist uncertain-create state only
@@ -143,7 +143,7 @@ def execute(candidate,config):
     state['phase']='preparing';save(state)
     backend.prepare(state['engine'],profile['image'],address,state['runner'])
     pending=api(f'repos/{repo}/actions/jobs/{job}')
-    if (ROOT/'STOP').exists() or pending['status']!='queued':
+    if (ROOT/'STOP').exists() or (drain_requested is not None and drain_requested()) or pending['status']!='queued':
         state['listener_stopped']=True;save(state)
         if not retire(state): raise RuntimeError('Unexpected assignment before listener start')
         cleanup(state)

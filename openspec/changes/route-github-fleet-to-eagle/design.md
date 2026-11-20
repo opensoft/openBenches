@@ -22,3 +22,35 @@ Container jobs differ from hosted VMs: swap, host sysctl, KVM, systemd, native W
 ## Rollback
 
 Retain old selectors and exact blob/head identities in the migration manifest. Revert routing PRs and disable only fleet-owned registrations/groups. Drain active jobs and preserve benches. Never restart shared Docker/WSL to complete migration.
+
+
+## Ubuntu 24 parallel capacity amendment — 2026-11-20
+
+Brett Heap authorized increasing Eagle Ubuntu 24 capacity, checking available
+resources and preserving active jobs, with no application deployment or merge.
+Start conservatively with two regular Ubuntu workers in total: the existing
+controller and one additional persistent slot. Each retains its qualified
+immutable image, private rootless backend, four CPUs and 8 GiB limit. The
+specialized .NET worker remains separate and is included in host headroom.
+
+The second slot has its own process lock, state, log and uncertain-create
+journal. It reuses the existing executor and exact-listener recovery rules.
+It never takes over or rewrites the primary slot's state. Global STOP applies
+to both slots; a slot-local STOP drains only the additional slot. Draining
+preserves an accepted job and waits for the exact listener to exit before
+unregistration and private-resource cleanup.
+
+Before each new worker, require its full 8 GiB allocation plus 10 GiB Linux
+memory reserve and 4 GiB Windows memory reserve, sufficient host and Docker
+backing-store free space, CPU headroom, and fewer than two existing fleet
+sandboxes (including guards and uncertain creations). Recheck pressure for
+each admission; when headroom is short, pause replenishment without killing
+an active worker. Provision only profiles already qualified for Ubuntu 24.
+No repository routing, approval, permission, image or test requirement is
+broadened by this capacity change.
+
+Acceptance requires actual overlapping GitHub jobs on distinct Ubuntu 24
+runner identities, preservation of the previously active job, correct
+resource limits and per-job cleanup. Unit tests alone do not establish live
+parallel capacity. The additional logon task is additive; no bench, Docker,
+WSL or active primary controller restart is required.

@@ -18,8 +18,10 @@ environment approval remain GitHub's existing controls. Containers share Eagle's
 kernel; this architecture does not provide a VM boundary.
 
 The primary controller runs one worker with an 8 GiB backend limit and four CPUs.
-Its admission requires 10 GiB of Linux MemAvailable. An optional second Ubuntu 24
-slot uses the same qualified images and profiles. No bench is stopped or restarted.
+Its legacy admission requires 10 GiB of Linux MemAvailable. With parallel capacity
+enabled, primary admission reserves its full 8 GiB allocation plus at least 10 GiB
+Linux headroom. An optional second Ubuntu 24 slot uses the same qualified images
+and profiles. No bench is stopped or restarted.
 The host enforces a 7.5-hour job deadline independently of code running inside
 the sandbox; GitHub's original job timeout still applies. A root-owned pre-job
 hook waits for the Windows controller to persist that deadline before any service
@@ -48,8 +50,11 @@ removing STOP and starting the scheduled task. Recover a stale create by first
 inspecting the exact journaled names and GitHub assignment. Never use global
 Docker prune, WSL shutdown or a Docker restart as runner cleanup.
 
-Validation: `python -m unittest discover -s . -p 'test_*.py'` on Windows;
-`python3 -m unittest discover -s . -p test_routing.py` in the Python bench.
+Validation from this directory: `python -m unittest test_controller test_backend
+test_proxy test_parallel` covers the Windows runtime. The full suite,
+`python -m unittest discover -s . -p 'test_*.py'`, also requires PyYAML.
+The Eagle fleet pull-request workflow runs the full suite on Ubuntu 24 and parses
+both Windows watcher scripts; native Windows tests remain a separate check.
 The local compatibility probe proved nonroot execution, sudo, a user-namespace
 UID mapping, private rootless Docker, container-action workspace roundtrip,
 localhost service connectivity, public HTTPS/apt and Bubblewrap. Private-address
@@ -80,14 +85,19 @@ host-local configuration outside Git. The default checks the service drive.
 Preserve every existing pool, profile and image pin. This does not restore removed
 profiles, expand repository access, or change the separate .NET pilot.
 
-Before each sandbox, the second slot requires 18 GiB Linux MemAvailable (or the
-configured primary reserve plus 8 GiB, whichever is larger), 12 GiB Windows physical
+Before each sandbox, the second slot reserves both full 8 GiB worker allocations,
+including an empty or partly loaded primary: 26 GiB Linux MemAvailable (or the
+configured primary reserve plus 16 GiB, whichever is larger), 20 GiB Windows physical
 memory available, 80 GiB free on every configured host disk and Docker's filesystem,
 at least 16 logical CPUs, and measured CPU utilization plus four CPUs below 80%.
 Engine/guard identities, including incomplete creates, reserve capacity; two is
-the maximum. Pressure pauses new work and never cancels an assigned job. Measurements
+the maximum. Both controllers exclude jobs in active peer journals. A shared
+dispatch lock protects the final job reservation before creating a guard, so
+simultaneous scans cannot prepare two workers for the same queued job. The
+reservation remains until that slot has completed verified cleanup. Pressure pauses new work and never cancels an assigned job. Measurements
 fail closed. These are admission reserves, not guarantees against unrelated future
-host resource consumption. The existing primary keeps its original admission policy.
+host resource consumption. These conservative checks may defer a second worker
+even when a partly loaded primary currently uses less than its allocation.
 
 Run the new watcher using native PowerShell 7, an explicit Python executable, and
 a separate current-user interactive AtLogon task with MultipleInstances IgnoreNew.

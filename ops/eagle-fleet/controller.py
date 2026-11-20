@@ -1,5 +1,6 @@
 """One-job fleet controller. Host auth never enters a job container."""
 import datetime
+from contextlib import contextmanager
 import concurrent.futures
 import json
 import os
@@ -82,11 +83,43 @@ def cleanup(state):
     if any(r['name']==state['runner'] for r in registrations(state)): raise RuntimeError('Registration remains')
     event('cleanup-verified',runner=state['runner']);save(dict(phase='ready'))
 
+@contextmanager
+def dispatch_lock():
+    # Both processes serialize the final journal reservation, not job execution.
+    with (ROOT/'dispatch.lock').open('a+b') as lock:
+        if lock.tell()==0: lock.write(b'0');lock.flush()
+        lock.seek(0)
+        if os.name=='nt':
+            import msvcrt
+            msvcrt.locking(lock.fileno(),msvcrt.LK_LOCK,1)
+            try: yield
+            finally:
+                lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_UNLCK,1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(),fcntl.LOCK_EX)
+            try: yield
+            finally: fcntl.flock(lock.fileno(),fcntl.LOCK_UN)
+
+def reserved_jobs():
+    result=set()
+    for path in [ROOT/'state.json', *sorted((ROOT/'slots').glob('*/state.json'))]:
+        if not path.exists(): continue
+        state=json.loads(path.read_text())
+        if state.get('phase')=='ready': continue
+        # Missing/corrupt identities fail closed rather than risking a duplicate.
+        result.add((state['repository'].lower(),state['job_id']))
+    return result
+
 def available(config):
     # Linux /proc includes cache; MemAvailable is the reclaimable capacity measure.
     result=backend.call(['docker','exec','eagle-fleet-proxy','cat','/proc/meminfo'])
     values={line.split(':')[0]:int(line.split()[1])*1024 for line in result.stdout.splitlines() if ':' in line}
-    return values['MemAvailable'] >= config['minimum_available_bytes']
+    reserve=config['minimum_available_bytes']
+    settings=config.get('parallel_capacity',{})
+    if settings.get('enabled') is True and settings.get('ubuntu24_workers')==2:
+        reserve=max(reserve,10*1024**3)+8*1024**3
+    return values['MemAvailable'] >= reserve
 
 def queued(config):
     def scan(item):
@@ -111,7 +144,9 @@ def queued(config):
             return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         results=list(executor.map(scan,[(pool,repo) for pool in config['pools'] for repo in pool.get('scan_repositories',pool['repositories'])]))
-    candidates=[candidate for result in results for candidate in result]
+    reserved=reserved_jobs()
+    candidates=[candidate for result in results for candidate in result
+                if (candidate[3].lower(),candidate[5]) not in reserved]
     return min(candidates,key=lambda c:c[0]) if candidates else None
 
 def validate_pool(pool):
@@ -135,7 +170,13 @@ def execute(candidate,config,drain_requested=None):
                created=time.time(),deadline=None,job_assigned=False,
                maximum_job_seconds=config['maximum_lifetime_seconds'],
                repository=repo,run_id=run,job_id=job)
-    save(state);event('creating',runner=state['runner'],repository=repo,job=job)
+    with dispatch_lock():
+        # Another controller may have selected this job during our API checks.
+        if (repo.lower(),job) in reserved_jobs():
+            event('job-already-reserved',repository=repo,job=job)
+            return
+        save(state)
+    event('creating',runner=state['runner'],repository=repo,job=job)
     def before_engine():
         state['phase']='creating-engine';save(state)
     backend.create(state['guard'],state['engine'],address,config['gateway_image'],

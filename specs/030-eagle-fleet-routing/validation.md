@@ -235,3 +235,33 @@ the host-local capacity evidence directory (`$FLEET_CAPACITY_EVIDENCE`). No cred
 into that evidence directory. No application deployment, merge or workflow dispatch
 was performed for this capacity acceptance. Source publication is a separate review step; this acceptance did not
 merge or deploy application changes.
+
+
+## PR #336 local review follow-up — 2026-11-20
+
+Local Codex CLI review used the current desktop ChatGPT account, configured model
+`gpt-6.1-sol` with high reasoning, against base `265d0bb` and head `be59e9d`.
+It reported two P2 findings: empty-fleet admission did not reserve the primary's
+outstanding allocation, and independent scans could select the same oldest queued
+job. The initial read-only reviewer ran 30 tests but could not run temporary-directory
+tests or routing tests because of sandbox restrictions and missing PyYAML.
+
+Fixes reserve both full worker budgets for secondary admission (26 GiB Linux,
+20 GiB Windows), add the primary's own budget to its Linux admission when parallel
+capacity is enabled, filter jobs reserved by peer journals, and atomically recheck
+and reserve a job under a shared dispatch lock before guard creation. Regression
+tests cover empty-fleet boundaries, primary memory reserve, peer-journal filtering,
+simultaneous preselection of one job and corrupt-journal refusal. The host's running
+source and configuration were not changed during this review follow-up.
+
+The original PR had no fleet CI run because existing workflow path filters did not
+cover `ops/eagle-fleet/**`. A read-only pull-request workflow now runs the full suite
+and parses both PowerShell watchers on the existing Ubuntu 24 route. It does not
+cancel in-progress jobs, build or publish images, change host configuration, deploy
+or merge. Local tests, final review and exact-head CI results are recorded below.
+
+The review fixes pass 55 fleet tests in py-bench and 37 native Windows runtime
+tests. Actionlint, watcher parsing, strict OpenSpec validation and git diff --check
+pass. Final local review and the GitHub Actions result are tracked on PR #336 for
+the published head; the earlier live acceptance is historical evidence for the
+previous installed source, not live acceptance of these unactivated fixes.

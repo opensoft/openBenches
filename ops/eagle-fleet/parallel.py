@@ -78,9 +78,11 @@ def admission(config, windows, linux, count):
     if not 0 <= windows['cpu_percent'] <= 100 or min(windows['cpus'], linux['cpus']) < 1:
         raise ValueError('Invalid CPU resources')
     if count >= 2: return False, 'worker-limit'
-    # Fixed conservative floors cannot be weakened by mutable local settings.
-    if windows['available'] < 12 * GIB: return False, 'windows-memory'
-    if linux['available'] < max(10 * GIB, config['minimum_available_bytes']) + 8 * GIB:
+    # Reserve both full worker budgets, including an empty or partly loaded
+    # primary. Conservative double counting avoids relying on reclaimable cache
+    # or an uncommitted peer allocation. Floors cannot be weakened by settings.
+    if windows['available'] < 20 * GIB: return False, 'windows-memory'
+    if linux['available'] < max(10 * GIB, config['minimum_available_bytes']) + 16 * GIB:
         return False, 'linux-memory'
     cpus = min(windows['cpus'], linux['cpus'])
     if cpus < 16 or windows['cpu_percent'] + 400 / cpus > 80:

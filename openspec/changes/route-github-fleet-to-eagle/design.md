@@ -40,8 +40,8 @@ to both slots; a slot-local STOP drains only the additional slot. Draining
 preserves an accepted job and waits for the exact listener to exit before
 unregistration and private-resource cleanup.
 
-Before each new worker, require its full 8 GiB allocation plus 10 GiB Linux
-memory reserve and 4 GiB Windows memory reserve, sufficient host and Docker
+Before each second-slot worker, reserve both full 8 GiB allocations plus 10 GiB
+Linux memory reserve and 4 GiB Windows memory reserve, sufficient host and Docker
 backing-store free space, CPU headroom, and fewer than two existing fleet
 sandboxes (including guards and uncertain creations). Recheck pressure for
 each admission; when headroom is short, pause replenishment without killing
@@ -54,3 +54,25 @@ runner identities, preservation of the previously active job, correct
 resource limits and per-job cleanup. Unit tests alone do not establish live
 parallel capacity. The additional logon task is additive; no bench, Docker,
 WSL or active primary controller restart is required.
+
+### PR review and CI follow-up
+
+PR #336 is stacked on #208. Its fleet paths were absent from existing CI path
+filters, so changes need a dedicated pull-request regression workflow. It runs
+only tests and watcher syntax validation on the existing Ubuntu 24 route, with
+read-only repository permissions and no deployment, publishing or host mutation.
+Do not cancel an in-progress validation job when a new head is pushed. Local
+Windows runtime tests remain a separate platform check. Review fixes are source
+changes only until a subsequent activation is authorized.
+
+The local Codex review identified empty-fleet memory overcommit and duplicate
+oldest-job selection. The second slot now reserves both full worker allocations
+(26 GiB Linux/20 GiB Windows thresholds), including any outstanding primary budget.
+While parallel capacity is enabled, primary Linux admission also reserves its own
+full allocation plus the configured reserve. Both controllers exclude active peer
+journal job identities; an exclusive shared dispatch lock rechecks and journals the
+chosen identity immediately before any guard creation. API validation and job
+execution occur outside this short lock. A simultaneous duplicate selection returns
+without creating a sandbox. Invalid peer journals fail closed, and only verified
+cleanup releases a reservation by changing its journal to ready. These fixes are
+source-only and have not been activated on the running host.

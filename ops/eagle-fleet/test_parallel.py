@@ -19,8 +19,8 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(self.allowed(), (True,'ready'))
     def test_each_reserve_rejects_new_work(self):
         for target,key,value,reason in [
-            ('windows','available',11*parallel.GIB,'windows-memory'),
-            ('linux','available',17*parallel.GIB,'linux-memory'),
+            ('windows','available',19*parallel.GIB,'windows-memory'),
+            ('linux','available',25*parallel.GIB,'linux-memory'),
             ('windows','cpu_percent',70,'cpu-reserve'),
             ('linux','cpus',8,'cpu-reserve'),
             ('windows','disk_free',79*parallel.GIB,'disk-reserve'),
@@ -29,6 +29,16 @@ class CapacityTests(unittest.TestCase):
                 values=getattr(self,target);old=values[key];values[key]=value
                 self.assertEqual(self.allowed(),(False,reason));values[key]=old
         self.assertEqual(self.allowed(2),(False,'worker-limit'))
+    def test_empty_fleet_reserves_both_full_allocations(self):
+        self.windows['available']=20*parallel.GIB
+        self.linux['available']=26*parallel.GIB
+        for count in (0,1):
+            self.assertEqual(self.allowed(count),(True,'ready'))
+        self.linux['available']=18*parallel.GIB
+        self.assertEqual(self.allowed(0),(False,'linux-memory'))
+        self.linux['available']=26*parallel.GIB
+        self.windows['available']=12*parallel.GIB
+        self.assertEqual(self.allowed(0),(False,'windows-memory'))
     def test_larger_primary_memory_reserve_is_honored(self):
         self.config['minimum_available_bytes']=40*parallel.GIB
         self.assertEqual(self.allowed(),(False,'linux-memory'))
@@ -85,7 +95,7 @@ class CapacityTests(unittest.TestCase):
         config=dict(gateway_image='gateway',backend_image='backend',memory_limit='8g',maximum_lifetime_seconds=100)
         candidate=(None,dict(organization='example',group_id=11),dict(image='pinned'),'one/repo',1,2)
         with patch.object(controller,'validate_pool'),patch.object(controller.backend,'infrastructure'), \
-             patch.object(controller,'save'),patch.object(controller,'event'),patch.object(controller.backend,'create'), \
+             patch.object(controller,'save'),patch.object(controller,'event'),patch.object(controller,'dispatch_lock'),patch.object(controller,'reserved_jobs',return_value=set()),patch.object(controller.backend,'create'), \
              patch.object(controller.backend,'prepare'),patch.object(controller,'api',return_value={'status':'queued'}) as api, \
              patch.object(controller,'retire',return_value=True),patch.object(controller,'cleanup'):
             controller.execute(candidate,config,drain_requested=lambda:True)

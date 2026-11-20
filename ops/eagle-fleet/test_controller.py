@@ -1,4 +1,7 @@
 import unittest
+import json
+from pathlib import Path
+import tempfile
 from unittest.mock import patch,Mock
 import controller
 
@@ -58,6 +61,47 @@ class QueueTests(unittest.TestCase):
         with patch.object(controller.time,'time',return_value=50),patch.object(controller.backend,'inspect',return_value={'State':{'Running':True}}),patch.object(controller.backend,'inner',side_effect=command),patch.object(controller,'save',side_effect=lambda s:order.append('save')),patch.object(controller,'registrations',side_effect=RuntimeError('after ack')):
             with self.assertRaisesRegex(RuntimeError,'after ack'): controller.monitor(state)
         self.assertEqual(order[:2],['save','ack']);self.assertTrue(state['hook_acknowledged'])
+
+    def test_queue_excludes_another_slots_reserved_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'state.json').write_text(json.dumps(dict(
+                phase='preparing',repository='example/project',job_id=7)))
+            def api(path):
+                if '/jobs?' in path:return dict(jobs=[
+                    dict(id=7,status='queued',labels=['eagle-linux-ubuntu24']),
+                    dict(id=8,status='queued',labels=['eagle-linux-ubuntu24'])])
+                return dict(workflow_runs=[dict(id=3,created_at='2026-10-21T00:00:00Z')]) if 'status=queued' in path else dict(workflow_runs=[])
+            with patch.object(controller,'ROOT',root),patch.object(controller,'api',side_effect=api):
+                self.assertEqual(controller.queued(self.config())[-1],8)
+    def test_preselected_duplicate_is_rejected_before_container_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);secondary=root/'slots'/'ubuntu24-2';secondary.mkdir(parents=True)
+            config=dict(gateway_image='gateway',backend_image='backend',memory_limit='8g',maximum_lifetime_seconds=100)
+            candidate=(None,dict(organization='example',group_id=11),dict(image='pinned'),'example/project',1,7)
+            with patch.object(controller,'ROOT',root),patch.object(controller,'STATE',root/'state.json'), \
+                 patch.object(controller,'validate_pool'),patch.object(controller.backend,'infrastructure'), \
+                 patch.object(controller,'event'),patch.object(controller.backend,'create',side_effect=RuntimeError('after reservation')) as create:
+                with self.assertRaisesRegex(RuntimeError,'after reservation'):controller.execute(candidate,config)
+                # Simulate a second process having selected the same job before
+                # the first reservation. It must leave its own journal untouched.
+                with patch.object(controller,'STATE',secondary/'state.json'):
+                    controller.execute(candidate,config)
+                create.assert_called_once()
+                self.assertFalse((secondary/'state.json').exists())
+                self.assertEqual(json.loads((root/'state.json').read_text())['job_id'],7)
+    def test_bad_peer_journal_blocks_new_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'state.json').write_text('{bad')
+            with patch.object(controller,'ROOT',root):
+                with self.assertRaises(json.JSONDecodeError):controller.reserved_jobs()
+    def test_primary_preserves_linux_reserve_when_parallel_is_enabled(self):
+        config=dict(minimum_available_bytes=10*1024**3,parallel_capacity=dict(enabled=True,ubuntu24_workers=2))
+        for gib,expected in ((10,False),(17,False),(18,True)):
+            with self.subTest(gib=gib),patch.object(controller.backend,'call',return_value=Mock(stdout=f'MemAvailable: {gib*1024**2} kB')):
+                self.assertEqual(controller.available(config),expected)
+        config['parallel_capacity']['enabled']=False
+        with patch.object(controller.backend,'call',return_value=Mock(stdout='MemAvailable: 10485760 kB')):
+            self.assertTrue(controller.available(config))
 
     def test_get_retries_a_transient_cli_failure(self):
         with patch.object(controller.backend,'call',side_effect=[Mock(returncode=1),Mock(returncode=0,stdout='{"ok":true}')]) as call,patch.object(controller.time,'sleep'):

@@ -1,0 +1,47 @@
+name: Eagle fleet tests
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/eagle-fleet.yml
+      - ops/eagle-fleet/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eagle-fleet-scoped-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    runs-on: eagle-linux-ubuntu24-openbenches-fleet-tests
+    timeout-minutes: 15
+    steps:
+      - name: Check out pull-request head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install routing test dependency
+        run: python -m pip install PyYAML==6.0.2
+      - name: Run fleet regression tests
+        run: python -m unittest discover -s ops/eagle-fleet -p 'test_*.py'
+      - name: Parse Windows watchers
+        shell: pwsh
+        run: |
+          $files = @('ops/eagle-fleet/Watch-Fleet.ps1', 'ops/eagle-fleet/Watch-Parallel.ps1')
+          foreach ($file in $files) {
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $file), [ref]$null, [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors) {
+              $parseErrors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+          }

@@ -174,3 +174,108 @@ label array. The transformer now preserves such structured expressions and
 the audit flags them for owning-provider review instead of treating arrays as
 scalar map keys. Known generated scalar mappings still upgrade idempotently.
 All 38 fleet tests pass, including structured-selector preservation/audit cases.
+
+
+## Second Ubuntu 24 slot — 2026-11-20
+
+User authorization: increase Ubuntu 24 CI capacity, check resources and preserve
+active jobs; no application deployment or merge. The canonical controller/backend
+matched the installed host source before editing. The existing primary task and
+.NET pilot task were preserved. Added `Eagle Ubuntu 24 parallel worker`, a current-user
+interactive logon task using native PowerShell 7, a separate mutex, process lock,
+state and log, and the existing host-only DPAPI authentication. No bench, WSL,
+Docker, image, repository access or workflow restart/change was required.
+
+Activation at 18:46:27 UTC: Windows 32 logical CPUs, available physical memory
+16,324,603,904 bytes, CPU 43.55%; Linux MemAvailable 47,084,433,408 bytes;
+Docker free 421,542,559,744 bytes; minimum configured Windows disk free
+257,447,845,888 bytes. Host total physical memory is 119,880,355,840 bytes.
+Admission reserves the full 8 GiB additional backend plus at least 4 GiB Windows
+and 10 GiB Linux headroom, four CPU capacity below 80% sampled CPU utilization,
+80 GiB disk headroom and no more than two regular fleet sandboxes. Pressure
+pauses new admissions and never cancels an assigned job. The primary retains its
+existing admission policy; the additional slot only uses existing Ubuntu 24 profiles.
+
+Validation: 50 fleet unit tests passed in py-bench, including 12 added capacity,
+resource pressure, profile preservation, drain and primary-journal preservation
+tests. All 32 Windows runtime tests (controller, backend, proxy and parallel)
+passed. The Windows all-tests command could not load the routing tests because
+PyYAML is absent there; those tests passed in the Linux bench. PowerShell watcher
+syntax parsed without errors; strict OpenSpec validation and git diff --check passed.
+The running primary job was verified before activation and again afterward on
+`eagle-fleet-969a4c8f3ed1`: Tenant run 44783182170 / job 136450984527.
+
+Live overlap was verified at approximately 18:54 UTC. GitHub reported both runners
+online and busy in group 11 (`Eagle Linux`), with both exact jobs `in_progress`:
+
+- Existing `platform-validate`: [44783182170 / 136450984527](https://github.com/opensoft/Opensoft-Tenant/actions/runs/44783182170/job/136450984527), runner `eagle-fleet-969a4c8f3ed1` (ID 3322), started 18:39:12 UTC.
+- Additional `validate`: [44669943383 / 136068233161](https://github.com/opensoft/Opensoft-Tenant/actions/runs/44669943383/job/136068233161), runner `eagle-fleet-fd8427d3ac05` (ID 3325), started 18:53:58 UTC.
+
+The new runner reports Ubuntu 24.04.5 LTS. Both backend resource limits read back
+8,589,934,592 bytes and 4,000,000,000 NanoCPUs. The new backend has no host bind
+mounts or published ports and `Privileged=false`, `User=rootless`. Both controller
+locks were proven exclusive without changing either journal. The installed source
+hashes matched the reviewed files, and original configuration objects (profiles,
+pools and image pins) were unchanged. Admission with two existing sandboxes
+returned `allowed=false`, `reason=worker-limit`. At that sample, Windows available
+physical memory was 14,515,978,240 bytes; Linux MemAvailable 44,946,595,840 bytes;
+Docker free 414,282,059,776 bytes. The separate .NET pilot remained running.
+
+The additional `validate` job completed successfully at 19:02:06 UTC (8m08s).
+The controller observed exact listener exit with code 0 at 19:02:22 and recorded
+`cleanup-verified` at 19:02:42. Independent readback at 19:02:57 verified the exact
+runner registration, engine, guard and both captured private volumes absent, and
+secondary state `ready`. At that same readback the original platform job remained
+`in_progress` on its unchanged runner, started at 18:39:12. No assigned job was
+cancelled or moved. The second task remains enabled for demand-driven replenishment.
+
+Host-local activation backup, scheduled-task export, installation hashes, overlap
+readback and independent cleanup receipt are preserved under
+the host-local capacity evidence directory (`$FLEET_CAPACITY_EVIDENCE`). No credentials were copied
+into that evidence directory. No application deployment, merge or workflow dispatch
+was performed for this capacity acceptance. Source publication is a separate review step; this acceptance did not
+merge or deploy application changes.
+
+
+## PR #336 local review follow-up — 2026-11-20
+
+Local Codex CLI review used the current desktop ChatGPT account, configured model
+`gpt-6.1-sol` with high reasoning, against base `265d0bb` and head `be59e9d`.
+It reported two P2 findings: empty-fleet admission did not reserve the primary's
+outstanding allocation, and independent scans could select the same oldest queued
+job. The initial read-only reviewer ran 30 tests but could not run temporary-directory
+tests or routing tests because of sandbox restrictions and missing PyYAML.
+
+Fixes reserve both full worker budgets for secondary admission (26 GiB Linux,
+20 GiB Windows), add the primary's own budget to its Linux admission when parallel
+capacity is enabled, filter jobs reserved by peer journals, and atomically recheck
+and reserve a job under a shared dispatch lock before guard creation. Regression
+tests cover empty-fleet boundaries, primary memory reserve, peer-journal filtering,
+simultaneous preselection of one job and corrupt-journal refusal. The host's running
+source and configuration were not changed during this review follow-up.
+
+The original PR had no fleet CI run because existing workflow path filters did not
+cover `ops/eagle-fleet/**`. A read-only pull-request workflow now runs the full suite
+and parses both PowerShell watchers on the existing Ubuntu 24 route. It does not
+cancel in-progress jobs, build or publish images, change host configuration, deploy
+or merge. Local tests, final review and exact-head CI results are recorded below.
+
+The review fixes pass 55 fleet tests in py-bench and 37 native Windows runtime
+tests. Actionlint, watcher parsing, strict OpenSpec validation and git diff --check
+pass. Final local review and the GitHub Actions result are tracked on PR #336 for
+the published head; the earlier live acceptance is historical evidence for the
+previous installed source, not live acceptance of these unactivated fixes.
+
+
+## Authorized scoped CI route — 2026-11-20
+
+The user explicitly authorized applying the scoped route and getting PR #336 CI
+green, preserving active jobs with no application deployment or merge. On live
+readback, generic profiles and the full owning scan list (including openBenches)
+had already been restored outside this task. The activation preserved those edits,
+all pool/access settings and image pins, and added the dedicated fleet-test profile
+plus its label on the already-qualified generic Ubuntu 24 profile. A host-local
+backup, before-state snapshots and configuration hashes record the additive change.
+No controller restart or activation of source-only scheduler fixes was performed.
+The workflow now requests the dedicated label; current-head review and CI results
+are tracked on PR #336.

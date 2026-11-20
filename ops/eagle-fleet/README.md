@@ -17,8 +17,11 @@ answers and connects to validated numeric addresses. Fork approval and protected
 environment approval remain GitHub's existing controls. Containers share Eagle's
 kernel; this architecture does not provide a VM boundary.
 
-One fleet worker runs at a time, with an 8 GiB backend limit and four CPUs.
-Admission requires 10 GiB of Linux MemAvailable. No bench is stopped or restarted.
+The primary controller runs one worker with an 8 GiB backend limit and four CPUs.
+Its legacy admission requires 10 GiB of Linux MemAvailable. With parallel capacity
+enabled, primary admission reserves its full 8 GiB allocation plus at least 10 GiB
+Linux headroom. An optional second Ubuntu 24 slot uses the same qualified images
+and profiles. No bench is stopped or restarted.
 The host enforces a 7.5-hour job deadline independently of code running inside
 the sandbox; GitHub's original job timeout still applies. A root-owned pre-job
 hook waits for the Windows controller to persist that deadline before any service
@@ -47,8 +50,11 @@ removing STOP and starting the scheduled task. Recover a stale create by first
 inspecting the exact journaled names and GitHub assignment. Never use global
 Docker prune, WSL shutdown or a Docker restart as runner cleanup.
 
-Validation: `python -m unittest discover -s . -p 'test_*.py'` on Windows;
-`python3 -m unittest discover -s . -p test_routing.py` in the Python bench.
+Validation from this directory: `python -m unittest test_controller test_backend
+test_proxy test_parallel` covers the Windows runtime. The full suite,
+`python -m unittest discover -s . -p 'test_*.py'`, also requires PyYAML.
+The Eagle fleet pull-request workflow runs the full suite on Ubuntu 24 and parses
+both Windows watcher scripts; native Windows tests remain a separate check.
 The local compatibility probe proved nonroot execution, sudo, a user-namespace
 UID mapping, private rootless Docker, container-action workspace roundtrip,
 localhost service connectivity, public HTTPS/apt and Bubblewrap. Private-address
@@ -68,3 +74,45 @@ a unique immutable tag before rebuilding the convenience tag; Docker Desktop
 may discard the old index when its last tag is replaced. Verify the new digest,
 qualify its tools and transport, then atomically change the host configuration.
 Existing disposable workers finish on their original imported image.
+
+## Optional second Ubuntu 24 slot
+
+`parallel.py` and `Watch-Parallel.ps1` add one worker without restarting the primary.
+Set the host-local `parallel_capacity` object to `{"enabled":true,"ubuntu24_workers":2}`.
+Its optional `host_disk_roots` list must include the actual disks backing the host
+and Docker when they differ from the service drive; keep these machine paths in
+host-local configuration outside Git. The default checks the service drive.
+Preserve every existing pool, profile and image pin. This does not restore removed
+profiles, expand repository access, or change the separate .NET pilot.
+
+Before each sandbox, the second slot reserves both full 8 GiB worker allocations,
+including an empty or partly loaded primary: 26 GiB Linux MemAvailable (or the
+configured primary reserve plus 16 GiB, whichever is larger), 20 GiB Windows physical
+memory available, 80 GiB free on every configured host disk and Docker's filesystem,
+at least 16 logical CPUs, and measured CPU utilization plus four CPUs below 80%.
+Engine/guard identities, including incomplete creates, reserve capacity; two is
+the maximum. Both controllers exclude jobs in active peer journals. A shared
+dispatch lock protects the final job reservation before creating a guard, so
+simultaneous scans cannot prepare two workers for the same queued job. The
+reservation remains until that slot has completed verified cleanup. Pressure pauses new work and never cancels an assigned job. Measurements
+fail closed. These are admission reserves, not guarantees against unrelated future
+host resource consumption. These conservative checks may defer a second worker
+even when a partly loaded primary currently uses less than its allocation.
+
+Run the new watcher using native PowerShell 7, an explicit Python executable, and
+a separate current-user interactive AtLogon task with MultipleInstances IgnoreNew.
+It reads the existing same-user DPAPI file; do not copy credentials or put them in
+arguments. State, logs and an exclusive lock live in `slots/ubuntu24-2`. The primary
+journal is untouched. Recovery precedes admission and drain checks. Put `STOP` in
+that slot directory to drain only the second slot; service-root `STOP` drains both.
+To resume, remove STOP, enable the setting and start the task. Disable the setting
+after draining to retain a one-worker configuration. Do not forcibly end the task
+or stop its engine to resize capacity. Acceptance requires actual overlapping
+GitHub jobs on distinct runner names and successful per-job cleanup.
+
+The fleet-test workflow uses `eagle-linux-ubuntu24-openbenches-fleet-tests`.
+Provision that label with the existing qualified Ubuntu 24 image and include
+`opensoft/openBenches` in the owning pool's scan list. A qualified generic Ubuntu
+24 profile may offer the same dedicated label in addition to its existing labels.
+Preserve existing routes and resource limits; configuration reloads between jobs
+without interrupting assigned work. This route enables tests only.

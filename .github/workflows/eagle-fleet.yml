@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: eagle-fleet-tests-${{ github.event.pull_request.number }}
+  group: eagle-fleet-scoped-tests-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   regression:
-    runs-on: eagle-linux-ubuntu24
+    runs-on: eagle-linux-ubuntu24-openbenches-fleet-tests
     timeout-minutes: 15
     steps:
       - name: Check out pull-request head

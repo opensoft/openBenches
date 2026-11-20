@@ -3,3 +3,4 @@ self-hosted-runner:
     - eagle-linux-ubuntu24
     - eagle-linux-ubuntu22
     - eagle-linux-host-admin
+    - eagle-linux-ubuntu24-openbenches-fleet-tests

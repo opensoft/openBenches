@@ -76,3 +76,20 @@ execution occur outside this short lock. A simultaneous duplicate selection retu
 without creating a sandbox. Invalid peer journals fail closed, and only verified
 cleanup releases a reservation by changing its journal to ready. These fixes are
 source-only and have not been activated on the running host.
+
+### Authorized dedicated fleet-test routing
+
+Brett Heap authorized applying the scoped Eagle route so PR #336 can pass CI,
+while preserving active jobs and prohibiting application deployment or merge.
+The workflow requests `eagle-linux-ubuntu24-openbenches-fleet-tests`. Host-local
+configuration maps that label to the already-qualified Ubuntu 24 image. When a
+qualified generic Ubuntu 24 profile already exists, it also offers the dedicated
+label so its next disposable worker can accept the test job. Preserve all existing
+labels, image pins, pool access, scan entries and resource limits. Add the owning
+repository to scanning only if absent; never overwrite concurrent routing edits.
+Configuration is reloaded between jobs; this routing change requires no controller
+restart or activation of the source-only admission and reservation fixes.
+
+The dedicated route uses a separate stable pull-request concurrency namespace so
+an older generic-route run cannot hold its slot. In-progress cancellation remains
+disabled; no old run or assigned job is cancelled to perform this migration.

@@ -109,3 +109,10 @@ To resume, remove STOP, enable the setting and start the task. Disable the setti
 after draining to retain a one-worker configuration. Do not forcibly end the task
 or stop its engine to resize capacity. Acceptance requires actual overlapping
 GitHub jobs on distinct runner names and successful per-job cleanup.
+
+The fleet-test workflow uses `eagle-linux-ubuntu24-openbenches-fleet-tests`.
+Provision that label with the existing qualified Ubuntu 24 image and include
+`opensoft/openBenches` in the owning pool's scan list. A qualified generic Ubuntu
+24 profile may offer the same dedicated label in addition to its existing labels.
+Preserve existing routes and resource limits; configuration reloads between jobs
+without interrupting assigned work. This route enables tests only.

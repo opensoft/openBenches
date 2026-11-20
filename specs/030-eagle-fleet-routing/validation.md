@@ -265,3 +265,17 @@ tests. Actionlint, watcher parsing, strict OpenSpec validation and git diff --ch
 pass. Final local review and the GitHub Actions result are tracked on PR #336 for
 the published head; the earlier live acceptance is historical evidence for the
 previous installed source, not live acceptance of these unactivated fixes.
+
+
+## Authorized scoped CI route — 2026-11-20
+
+The user explicitly authorized applying the scoped route and getting PR #336 CI
+green, preserving active jobs with no application deployment or merge. On live
+readback, generic profiles and the full owning scan list (including openBenches)
+had already been restored outside this task. The activation preserved those edits,
+all pool/access settings and image pins, and added the dedicated fleet-test profile
+plus its label on the already-qualified generic Ubuntu 24 profile. A host-local
+backup, before-state snapshots and configuration hashes record the additive change.
+No controller restart or activation of source-only scheduler fixes was performed.
+The workflow now requests the dedicated label; current-head review and CI results
+are tracked on PR #336.

@@ -3170,6 +3170,21 @@ case "$action" in
     # only in the process that starts Claude (require_claude_bin).
     [[ "$action" == run ]] || require_claude_bin offline
     export CLAUDE_PROFILE_NAME="$profile"
+    if [[ "$action" == run ]]; then
+      # Child reviews use this launch's selected account, never a stale default.
+      export CODEX_PROFILE_NAME="$profile"
+      export CODEX_PROFILE_EMAIL="$email"
+      codex_profile_launcher="$(command -v codex-profile || true)"
+      [[ -n "$codex_profile_launcher" ]] || codex_profile_launcher="$sync_dir/codex-profile"
+      codex_profiles_base="${CODEX_PROFILES_HOME:-${CHATGPT_PROFILES_HOME:-$HOME/.chatgpt-profiles}}"
+      if [[ -n "$codex_profile_launcher" ]] && codex_selected_home="$("$codex_profile_launcher" home "$profile" 2>/dev/null)"; then
+        export CODEX_HOME="$codex_selected_home"
+      else
+        # No cross-provider mapping: keep Claude usable, but never expose .codex.
+        # codex-exec rejects unknown profiles before any provider execution.
+        export CODEX_HOME="$codex_profiles_base/profiles/$profile_path"
+      fi
+    fi
     configure_profile_runtime "$config_dir"
     load_profile_setup_token "$config_dir"
     shared_mcp=false

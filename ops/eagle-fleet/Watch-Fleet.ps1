@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Python)
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security')
 Set-Location $PSScriptRoot
 $watcher=[Threading.Mutex]::new($false,'Local\EagleFleetRunnerWatcher')
 if(!$watcher.WaitOne(0)){exit 0}

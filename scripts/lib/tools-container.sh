@@ -76,7 +76,7 @@ workbenches_requirement_rows() {
     case "$state" in
         up) printf 'docker\tDocker\tup\tLinux containers and daemon access are available.\n' ;;
         missing) printf 'docker\tDocker\tmissing\tInstall Docker to run workBenches.\n' ;;
-        *) printf 'docker\tDocker\tdown\tStart Docker, select Linux containers, or fix daemon access.\n' ;;
+        *) printf 'docker\tDocker\tdown\tSetup could not verify a Linux Docker engine from this shell. Check Docker access, then press R.\n' ;;
     esac
     printf 'setup_tools\tTools\t%s\tPython 3, jq, Git and curl run in workBenches/tools.\n' "$(workbenches_tools_state "$state")"
     printf 'vault\tVault\t%s\tOptional credential-access helper; sign-in and unlock are separate.\n' "$(workbenches_vault_state "$state")"
@@ -118,9 +118,24 @@ workbenches_pin_docker() {
 
 workbenches_docker_state() {
     if ! command -v docker >/dev/null 2>&1; then printf 'missing\n'; return; fi
-    local kind
-    kind="$(workbenches_bounded 8 docker info --format '{{.OSType}}' 2>/dev/null)" || { printf 'down\n'; return; }
-    if [[ "$kind" == linux ]]; then printf 'up\n'; else printf 'down\n'; fi
+    local kind status
+    # The version query checks the selected server without collecting the wider
+    # host and plugin inventory. Keep info as a fallback for older CLI wrappers.
+    if kind="$(workbenches_bounded 8 docker version --format '{{.Server.Os}}' 2>/dev/null)"; then
+        kind="${kind%$'\r'}"
+        case "$kind" in
+            linux) printf 'up\n'; return ;;
+            windows) printf 'Docker check: the selected engine runs Windows containers.\n' >&2; printf 'down\n'; return ;;
+        esac
+    fi
+    if kind="$(workbenches_bounded 8 docker info --format '{{.OSType}}' 2>/dev/null)"; then
+        if [[ "${kind%$'\r'}" == linux ]]; then printf 'up\n'; return; fi
+        printf 'Docker check: the selected engine did not report Linux containers.\n' >&2
+    else
+        status=$?
+        printf 'Docker check: the selected engine probe failed (exit %s).\n' "$status" >&2
+    fi
+    printf 'down\n'
 }
 
 workbenches_managed_state() {

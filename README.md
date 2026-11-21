@@ -468,7 +468,7 @@ rather than into the Linux distro.
 
 Select **OpenCode Desktop** in the Tools column or run `bash scripts/setup-windows-tools.sh opencode_desktop` from your normal WSL workstation account. **OpenCode CLI** is a separate choice under AI Assistants. Desktop setup reuses compatible installations and keeps the existing `popencode` launcher and login state. It installs Windows logon tasks under the current user and starts both WSL listeners. Each task keeps its profile in the foreground so closing the Ubuntu terminal does not stop it. The tasks start at sign-in and have independent restart policies.
 
-Add the local servers to Desktop once:
+In setup, open **G Profiles → OpenCode Desktop servers**. Choose your registered Claude and popencode accounts, then generate a one-time pairing link for each server. Paste each link into **Settings → Servers → Add server** in OpenCode Desktop. Pairing links stay in the local terminal and expire. A changed Claude account takes effect the next time that server starts.
 
 | Profile | Desktop address | First-time provider setup |
 | --- | --- | --- |
@@ -482,7 +482,7 @@ python3 ~/.local/lib/workbenches/opencode-desktop/setup_profiles.py health
 python3 ~/.local/lib/workbenches/opencode-desktop/setup_profiles.py verify
 ```
 
-`health` checks the authenticated loopback listeners. After sign-in, `verify` checks model availability and agent bindings without sending inference. Logs are in the corresponding profile directory. To disable future autostart, run `bash scripts/setup-windows-tools.sh --uninstall opencode_desktop`. This preserves the app, current sessions, and provider sign-ins.
+`health` checks the authenticated loopback listeners. After sign-in, `verify` checks model availability and agent bindings without sending inference. The pinned Oh My OpenAgent build loads on OpenCode 2 with limited support. Its agents, tools, and hooks require a compatible plugin/runtime combination, so successful pairing does not qualify the OmO roster. Logs are in the corresponding profile directory. To disable future autostart, run `bash scripts/setup-windows-tools.sh --uninstall opencode_desktop`. This preserves the app, current sessions, and provider sign-ins.
 
 ## Amnezia Endpoint Wrapper
 

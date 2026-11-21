@@ -350,6 +350,11 @@ init_components() {
     component_description[wsl]="WSL 2"
     component_description[personal_profiles]='Personal & companies'
     component_description[workbenches_account]='Workstation account'
+    profile_items=(personal_profiles workbenches_account ai_accounts)
+    if is_wsl_windows; then
+        profile_items+=(opencode_desktop_profiles)
+        component_description[opencode_desktop_profiles]='OpenCode Desktop servers'
+    fi
     component_status[personal_profiles]=optional
     requirement_items=(docker setup_tools vault)
     if is_wsl_windows; then requirement_items=(wsl "${requirement_items[@]}"); fi
@@ -425,6 +430,7 @@ activate_profile() {
         personal_profiles) python3 "$SCRIPT_DIR/setup-profiles.py" || result=$? ;;
         workbenches_account) python3 "$SCRIPT_DIR/setup-workbenches-account.py" || result=$? ;;
         ai_accounts) configure_selected_accounts || result=$? ;;
+        opencode_desktop_profiles) /usr/bin/python3 -B "$SCRIPT_DIR/opencode-desktop/setup_profiles.py" profiles || result=$? ;;
     esac
     trap 'echo -e "${SHOW_CURSOR}"; exit 130' INT
     case "$result" in

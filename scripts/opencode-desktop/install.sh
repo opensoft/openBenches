@@ -25,15 +25,21 @@ fi
 run_windows() {
     local mode="$1" windows_script powershell
     shift
-    powershell="$(windows_powershell_path)" || return 1
-    windows_script="$(wslpath -w "$here/install-windows.ps1")"
+    powershell="$(windows_powershell_path)" || return 127
+    windows_script="$(wslpath -w "$here/install-windows.ps1")" || return 1
     "$powershell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$windows_script" \
         -Action "$mode" -Distribution "$WSL_DISTRO_NAME" "$@" | tr -d '\r'
 }
 
 case "${1:-install}" in
     --status)
-        status="$(run_windows Status)"
+        status="$(run_windows Status)" || {
+            case "$?" in
+                # Keep the menu actionable when WSL cannot launch PowerShell.
+                126|127) status='needs setup' ;;
+                *) exit 1 ;;
+            esac
+        }
         if [[ "$status" == installed ]] && ! "$host_python" -B "$launcher" health >/dev/null 2>&1; then
             status='needs check'
         fi
@@ -44,8 +50,8 @@ case "${1:-install}" in
         run_windows Disable
         exit 0
         ;;
-    install) ;;
-    *) echo 'Usage: install.sh [install|--status|--disable]' >&2; exit 2 ;;
+    install|--stage) ;;
+    *) echo 'Usage: install.sh [install|--stage|--status|--disable]' >&2; exit 2 ;;
 esac
 
 [[ -x "$host_python" ]] || { echo 'Install the Ubuntu python3 package for the OpenCode logon tasks.' >&2; exit 1; }
@@ -138,8 +144,29 @@ source_roster(Path.home())['[opencode]']
 json_file(state / 'workstation.json', settings)
 PY
 
+print_windows_install() {
+    local windows_script linux_user
+    windows_script="$(wslpath -w "$here/install-windows.ps1")" || return 1
+    linux_user="$(id -un)"
+    echo 'WSL profiles are staged. Finish registration from a Windows PowerShell terminal:'
+    printf "& '%s' -Distribution '%s' -LinuxUser '%s' -Launcher '%s'\n" \
+        "${windows_script//\'/\'\'}" "${WSL_DISTRO_NAME//\'/\'\'}" \
+        "${linux_user//\'/\'\'}" "${launcher//\'/\'\'}"
+}
+
+if [[ "${1:-}" == --stage ]]; then
+    print_windows_install
+    exit 0
+fi
+
 report_step 'Checking OpenCode Desktop and registering Windows sign-in tasks'
-run_windows Install -LinuxUser "$(id -un)" -Launcher "$launcher"
+run_windows Install -LinuxUser "$(id -un)" -Launcher "$launcher" || {
+    windows_exit=$?
+    if [[ "$windows_exit" == 126 || "$windows_exit" == 127 ]]; then
+        print_windows_install
+    fi
+    exit "$windows_exit"
+}
 report_step 'Waiting for the Claude and OpenAI listeners'
 for _ in {1..30}; do
     if "$host_python" -B "$launcher" health 2>/dev/null; then exit 0; fi

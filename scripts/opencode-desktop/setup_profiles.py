@@ -4,6 +4,7 @@
 import argparse
 import base64
 import copy
+import errno
 import fcntl
 import http.client
 import json
@@ -13,6 +14,7 @@ import re
 import secrets
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -78,6 +80,87 @@ def openai_account(home, settings):
     return account
 
 
+def claude_account(home, requested):
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+    registry = Path(os.environ.get("CLAUDE_PROFILES_MANIFEST") or config / "workbenches/claude-profiles.json")
+    profiles = json.loads(registry.read_text(encoding="utf-8-sig"))["profiles"]
+    selected = [profile for profile in profiles
+                if requested.lower() in {alias.lower() for alias in [profile["name"], *profile.get("aliases", [])]}]
+    if len(selected) != 1:
+        raise ValueError("Choose one registered Claude profile name or alias from pclaude list.")
+    profile = selected[0]
+    base = Path(os.environ.get("CLAUDE_PROFILES_HOME") or home / ".claude-profiles").expanduser().resolve()
+    directory = (base / "profiles" / (profile.get("profilePath") or profile["name"])).resolve()
+    if not directory.is_dir() or not (directory / ".credentials.json").is_file():
+        raise ValueError("The selected Claude profile has no local credentials. Sign in through pclaude first.")
+    return profile["name"], directory
+
+
+def save_claude_account(home, root, requested):
+    name, directory = claude_account(home, requested)
+    settings = read_settings(root)
+    settings.update(claude_account=name, claude_config_dir=str(directory))
+    json_file(root / "workstation.json", settings)
+    return name
+
+
+def pairing_link(root, name):
+    port = PROFILES[name][0]
+    password = (root / name / "server-password").read_text().strip()
+    if api(port, password, "/api/info", gate=name == "openai")[0] != 200:
+        raise RuntimeError(f"The {name} profile server did not authenticate.")
+    status, response = api(port, password, "/api/pair", method="POST")
+    if status != 200 or not isinstance(response, dict):
+        raise RuntimeError(f"The {name} server did not create a pairing code (HTTP {status}).")
+    code = response.get("code")
+    if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", code):
+        raise RuntimeError(f"The {name} server returned an invalid pairing code.")
+    return f"http://127.0.0.1:{port}/auth/connect/{code}"
+
+
+def manage_desktop_profiles(home, root):
+    if not (root / "workstation.json").is_file():
+        raise RuntimeError("Install OpenCode Desktop from Tools first.")
+
+    # Setup can tee stdout and stderr to a log. Only the user terminal gets a pairing link.
+    with open("/dev/tty", encoding="utf-8") as user_input, \
+         open("/dev/tty", "w", encoding="utf-8", buffering=1) as terminal:
+        while True:
+            settings = read_settings(root)
+            claude = settings.get("claude_account") or settings.get("claude_config_dir") or "choose an existing profile"
+            openai = settings.get("openai_account") or "choose an existing popencode account"
+            print(f"\nOpenCode Desktop servers\nClaude: {claude}\nOpenAI: {openai}\n"
+                  "1. Pair Claude\n2. Pair OpenAI\nC. Choose Claude profile\n"
+                  "O. Choose popencode account\nQ. Back", file=terminal)
+            print("Select: ", end="", file=terminal, flush=True)
+            choice = user_input.readline().strip().lower()
+            if choice in ("", "q"):
+                return
+            try:
+                if choice in ("1", "2"):
+                    name = "claude" if choice == "1" else "openai"
+                    link = pairing_link(root, name)
+                    print(f"\nIn OpenCode Desktop, open Settings → Servers → Add server.\n"
+                          f"Paste this one-time {name} link and name the server {name.capitalize()}:\n{link}",
+                          file=terminal, flush=True)
+                elif choice in ("c", "o"):
+                    label = "pclaude" if choice == "c" else "popencode"
+                    print(f"Existing {label} alias (empty to cancel): ", end="", file=terminal, flush=True)
+                    alias = user_input.readline().strip()
+                    if not alias:
+                        continue
+                    if choice == "c":
+                        save_claude_account(home, root, alias)
+                        print("Saved. The Claude server uses this profile on its next start.", file=terminal)
+                    else:
+                        settings["openai_account"] = alias
+                        openai_account(home, settings)
+                        json_file(root / "workstation.json", settings)
+                        print("Saved. Use this popencode account when signing in through Desktop.", file=terminal)
+            except (OSError, ValueError, RuntimeError, http.client.HTTPException) as error:
+                print(f"{error}", file=terminal)
+
+
 def profile_config(source, name, openai_models):
     _, provider, primary, planning, implementation, lookup = PROFILES[name]
     config = copy.deepcopy(source)
@@ -132,6 +215,18 @@ def instance_environment(home, root, name, password, claude_config_dir):
         if claude_binary:
             env["OPENCODE_CLAUDE_PATH"] = claude_binary
     return env
+
+
+def loopback_port_available(port):
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE:
+                raise
+            return False
+        return True
 
 
 def api(port, password, path, *, method="GET", gate=False):
@@ -415,11 +510,7 @@ def serve_openai(home, root, binary):
     updater = OpenAIModelUpdater(folder, source, password, configured_openai_models(folder))
     env = instance_environment(home, root, "openai", password, None)
     with SessionGate(("127.0.0.1", port), OPENAI_BACKEND, updater.prepare) as gate:
-        try:
-            api(OPENAI_BACKEND, None, "/api/info")
-        except ConnectionRefusedError:
-            pass
-        else:
+        if not loopback_port_available(OPENAI_BACKEND):
             raise RuntimeError(f"OpenAI internal loopback port {OPENAI_BACKEND} is occupied")
         backend = subprocess.Popen([str(binary), "serve", "--hostname", "127.0.0.1", "--port", str(OPENAI_BACKEND)],
                                    cwd=folder, env=env, stdin=subprocess.DEVNULL)
@@ -450,11 +541,10 @@ def start(home, root, binary, name, source, claude_config_dir):
         fcntl.flock(lock, fcntl.LOCK_EX)
         password_path = folder / "server-password"
         password = password_path.read_text().strip() if password_path.is_file() else secrets.token_urlsafe(32)
-        try:
+        # An unused WSL loopback port can time out on connect. Check the bind
+        # first, then use authentication only to identify an existing listener.
+        if not loopback_port_available(port):
             status, _ = api(port, password, "/api/info", gate=openai)
-        except ConnectionRefusedError:
-            pass
-        else:
             if status == 200 and password_path.is_file():
                 print(f"{name}: already running at http://127.0.0.1:{port}")
                 return
@@ -492,7 +582,7 @@ def opencode_v2_version(output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("start", "supervise", "health", "verify", "refresh"))
+    parser.add_argument("command", choices=("start", "supervise", "health", "verify", "refresh", "profiles"))
     parser.add_argument("--profile", choices=PROFILES)
     parser.add_argument("--project", type=Path, help="Optional absolute WSL project path for metadata verification")
     parser.add_argument("--claude-config-dir", type=Path, help="Existing subscription-backed Claude Code config directory")
@@ -507,6 +597,13 @@ def main():
     home = Path.home()
     root = home / ".local/state/opencode-desktop-profiles"
     root.mkdir(parents=True, exist_ok=True)
+    if args.command == "profiles":
+        try:
+            manage_desktop_profiles(home, root)
+        except (OSError, ValueError, RuntimeError, http.client.HTTPException) as error:
+            print(f"OpenCode Desktop: {error}", file=sys.stderr)
+            return 1
+        return 0
     if args.command == "refresh":
         if args.profile == "claude" or args.project:
             parser.error("refresh checks the OpenAI server's base catalog")

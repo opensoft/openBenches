@@ -88,7 +88,44 @@ def available(config):
     values={line.split(':')[0]:int(line.split()[1])*1024 for line in result.stdout.splitlines() if ':' in line}
     return values['MemAvailable'] >= config['minimum_available_bytes']
 
+def reserved_candidates():
+    # The other slot already owns a dispatch attempt for these queued jobs.
+    # GitHub may assign its worker another matching job; avoid preparing a
+    # second worker for the same original candidate while that slot is active.
+    result=set()
+    for path in (ROOT/'state.json', ROOT/'slots'/'ubuntu24-2'/'state.json'):
+        if path.resolve()==STATE.resolve(): continue
+        try: state=json.loads(path.read_text())
+        except FileNotFoundError: continue
+        if state.get('phase')!='ready' and isinstance(state.get('repository'),str) and isinstance(state.get('job_id'),int):
+            result.add((state['repository'].lower(),state['job_id']))
+    return result
+
+
+def completed_dispatches():
+    # An ephemeral worker may be assigned another matching job by GitHub.
+    # Give other queued candidates a turn before retrying that dispatch.
+    created={};completed={}
+    for directory in (ROOT,ROOT/'slots'/'ubuntu24-2'):
+        for name in ('events.previous.jsonl','events.jsonl'):
+            try: lines=(directory/name).read_text().splitlines()
+            except FileNotFoundError: continue
+            for line in lines:
+                try: item=json.loads(line)
+                except json.JSONDecodeError: continue  # An append may still be in progress.
+                runner=item.get('runner')
+                if item.get('event')=='creating' and isinstance(item.get('repository'),str) and isinstance(item.get('job'),int):
+                    created[runner]=(item['repository'].lower(),item['job'])
+                elif item.get('event')=='cleanup-verified' and runner in created:
+                    key=created[runner]
+                    stamp=datetime.datetime.fromisoformat(item['time'].replace('Z','+00:00')).timestamp()
+                    completed[key]=max(completed.get(key,0),stamp)
+    return completed
+
+
 def queued(config):
+    reserved=reserved_candidates()
+    completed=completed_dispatches()
     def scan(item):
         try:
             pool,repo=item
@@ -100,6 +137,7 @@ def queued(config):
                     jobs=pages(f"repos/{repo}/actions/runs/{run['id']}/jobs",'jobs')
                     for job in jobs:
                         if job['status'] != 'queued': continue
+                        if (repo.lower(),job['id']) in reserved: continue
                         for profile in config['profiles']:
                             requested={label.lower() for label in job['labels']}
                             offered={label.lower() for label in profile['labels']}
@@ -112,7 +150,10 @@ def queued(config):
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         results=list(executor.map(scan,[(pool,repo) for pool in config['pools'] for repo in pool.get('scan_repositories',pool['repositories'])]))
     candidates=[candidate for result in results for candidate in result]
-    return min(candidates,key=lambda c:c[0]) if candidates else None
+    def rank(candidate):
+        created=datetime.datetime.fromisoformat(candidate[0].replace('Z','+00:00')).timestamp()
+        return max(created,completed.get((candidate[3].lower(),candidate[5]),created))
+    return min(candidates,key=rank) if candidates else None
 
 def validate_pool(pool):
     path=f"orgs/{pool['organization']}/actions/runner-groups/{pool['group_id']}"

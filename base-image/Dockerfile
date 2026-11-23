@@ -85,6 +85,18 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# The existing signed-package bootstrap above provides certificate trust.
+# Keep repository paths, suites, components and signing keys unchanged.
+# BEGIN official Ubuntu HTTPS mirrors
+RUN set -eux; \
+    test -s /etc/ssl/certs/ca-certificates.crt; \
+    for apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do \
+        if [ -f "$apt_source" ]; then \
+            sed -i -E '/^[[:space:]]*#/! s#http://((archive|security|ports)\.ubuntu\.com/)#https://\1#g' "$apt_source"; \
+        fi; \
+    done
+# END official Ubuntu HTTPS mirrors
+
 # Provide fd alias for Ubuntu's fdfind
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 

@@ -15,5 +15,5 @@ OpenSpec/Speckit protocol and project bootstrap contract.
 - Preserve unrelated changes in the parent checkout and in bench submodules.
 
 <!-- SPECKIT START -->
-Active implementation plan: `specs/181-docker-flight-recorder/plan.md` (bounded, local-only Docker/WSL diagnosis; no automatic recovery).
+Active implementation plan: `specs/253-https-ubuntu-mirrors/plan.md` (bounded official-mirror transport fix; preserve host data, rollback storage and CI/watchdog holds).
 <!-- SPECKIT END -->

@@ -13,6 +13,11 @@ on:
       - .github/actions/openspeckit-compat/**
       - devcontainer.test/helper-integration-baseline.json
       - devcontainer.test/test-helper-coverage-parity.py
+      - devcontainer.test/test-workflow-adoption.py
+      - .agents/skills/task-set-delivery/**
+      - .claude/skills/task-set-delivery/**
+      - AGENTS.md
+      - CLAUDE.md
       - devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
       - devBenches/devcontainer.test/test-task-set-delivery.py
       - devBenches/base-image/files/openspeckit/task-set-delivery/**
@@ -70,6 +75,11 @@ on:
       - .github/actions/openspeckit-compat/**
       - devcontainer.test/helper-integration-baseline.json
       - devcontainer.test/test-helper-coverage-parity.py
+      - devcontainer.test/test-workflow-adoption.py
+      - .agents/skills/task-set-delivery/**
+      - .claude/skills/task-set-delivery/**
+      - AGENTS.md
+      - CLAUDE.md
       - devBenches/devcontainer.test/test-openspeckit-bootstrap.sh
       - devBenches/devcontainer.test/test-task-set-delivery.py
       - devBenches/base-image/files/openspeckit/task-set-delivery/**

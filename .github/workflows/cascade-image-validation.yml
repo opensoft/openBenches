@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/cascade-image-validation.yml
       - base-image/Dockerfile
+      - scripts/tests/test_ubuntu_mirror_transport.py
       - base-image/ai-cli-contract.sh
       - base-image/ai-cli-install-helpers.sh
       - base-image/install-ai-clis.sh
@@ -26,6 +27,7 @@ on:
     paths:
       - .github/workflows/cascade-image-validation.yml
       - base-image/Dockerfile
+      - scripts/tests/test_ubuntu_mirror_transport.py
       - base-image/ai-cli-contract.sh
       - base-image/ai-cli-install-helpers.sh
       - base-image/install-ai-clis.sh
@@ -55,6 +57,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Run Ubuntu mirror transport regression
+        run: python3 scripts/tests/test_ubuntu_mirror_transport.py
 
       - name: Run cascade image validation regression
         run: bash devcontainer.test/test-cascade-image-validation.sh

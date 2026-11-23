@@ -1,6 +1,6 @@
 # Tasks: HTTPS Ubuntu Mirrors
 
-Task set: `https-ubuntu-mirror-transport`. Parent: the preserved operational source snapshot. No PR or integration landing is authorized by these local tasks.
+Task set: `https-ubuntu-mirror-transport`. Parent: current `origin/main`, with the unrelated saved operational WIP commit excluded. Brett authorized opening and landing this tested task set on 2026-11-23; CI and watchdog maintenance holds remain in force.
 
 ## Phase 1 - Transport fixtures
 
@@ -23,8 +23,10 @@ T001 precedes T002; T003 follows passing transport tests; T004 follows the corre
 
 All required shared layers and the three Brett-personalized images were rebuilt and verified on the native engine. The six mirror fixtures pass; every personalized image has the official Ubuntu sources on HTTPS with CA trust present. The Python testing utilities and an offline Chromium launch pass. The declared AI CLI image checker passes without writing the version manifest.
 
-All three Wave launcher checks and repeat-start checks pass with the same container identities, Brett UID 1000, init enabled, writable host-project access and zero zombies after the reaping test. Python and cloud use the explicit `/workspace/projects` host bind; Microsoft 365 uses its declared parent home bind and accesses projects at `/home/brett/projects`. No project data was copied into Docker.
+All three Wave launcher checks and repeat-start checks pass with the same container identities, Brett UID 1000, init enabled, writable host-project access and zero zombies after the reaping test. Python and cloud use the explicit projects bind; Microsoft 365 accesses projects through its declared parent home bind. No project data was copied into Docker.
 
 The existing host Dev Containers CLI 0.80.1 could not recognize Docker 29 start events. The installed host launcher was upgraded to the official 0.91.0 package while retaining the old installation. This was an operational compatibility correction, not a daemon or WSL restart. Native startup's scheduled task is ready and its manual test returned zero; a full Windows reboot and a human Wave GUI click remain unperformed.
 
 Final private receipts are `https-rebuild-verified.json`, `native-ai-cli-contract-check.json`, `native-runtime-status.json`, `native-cutover-verified.json` and `windows-final-readback.json` under the operator-owned evidence root. All five CI/diagnostic-watchdog tasks remain disabled, both CI STOP markers remain present, Docker Desktop remains stopped/manual and its original data disk remains retained. The Windows readback had 180.81 GiB free on C:, above the 100 GiB reserve. No PR, source integration landing or CI release was performed.
+
+The cascade-validation workflow now runs the offline mirror fixtures on pushes and pull requests, including test-only changes. Hosted PR checks and exact-head review must pass before landing; the local Eagle CI and watchdog holds do not change.

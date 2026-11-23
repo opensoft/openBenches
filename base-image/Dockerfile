@@ -26,7 +26,7 @@ USER root
 # SYSTEM PACKAGES
 # ========================================
 
-# Install core system tools
+# Install core system tools and provide Ubuntu's fd alias
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends \
     # Version control
@@ -83,7 +83,8 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && test -z "$(pg_lsclusters -h)" \
     && for bin in initdb pg_ctl postgres psql; do test -x "/usr/lib/postgresql/16/bin/$bin" || exit 1; done \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 # The existing signed-package bootstrap above provides certificate trust.
 # Keep repository paths, suites, components and signing keys unchanged.
@@ -96,9 +97,6 @@ RUN set -eux; \
         fi; \
     done
 # END official Ubuntu HTTPS mirrors
-
-# Provide fd alias for Ubuntu's fdfind
-RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 # ========================================
 # GITHUB CLI
